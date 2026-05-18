@@ -693,6 +693,12 @@ class StarPilotVariables:
     toggle.curve_speed_controller = toggle.openpilot_longitudinal and self.get_value("CurveSpeedController")
     toggle.csc_status = self.get_value("ShowCSCStatus", condition=toggle.curve_speed_controller) or toggle.debug_mode
 
+    toggle.low_speed_turn_speed_controller = toggle.openpilot_longitudinal and self.get_value("LowSpeedTurnSpeedController")
+    toggle.lstsc_calibrate_mode = self.get_value("LSTSCCalibrateMode", condition=toggle.low_speed_turn_speed_controller)
+    toggle.lstsc_predictive_mode = self.get_value("LSTSCPredictiveMode", condition=toggle.low_speed_turn_speed_controller)
+    toggle.lstsc_predictive_blinker_time = self.get_value("LSTSCPredictiveBlinkerTime", cast=float, condition=toggle.lstsc_predictive_mode, default=3.0, min=1.0, max=5.0)
+    toggle.lstsc_status = self.get_value("ShowLSTSCStatus", condition=toggle.low_speed_turn_speed_controller) or toggle.debug_mode
+
     custom_alerts = self.get_value("CustomAlerts")
     toggle.goat_scream_alert = self.get_value("GoatScream", condition=custom_alerts)
     toggle.goat_scream_critical_alerts = self.get_value("GoatScreamCriticalAlerts", condition=custom_alerts)
@@ -1214,6 +1220,7 @@ class StarPilotVariables:
 
       toggle.cem_status = False
       toggle.csc_status = False
+      toggle.lstsc_status = False
       toggle.model_ui = False
       toggle.dynamic_path_width = False
       toggle.road_name_ui = False

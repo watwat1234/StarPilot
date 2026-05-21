@@ -2,7 +2,9 @@
 
 #include <csignal>
 #include <ctime>
+#include <execinfo.h>
 #include <fcntl.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include <QApplication>
@@ -86,10 +88,49 @@ void write_kernel_stack(int fd) {
   (void)!write(fd, end, sizeof(end) - 1);
 }
 
-void crash_handler(int sig, siginfo_t *info, void *) {
+// Dump aarch64 registers from ucontext. PC + LR alone are enough to locate the
+// crash with addr2line, even if backtrace_symbols_fd fails.
+void write_registers(int fd, void *ucontext) {
+  if (fd < 0 || ucontext == nullptr) return;
+  const char hdr[] = "--- registers ---\n";
+  (void)!write(fd, hdr, sizeof(hdr) - 1);
+#if defined(__aarch64__)
+  ucontext_t *uc = static_cast<ucontext_t *>(ucontext);
+  char line[256];
+  int n = snprintf(line, sizeof(line),
+    "pc=0x%llx lr=0x%llx sp=0x%llx fp=0x%llx fault=0x%llx\n",
+    (unsigned long long)uc->uc_mcontext.pc,
+    (unsigned long long)uc->uc_mcontext.regs[30],
+    (unsigned long long)uc->uc_mcontext.sp,
+    (unsigned long long)uc->uc_mcontext.regs[29],
+    (unsigned long long)uc->uc_mcontext.fault_address);
+  if (n > 0) (void)!write(fd, line, n);
+#else
+  const char unsupp[] = "<not aarch64>\n";
+  (void)!write(fd, unsupp, sizeof(unsupp) - 1);
+#endif
+}
+
+// Userspace backtrace. backtrace_symbols_fd can call malloc internally which
+// is not strictly async-signal-safe, but on glibc/musl it works for SIGSEGV
+// crashes that leave the heap intact (our case: null deref).
+void write_user_backtrace(int fd) {
+  if (fd < 0) return;
+  const char hdr[] = "--- backtrace ---\n";
+  (void)!write(fd, hdr, sizeof(hdr) - 1);
+  void *frames[32];
+  int n = backtrace(frames, 32);
+  if (n > 0) {
+    backtrace_symbols_fd(frames, n, fd);
+  }
+}
+
+void crash_handler(int sig, siginfo_t *info, void *ucontext) {
   int fd = open(kCrashLogPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
   void *fault_addr = info ? info->si_addr : nullptr;
   write_crash_header(fd, sig, fault_addr);
+  write_registers(fd, ucontext);
+  write_user_backtrace(fd);
   write_kernel_stack(fd);
   if (fd >= 0) close(fd);
 

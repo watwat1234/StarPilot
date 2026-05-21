@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <dirent.h>
 #include <fcntl.h>
 #include <mutex>
 #include <sys/syscall.h>
@@ -90,19 +91,41 @@ void write_stall_dump_section(int fd, const std::string &title, const std::strin
 }
 
 void write_ui_thread_snapshot(int fd) {
-  const pid_t tid = ui_main_tid.load(std::memory_order_relaxed);
-  if (tid <= 0) {
+  const pid_t main_tid = ui_main_tid.load(std::memory_order_relaxed);
+  if (main_tid <= 0) {
     write_stall_dump_section(fd, "main_thread", "<unavailable>");
     return;
   }
 
-  write_stall_dump_section(fd, "main_thread", util::string_format("pid=%d tid=%d", getpid(), tid));
+  write_stall_dump_section(fd, "main_thread", util::string_format("pid=%d tid=%d", getpid(), main_tid));
 
-  const std::string task_dir = "/proc/self/task/" + std::to_string(tid);
-  write_stall_dump_section(fd, "main_thread status", util::read_file(task_dir + "/status"));
-  write_stall_dump_section(fd, "main_thread wchan", util::read_file(task_dir + "/wchan"));
-  write_stall_dump_section(fd, "main_thread syscall", util::read_file(task_dir + "/syscall"));
-  write_stall_dump_section(fd, "main_thread kernel_stack", util::read_file(task_dir + "/stack"));
+  const std::string main_task_dir = "/proc/self/task/" + std::to_string(main_tid);
+  write_stall_dump_section(fd, "main_thread status", util::read_file(main_task_dir + "/status"));
+  write_stall_dump_section(fd, "main_thread wchan", util::read_file(main_task_dir + "/wchan"));
+  write_stall_dump_section(fd, "main_thread syscall", util::read_file(main_task_dir + "/syscall"));
+  write_stall_dump_section(fd, "main_thread kernel_stack", util::read_file(main_task_dir + "/stack"));
+
+  // Dump every other thread so we can identify the futex holder when the main thread is parked.
+  DIR *d = opendir("/proc/self/task");
+  if (d == nullptr) {
+    write_stall_dump_section(fd, "other_threads", "<opendir failed>");
+    return;
+  }
+  while (struct dirent *entry = readdir(d)) {
+    if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+    const pid_t tid = static_cast<pid_t>(std::atoi(entry->d_name));
+    if (tid <= 0 || tid == main_tid) continue;
+
+    const std::string task_dir = std::string("/proc/self/task/") + entry->d_name;
+    std::string comm = util::read_file(task_dir + "/comm");
+    if (!comm.empty() && comm.back() == '\n') comm.pop_back();
+    const std::string header = util::string_format("tid=%d comm=%s", tid, comm.c_str());
+    write_stall_dump_section(fd, "thread " + std::to_string(tid), header);
+    write_stall_dump_section(fd, "thread " + std::to_string(tid) + " wchan", util::read_file(task_dir + "/wchan"));
+    write_stall_dump_section(fd, "thread " + std::to_string(tid) + " syscall", util::read_file(task_dir + "/syscall"));
+    write_stall_dump_section(fd, "thread " + std::to_string(tid) + " kernel_stack", util::read_file(task_dir + "/stack"));
+  }
+  closedir(d);
 }
 
 double ui_elapsed_s(uint64_t now, uint64_t then) {

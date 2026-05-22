@@ -1,5 +1,6 @@
 #include <sys/resource.h>
 
+#include <algorithm>
 #include <csignal>
 #include <ctime>
 #include <execinfo.h>
@@ -152,6 +153,48 @@ void install_crash_handlers() {
   }
 }
 
+// Log a one-line note that Wayland forced a clean exit. Best-effort, can't
+// rely on Qt logging from a state where Qt is already about to abort.
+void log_wayland_exit(const QString &msg) {
+  int fd = open(kCrashLogPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+  if (fd < 0) return;
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  struct tm tm;
+  localtime_r(&ts.tv_sec, &tm);
+  QByteArray msg_bytes = msg.toUtf8();
+  char line[1024];
+  int n = snprintf(line, sizeof(line),
+    "[%04d-%02d-%02d %02d:%02d:%02d] UI WAYLAND EXIT pid=%d rss=%dMB msg=\"%.*s\"\n",
+    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+    tm.tm_hour, tm.tm_min, tm.tm_sec,
+    getpid(), signal_safe_rss_mb(),
+    (int)std::min<size_t>(msg_bytes.size(), 400), msg_bytes.constData());
+  if (n > 0) (void)!write(fd, line, n);
+  close(fd);
+}
+
+// Intercept Qt fatal messages. Qt 5.12.8 has no QT_WAYLAND_RECONNECT, so when
+// Weston drops our connection, Qt's Wayland client calls qErrnoWarning ->
+// abort(). We catch that here, log it, and _exit(0) cleanly so the manager
+// restarts us quickly without the abort-signal delay.
+void waylandAwareMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
+  if (type != QtFatalMsg) {
+    swagLogMessageHandler(type, context, msg);
+    return;
+  }
+
+  // Log the fatal first (so we always see it, Wayland or not)
+  swagLogMessageHandler(type, context, msg);
+
+  QByteArray bytes = msg.toUtf8();
+  if (bytes.contains("ayland") || bytes.contains("wl_display")) {
+    log_wayland_exit(msg);
+    _exit(0);  // clean exit; manager restarts us
+  }
+  // Non-Wayland fatal: let Qt abort normally; crash_handler will capture it.
+}
+
 }  // namespace
 
 int main(int argc, char *argv[]) {
@@ -159,7 +202,7 @@ int main(int argc, char *argv[]) {
 
   install_crash_handlers();
 
-  qInstallMessageHandler(swagLogMessageHandler);
+  qInstallMessageHandler(waylandAwareMessageHandler);
   initApp(argc, argv);
 
   QTranslator translator;

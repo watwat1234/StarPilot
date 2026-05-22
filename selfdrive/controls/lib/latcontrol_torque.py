@@ -53,7 +53,7 @@ MIN_LATERAL_CONTROL_SPEED = 0.3
 # This treats the controller's lat-accel calculation as if the car were
 # moving at least at this speed, producing meaningful FF torque at low speed.
 # It does NOT affect physical lateral-accel safety limits elsewhere.
-LAT_ACCEL_MIN_SPEED = 4.0
+LAT_ACCEL_MIN_SPEED = 5.0
 
 # Low-speed stiction-break boost.
 # At low speed the MDPS rack has static friction the controller's normal FF

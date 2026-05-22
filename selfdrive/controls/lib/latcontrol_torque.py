@@ -46,6 +46,14 @@ DEADZONE_BOOST_LAT_ACCEL = 0.15
 UNWIND_D_DES_THRESHOLD = -1.0
 UNWIND_LAT_ACCEL_NEAR_ZERO = 0.3
 MIN_LATERAL_CONTROL_SPEED = 0.3
+# Floor used when converting curvature -> lateral accel for the controller's
+# feedforward and measurement. Without this, FF (= curvature * v_ego^2) is
+# nearly zero below ~5mph, so even when the model wants a tight turn the
+# torque command is tiny and the wheel sits idle until the car gathers speed.
+# This treats the controller's lat-accel calculation as if the car were
+# moving at least at this speed, producing meaningful FF torque at low speed.
+# It does NOT affect physical lateral-accel safety limits elsewhere.
+LAT_ACCEL_MIN_SPEED = 3.0
 CIVIC_BOSCH_MODIFIED_B_FIXED_FRICTION_THRESHOLD = 0.30
 CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT = 1.20
 CIVIC_BOSCH_MODIFIED_A_VARIANT_LAT_ACCEL_FACTOR_MULT = 1.00
@@ -1578,12 +1586,18 @@ class LatControlTorque(LatControl):
 
       measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
       roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
+      # Floored speed used only for the curvature -> lateral-accel space conversion
+      # in this controller. Keeps the FF non-trivial at low speed so the wheel
+      # actually moves into a turn from a near-stop instead of waiting until
+      # v_ego^2 grows enough to produce real torque.
+      v_ego_lat = max(CS.vEgo, LAT_ACCEL_MIN_SPEED)
+      v_ego_lat_sq = v_ego_lat ** 2
       curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
-      lateral_accel_deadzone = curvature_deadzone * CS.vEgo ** 2
+      lateral_accel_deadzone = curvature_deadzone * v_ego_lat_sq
 
       delay_frames = int(np.clip(lat_delay / self.dt, 1, self.lat_accel_request_buffer_len))
       expected_lateral_accel = self.lat_accel_request_buffer[-delay_frames]
-      future_desired_lateral_accel = desired_curvature * CS.vEgo ** 2
+      future_desired_lateral_accel = desired_curvature * v_ego_lat_sq
       self.lat_accel_request_buffer.append(future_desired_lateral_accel)
       raw_lateral_jerk = (future_desired_lateral_accel - expected_lateral_accel) / max(lat_delay, self.dt)
       raw_lateral_jerk = np.clip(raw_lateral_jerk, -MAX_LAT_JERK_UP, MAX_LAT_JERK_UP)
@@ -1595,7 +1609,7 @@ class LatControlTorque(LatControl):
                          abs(setpoint) < UNWIND_LAT_ACCEL_NEAR_ZERO)
       self.prev_desired_lateral_accel = setpoint
 
-      measurement = measured_curvature * CS.vEgo ** 2
+      measurement = measured_curvature * v_ego_lat_sq
       measurement_rate = self.measurement_rate_filter.update((measurement - self.previous_measurement) / self.dt)
       measurement_rate = np.clip(measurement_rate, -MAX_LAT_JERK_UP, MAX_LAT_JERK_UP)
       self.previous_measurement = measurement

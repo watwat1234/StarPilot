@@ -40,7 +40,7 @@ LSTSC_PREDICTIVE_MIN_LATACC = 1.3
 LSTSC_PREDICTIVE_MIN_TTC = 1.0
 LSTSC_PREDICTIVE_MAX_TTC = 8.0
 LSTSC_PREDICTIVE_DECEL_CAP = COMFORT_DECEL
-LSTSC_PREDICTIVE_BUDGET_INITIAL = 1.5
+LSTSC_PREDICTIVE_BUDGET_INITIAL = 0.8
 LSTSC_PREDICTIVE_BUDGET_MIN = 0.8
 LSTSC_PREDICTIVE_BUDGET_MAX = 3.5
 LSTSC_PREDICTIVE_RATCHET_UP = 0.05
@@ -244,7 +244,7 @@ class LowSpeedTurnSpeedController:
     for speed_mph in range(current_mph, MIN_SPEED_BUCKET_MPH - 1, -1):
       key = self._cell_key(angle_bucket, str(speed_mph))
       cell = self.torque_data.get(key)
-      if cell is None or cell["count"] < MIN_SAMPLES_PER_CELL:
+      if cell is None or cell["count"] < 1:
         continue
       if cell["torque_avg"] < TORQUE_TARGET_HEADROOM:
         safe_mph = speed_mph
@@ -519,7 +519,6 @@ class LowSpeedTurnSpeedController:
 
     self.target = float(np.clip(self.target, LSTSC_MIN_SPEED, v_ego))
 
-    if not sm["carState"].steeringPressed:
-      speed_bucket = self._bucket_speed_mph(v_ego)
-      self._record_sample(angle_bucket, speed_bucket, self.torque_pct)
-      self._maybe_persist()
+    speed_bucket = self._bucket_speed_mph(v_ego)
+    self._record_sample(angle_bucket, speed_bucket, self.torque_pct)
+    self._maybe_persist()

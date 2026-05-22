@@ -53,7 +53,12 @@ MIN_LATERAL_CONTROL_SPEED = 0.3
 # This treats the controller's lat-accel calculation as if the car were
 # moving at least at this speed, producing meaningful FF torque at low speed.
 # It does NOT affect physical lateral-accel safety limits elsewhere.
-LAT_ACCEL_MIN_SPEED = 5.0
+LAT_ACCEL_MIN_SPEED = 4.5
+# Curvature threshold above which we consider the model "actively requesting a turn".
+# Used to keep FF authority alive while the car is stopped with a real turn pending
+# (e.g. preturned wheel at a stop sign with blinker on), so the wheel doesn't drift
+# back to center while waiting to creep forward.
+ACTIVE_TURN_CURVATURE = 0.005
 
 # Low-speed stiction-break boost.
 # At low speed the MDPS rack has static friction the controller's normal FF
@@ -1605,8 +1610,11 @@ class LatControlTorque(LatControl):
       # actually moves into a turn from a near-stop instead of waiting until
       # v_ego^2 grows enough to produce real torque.
       # Skip the floor at true standstill so model/sensor jitter doesn't get
-      # amplified into real torque commands while parked.
-      if CS.vEgo < MIN_LATERAL_CONTROL_SPEED:
+      # amplified into real torque commands while parked — UNLESS the model is
+      # actively asking for a turn (e.g. preturned wheel at a stop sign), in
+      # which case keep the FF authority alive so the wheel holds its preturn.
+      active_turn_request = abs(desired_curvature) > ACTIVE_TURN_CURVATURE
+      if CS.vEgo < MIN_LATERAL_CONTROL_SPEED and not active_turn_request:
         v_ego_lat = CS.vEgo
       else:
         v_ego_lat = max(CS.vEgo, LAT_ACCEL_MIN_SPEED)

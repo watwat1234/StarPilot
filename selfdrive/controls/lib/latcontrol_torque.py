@@ -65,9 +65,9 @@ STICTION_BREAK_MAX_SPEED = 6.0           # m/s (~13 mph), full effect below this
 STICTION_BREAK_FADE_WIDTH = 2.0          # m/s, fade-out band above MAX_SPEED
 STICTION_BREAK_DESIRED_CURV_ONSET = 0.01 # 1/m, model must want at least this much curvature
 STICTION_BREAK_DESIRED_CURV_WIDTH = 0.02 # 1/m, sigmoid width on the onset
-STICTION_BREAK_LAG_ONSET = 0.005         # 1/m, fires when measured lags desired by this much
+STICTION_BREAK_LAG_ONSET = 0.002         # 1/m, fires when measured lags desired by this much
 STICTION_BREAK_LAG_WIDTH = 0.01          # 1/m
-STICTION_BREAK_MAX_LAT_ACCEL = 1.5       # m/s^2 of additional FF lat-accel at full effect
+STICTION_BREAK_MAX_LAT_ACCEL = 2.5       # m/s^2 of additional FF lat-accel at full effect
 CIVIC_BOSCH_MODIFIED_B_FIXED_FRICTION_THRESHOLD = 0.30
 CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT = 1.20
 CIVIC_BOSCH_MODIFIED_A_VARIANT_LAT_ACCEL_FACTOR_MULT = 1.00
@@ -1604,7 +1604,12 @@ class LatControlTorque(LatControl):
       # in this controller. Keeps the FF non-trivial at low speed so the wheel
       # actually moves into a turn from a near-stop instead of waiting until
       # v_ego^2 grows enough to produce real torque.
-      v_ego_lat = max(CS.vEgo, LAT_ACCEL_MIN_SPEED)
+      # Skip the floor at true standstill so model/sensor jitter doesn't get
+      # amplified into real torque commands while parked.
+      if CS.vEgo < MIN_LATERAL_CONTROL_SPEED:
+        v_ego_lat = CS.vEgo
+      else:
+        v_ego_lat = max(CS.vEgo, LAT_ACCEL_MIN_SPEED)
       v_ego_lat_sq = v_ego_lat ** 2
       curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
       lateral_accel_deadzone = curvature_deadzone * v_ego_lat_sq
@@ -1721,8 +1726,11 @@ class LatControlTorque(LatControl):
       # rack stiction. Direction = sign of desired curvature. Magnitude fades
       # with speed, with how much the model is asking for, and with how far
       # behind the wheel actually is.
+      # Disabled at true standstill — the car isn't going anywhere yet, and
+      # firing a kick there just twitches the wheel against parked stiction.
       curvature_lag = desired_curvature - measured_curvature
-      if (abs(CS.vEgo) < STICTION_BREAK_MAX_SPEED + STICTION_BREAK_FADE_WIDTH and
+      if (CS.vEgo >= MIN_LATERAL_CONTROL_SPEED and
+          abs(CS.vEgo) < STICTION_BREAK_MAX_SPEED + STICTION_BREAK_FADE_WIDTH and
           np.sign(curvature_lag) == np.sign(desired_curvature) and desired_curvature != 0.0):
         speed_weight = np.interp(abs(CS.vEgo),
                                  [STICTION_BREAK_MAX_SPEED, STICTION_BREAK_MAX_SPEED + STICTION_BREAK_FADE_WIDTH],

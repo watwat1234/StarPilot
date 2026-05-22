@@ -174,24 +174,24 @@ void log_wayland_exit(const QString &msg) {
   close(fd);
 }
 
-// Intercept Qt fatal messages. Qt 5.12.8 has no QT_WAYLAND_RECONNECT, so when
-// Weston drops our connection, Qt's Wayland client calls qErrnoWarning ->
-// abort(). We catch that here, log it, and _exit(0) cleanly so the manager
-// restarts us quickly without the abort-signal delay.
+// Intercept Qt fatal/critical messages. Qt 5.12.8 has no QT_WAYLAND_RECONNECT.
+// When Weston drops our connection, Qt's Wayland client calls qErrnoWarning()
+// which emits QtCriticalMsg then calls abort() directly — NOT through qFatal.
+// We must intercept QtCriticalMsg (not just QtFatalMsg) to catch it in time.
 void waylandAwareMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
-  if (type != QtFatalMsg) {
-    swagLogMessageHandler(type, context, msg);
-    return;
+  // Qt 5.12.8's qErrnoWarning() emits QtCriticalMsg then calls abort() directly,
+  // bypassing the fatal-message path. Intercept critical+fatal Wayland messages
+  // before the unconditional abort() fires.
+  if (type == QtCriticalMsg || type == QtFatalMsg) {
+    QByteArray bytes = msg.toUtf8();
+    if (bytes.contains("ayland") || bytes.contains("wl_display")) {
+      swagLogMessageHandler(type, context, msg);
+      log_wayland_exit(msg);
+      _exit(0);  // clean exit; manager restarts us
+    }
   }
 
-  // Log the fatal first (so we always see it, Wayland or not)
   swagLogMessageHandler(type, context, msg);
-
-  QByteArray bytes = msg.toUtf8();
-  if (bytes.contains("ayland") || bytes.contains("wl_display")) {
-    log_wayland_exit(msg);
-    _exit(0);  // clean exit; manager restarts us
-  }
   // Non-Wayland fatal: let Qt abort normally; crash_handler will capture it.
 }
 

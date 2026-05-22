@@ -25,6 +25,35 @@ DROPDOWN_MAPPING = {
 
 # Custom controls implemented outside the tuple vectors in Qt settings panels.
 # Inject these so regenerated pond layouts retain equivalent functionality.
+INJECTED_AFTER_KEY = {
+    "CurveSpeedController": [
+        {
+            "key": "CalibratedLateralAcceleration",
+            "label": "Calibrated Lateral Acceleration",
+            "description": "The learned lateral acceleration from collected driving data. This sets how fast openpilot will take curves. Higher values allow faster cornering; lower values slow the vehicle for gentler turns.",
+            "data_type": "float",
+            "ui_type": "display",
+            "parent_key": "CurveSpeedController",
+        },
+        {
+            "key": "CalibrationProgress",
+            "label": "Calibration Progress",
+            "description": "How much curve data has been collected. This is a progress meter; it is normal for the value to stay low and rarely reach 100%.",
+            "data_type": "float",
+            "ui_type": "display",
+            "parent_key": "CurveSpeedController",
+        },
+        {
+            "key": "ResetCurveData",
+            "label": "Reset Curve Data",
+            "description": "Reset collected user data for Curve Speed Controller.",
+            "data_type": "bool",
+            "ui_type": "action",
+            "parent_key": "CurveSpeedController",
+        },
+    ],
+}
+
 INJECTED_SECTION_PARAMS = {
     "Vehicle": [
         {
@@ -536,6 +565,17 @@ def main():
         if injected:
             existing_keys = {item["key"] for item in items}
             items = [dict(item) for item in injected if item["key"] not in existing_keys] + items
+
+        # Inject items immediately after a specific anchor key
+        existing_keys = {item["key"] for item in items}
+        for anchor_key, inject_items in INJECTED_AFTER_KEY.items():
+            anchor_idx = next((i for i, item in enumerate(items) if item["key"] == anchor_key), None)
+            if anchor_idx is not None:
+                to_inject = [dict(item) for item in inject_items if item["key"] not in existing_keys]
+                for offset, item in enumerate(to_inject):
+                    items.insert(anchor_idx + 1 + offset, item)
+                existing_keys.update(item["key"] for item in to_inject)
+
         if items:
             layout.append({
                 "name": cat["name"],

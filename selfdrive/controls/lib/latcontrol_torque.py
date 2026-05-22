@@ -1688,8 +1688,10 @@ class LatControlTorque(LatControl):
         ff += np.sign(gravity_adjusted_future_lateral_accel) * self.torque_deadzone_boost * boost_scale
         deadzone_boost_active = True
 
-      if CS.vEgo < self.low_speed_reset_threshold:
-        self.pid.reset()
+      # Below the low-speed threshold, freeze the integrator instead of dumping it.
+      # FF and P stay alive so torque is "ready" the instant the car starts moving,
+      # which avoids the wheel re-centering at standstill and the cold start that
+      # forced low-speed turns to wait for ~7mph before the controller caught up.
       freeze_integrator = (steer_limited_by_safety or CS.steeringPressed or
                            CS.vEgo < self.low_speed_reset_threshold or unwind_detected)
       output_lataccel = self.pid.update(pid_log.error, error_rate=-measurement_rate, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)

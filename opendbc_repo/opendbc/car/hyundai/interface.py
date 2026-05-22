@@ -203,6 +203,7 @@ class CarInterface(CarInterfaceBase):
 
     if candidate == CAR.HYUNDAI_IONIQ_6:
       ret.longitudinalActuatorDelay = 0.6
+      ret.steerAtStandstill = True
 
     if candidate == CAR.KIA_NIRO_PHEV_2022:
       ret.stopAccel = -1.4

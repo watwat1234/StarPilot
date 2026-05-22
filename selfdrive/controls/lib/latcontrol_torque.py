@@ -53,7 +53,21 @@ MIN_LATERAL_CONTROL_SPEED = 0.3
 # This treats the controller's lat-accel calculation as if the car were
 # moving at least at this speed, producing meaningful FF torque at low speed.
 # It does NOT affect physical lateral-accel safety limits elsewhere.
-LAT_ACCEL_MIN_SPEED = 3.0
+LAT_ACCEL_MIN_SPEED = 4.0
+
+# Low-speed stiction-break boost.
+# At low speed the MDPS rack has static friction the controller's normal FF
+# can't overcome — wheel "twitches" but doesn't break loose, then the model
+# loses confidence and gives up. When the model is clearly asking for a turn
+# but measured curvature is lagging, inject an extra kick in lat-accel space
+# to break stiction. Fades out as speed rises and as the wheel catches up.
+STICTION_BREAK_MAX_SPEED = 6.0           # m/s (~13 mph), full effect below this, zero above
+STICTION_BREAK_FADE_WIDTH = 2.0          # m/s, fade-out band above MAX_SPEED
+STICTION_BREAK_DESIRED_CURV_ONSET = 0.01 # 1/m, model must want at least this much curvature
+STICTION_BREAK_DESIRED_CURV_WIDTH = 0.02 # 1/m, sigmoid width on the onset
+STICTION_BREAK_LAG_ONSET = 0.005         # 1/m, fires when measured lags desired by this much
+STICTION_BREAK_LAG_WIDTH = 0.01          # 1/m
+STICTION_BREAK_MAX_LAT_ACCEL = 1.5       # m/s^2 of additional FF lat-accel at full effect
 CIVIC_BOSCH_MODIFIED_B_FIXED_FRICTION_THRESHOLD = 0.30
 CIVIC_BOSCH_MODIFIED_B_LAT_ACCEL_FACTOR_MULT = 1.20
 CIVIC_BOSCH_MODIFIED_A_VARIANT_LAT_ACCEL_FACTOR_MULT = 1.00
@@ -1701,6 +1715,30 @@ class LatControlTorque(LatControl):
         boost_scale = np.interp(abs(gravity_adjusted_future_lateral_accel), [0.0, DEADZONE_BOOST_LAT_ACCEL], [1.0, 0.0])
         ff += np.sign(gravity_adjusted_future_lateral_accel) * self.torque_deadzone_boost * boost_scale
         deadzone_boost_active = True
+
+      # Low-speed stiction-break: when model is asking for a turn at low speed
+      # but the wheel isn't following, inject an extra FF kick to break MDPS
+      # rack stiction. Direction = sign of desired curvature. Magnitude fades
+      # with speed, with how much the model is asking for, and with how far
+      # behind the wheel actually is.
+      curvature_lag = desired_curvature - measured_curvature
+      if (abs(CS.vEgo) < STICTION_BREAK_MAX_SPEED + STICTION_BREAK_FADE_WIDTH and
+          np.sign(curvature_lag) == np.sign(desired_curvature) and desired_curvature != 0.0):
+        speed_weight = np.interp(abs(CS.vEgo),
+                                 [STICTION_BREAK_MAX_SPEED, STICTION_BREAK_MAX_SPEED + STICTION_BREAK_FADE_WIDTH],
+                                 [1.0, 0.0])
+        curv_weight = np.interp(abs(desired_curvature),
+                                [STICTION_BREAK_DESIRED_CURV_ONSET,
+                                 STICTION_BREAK_DESIRED_CURV_ONSET + STICTION_BREAK_DESIRED_CURV_WIDTH],
+                                [0.0, 1.0])
+        lag_weight = np.interp(abs(curvature_lag),
+                               [STICTION_BREAK_LAG_ONSET,
+                                STICTION_BREAK_LAG_ONSET + STICTION_BREAK_LAG_WIDTH],
+                               [0.0, 1.0])
+        stiction_kick = (np.sign(desired_curvature) *
+                         STICTION_BREAK_MAX_LAT_ACCEL *
+                         speed_weight * curv_weight * lag_weight)
+        ff += stiction_kick
 
       # Below the low-speed threshold, freeze the integrator instead of dumping it.
       # FF and P stay alive so torque is "ready" the instant the car starts moving,

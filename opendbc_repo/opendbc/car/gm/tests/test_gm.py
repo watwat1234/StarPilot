@@ -2,11 +2,17 @@ import pytest
 from types import SimpleNamespace
 from parameterized import parameterized
 
-from opendbc.can import CANPacker
+from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.gm import gmcan
-from opendbc.car.gm.carcontroller import should_send_acc_dashboard_status, should_send_cc_button_spam, should_spoof_dash_speed
+from opendbc.car.gm.carcontroller import (
+  VisualAlert,
+  get_acc_dashboard_fcw_alert,
+  should_send_acc_dashboard_status,
+  should_send_cc_button_spam,
+  should_spoof_dash_speed,
+)
 import opendbc.car.gm.interface as gm_interface
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.gm.fingerprints import FINGERPRINTS
@@ -246,3 +252,43 @@ class TestGMCarController:
     msgs = gmcan.create_gm_cc_spam_command(packer, controller, cs, actuators, SimpleNamespace(is_metric=False))
 
     assert [msg[2] for msg in msgs] == [0]
+
+  def test_acc_dashboard_command_preserves_raw_fcw_alert_level(self):
+    packer = CANPacker(DBC[CAR.CHEVROLET_BOLT_ACC_2022_2023][Bus.pt])
+    parser = CANParser(DBC[CAR.CHEVROLET_BOLT_ACC_2022_2023][Bus.pt], [("ASCMActiveCruiseControlStatus", 0)], 0)
+    msg = gmcan.create_acc_dashboard_command(
+      packer,
+      0,
+      True,
+      100,
+      SimpleNamespace(leadDistanceBars=3, leadVisible=True),
+      0x2,
+    )
+
+    parser.update([0, [msg]])
+
+    assert parser.vl["ASCMActiveCruiseControlStatus"]["FCWAlert"] == 2
+
+  def test_acc_dashboard_fcw_alert_prefers_openpilot_alert(self):
+    cs = SimpleNamespace(
+      stock_fcw_alert=1,
+      out=SimpleNamespace(stockAeb=False, stockFcw=False),
+    )
+
+    assert get_acc_dashboard_fcw_alert(VisualAlert.fcw, cs) == 0x3
+
+  def test_acc_dashboard_fcw_alert_replays_stock_camera_alert_level(self):
+    cs = SimpleNamespace(
+      stock_fcw_alert=2,
+      out=SimpleNamespace(stockAeb=False, stockFcw=False),
+    )
+
+    assert get_acc_dashboard_fcw_alert(VisualAlert.none, cs) == 2
+
+  def test_acc_dashboard_fcw_alert_falls_back_to_stock_aeb_event(self):
+    cs = SimpleNamespace(
+      stock_fcw_alert=0,
+      out=SimpleNamespace(stockAeb=True, stockFcw=False),
+    )
+
+    assert get_acc_dashboard_fcw_alert(VisualAlert.none, cs) == 0x3

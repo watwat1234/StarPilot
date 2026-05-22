@@ -80,6 +80,7 @@ class CarState(CarStateBase):
     self.lkas_previously_enabled = 0
     self.lkas_enabled = 0
     self.pcm_acc_status = AccState.OFF
+    self.stock_fcw_alert = 0
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
     if not self.CP.pcmCruise:
@@ -265,9 +266,16 @@ class CarState(CarStateBase):
 
     ret.cruiseState.enabled = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] != AccState.OFF
     ret.cruiseState.standstill = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.STANDSTILL
+    self.stock_fcw_alert = 0
     if self.CP.networkLocation == NetworkLocation.fwdCamera and not self.CP.flags & GMFlags.NO_CAMERA.value:
-      if self.CP.carFingerprint not in CC_ONLY_CAR:
-        ret.cruiseState.speed = cam_cp.vl["ASCMActiveCruiseControlStatus"]["ACCSpeedSetpoint"] * CV.KPH_TO_MS
+      has_acc_dashboard_status = self.CP.carFingerprint not in CC_ONLY_CAR or self.CP.carFingerprint == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL
+      if has_acc_dashboard_status:
+        acc_dashboard_status = cam_cp.vl["ASCMActiveCruiseControlStatus"]
+        if self.CP.carFingerprint not in CC_ONLY_CAR:
+          ret.cruiseState.speed = acc_dashboard_status["ACCSpeedSetpoint"] * CV.KPH_TO_MS
+        # Preserve the stock camera FCW level from 0x370 so the controller can
+        # replay it when that message is blocked and spoofed by openpilot long.
+        self.stock_fcw_alert = int(acc_dashboard_status["FCWAlert"])
 
       if self.CP.carFingerprint not in (SDGM_CAR | ASCM_INT):
         ret.stockAeb = cam_cp.vl["AEBCmd"]["AEBCmdActive"] != 0

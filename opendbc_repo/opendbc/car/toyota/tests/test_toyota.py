@@ -7,7 +7,7 @@ from opendbc.can import CANPacker, CANParser
 from opendbc.car.structs import CarParams
 from opendbc.car.fw_versions import build_fw_dict
 from opendbc.car.toyota import toyotacan
-from opendbc.car.toyota.carcontroller import CarController, limit_interceptor_pcm_accel, update_permit_braking
+from opendbc.car.toyota.carcontroller import CarController, limit_interceptor_pcm_accel, limit_interceptor_stopping_accel, update_permit_braking
 from opendbc.car.toyota.carstate import calculate_interceptor_gas_pressed
 from opendbc.car.toyota.fingerprints import FW_VERSIONS
 from opendbc.car.toyota.values import CAR, DBC, TSS2_CAR, ANGLE_CONTROL_CAR, RADAR_ACC_CAR, SECOC_CAR, \
@@ -351,6 +351,22 @@ class TestToyotaCarController:
     limited = limit_interceptor_pcm_accel(0.8, -0.7, False, 7.5)
 
     assert limited <= 0.0
+
+  def test_interceptor_stopping_limit_softens_no_lead_final_crawl(self):
+    limited = limit_interceptor_stopping_accel(-1.48, True, 0.5, False)
+
+    assert limited > -1.48
+    assert limited == -1.05
+
+  def test_interceptor_stopping_limit_keeps_visible_lead_stop_untouched(self):
+    limited = limit_interceptor_stopping_accel(-1.48, True, 0.5, True)
+
+    assert limited == -1.48
+
+  def test_interceptor_stopping_limit_keeps_higher_speed_stop_untouched(self):
+    limited = limit_interceptor_stopping_accel(-1.48, True, 2.0, False)
+
+    assert limited == -1.48
 
 
 class TestToyotaCarState:

@@ -505,7 +505,8 @@
         "description": "Override the learned lateral acceleration with a fixed value instead of the calibrated one.",
         "data_type": "bool",
         "ui_type": "toggle",
-        "parent_key": "CurveSpeedController"
+        "parent_key": "CurveSpeedController",
+        "is_parent_toggle": true
       },
       {
         "key": "CSCManualLateralAcceleration",
@@ -516,7 +517,7 @@
         "min": 1.0,
         "max": 4.0,
         "step": 0.1,
-        "parent_key": "CurveSpeedController"
+        "parent_key": "CSCManualLateralAccelerationEnabled"
       },
       {
         "key": "ShowCSCStatus",

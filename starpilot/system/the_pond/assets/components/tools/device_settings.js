@@ -597,7 +597,32 @@ async function resetNumericParam(param) {
   })
 }
 
+const ACTION_ENDPOINTS = {
+  "ResetCurveData": "/api/params/reset-curve-data",
+}
+
 async function updateParam(key, elType) {
+  if (elType === "action") {
+    const endpoint = ACTION_ENDPOINTS[key]
+    if (!endpoint) {
+      showParamSnackbar(`No action defined for '${key}'.`, "error")
+      return
+    }
+    try {
+      const res = await fetch(endpoint, { method: "POST" })
+      const data = await res.json()
+      if (res.ok) {
+        showParamSnackbar(data.message || "Action completed.")
+        await refreshParamsAndDefaults()
+      } else {
+        showParamSnackbar(data.error || "Action failed.", "error")
+      }
+    } catch (e) {
+      showParamSnackbar("Network error — is the device reachable?", "error")
+    }
+    return
+  }
+
   const current = state.values[key]
   const el = document.getElementById(`ds-${key}`)
   if (!el) return
@@ -845,6 +870,18 @@ function renderSettingRow(p) {
           disabled="${() => isLocked || isStockColorValue(state.values[p.key])}"
           @click="${() => resetColorParam(p)}">Stock</button>
       </div>
+    `
+  } else if (p.ui_type === "display") {
+    rowControl = html`<span class="ds-display-value">${() => {
+      const v = state.values[p.key]
+      if (v === undefined || v === null || v === "") return "—"
+      return typeof v === "number" ? v.toFixed(2) : String(v)
+    }}</span>`
+  } else if (p.ui_type === "action") {
+    rowControl = html`
+      <button
+        class="ds-action-btn"
+        @click="${() => updateParam(p.key, "action")}">Reset</button>
     `
   } else if (!isGroup) {
     rowControl = html`

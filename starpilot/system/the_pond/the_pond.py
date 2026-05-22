@@ -3853,6 +3853,11 @@ def setup(app):
       return canonical_model_key(str(value).strip()), 200
     return value, 200
 
+  _DISPLAY_ONLY_PARAMS = {
+    "CalibratedLateralAcceleration": float,
+    "CalibrationProgress": float,
+  }
+
   @app.route("/api/params/all", methods=["GET"])
   def get_all_params():
     migrate_cancel_button_controls(params)
@@ -3867,7 +3872,27 @@ def setup(app):
       except Exception:
         result[key] = None
 
+    for key, t in _DISPLAY_ONLY_PARAMS.items():
+      try:
+        raw = _safe_params_get_live_raw(key)
+        result[key] = t(raw) if raw is not None else None
+      except Exception:
+        result[key] = None
+
     return jsonify(_sanitize_json_value(result)), 200
+
+  @app.route("/api/params/reset-curve-data", methods=["POST"])
+  def reset_curve_data():
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Cannot reset curve data while driving."}), 403
+    try:
+      _params_raw.remove("CurvatureData")
+      _params_raw.put("CalibrationProgress", "0.0")
+      _params_raw.put("CalibratedLateralAcceleration", "2.0")
+      update_starpilot_toggles()
+      return jsonify({"message": "Curve data has been reset."}), 200
+    except Exception as e:
+      return jsonify({"error": str(e)}), 500
 
   @app.route("/api/params/defaults", methods=["GET"])
   def get_default_params():

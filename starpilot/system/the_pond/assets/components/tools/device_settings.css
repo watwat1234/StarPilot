@@ -442,6 +442,30 @@
   opacity: var(--disabled-opacity);
 }
 
+.ds-display-value {
+  color: var(--text-color);
+  font-size: var(--font-size-sm);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+.ds-action-btn {
+  background: transparent;
+  border: var(--border-style-main);
+  border-radius: var(--border-radius-sm);
+  color: var(--color-danger, #e05c5c);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  padding: 0.2rem 0.65rem;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.ds-action-btn:hover {
+  background: var(--color-danger, #e05c5c);
+  border-color: var(--color-danger, #e05c5c);
+  color: var(--color-white);
+}
+
 .ds-stepper-btn {
   align-items: center;
   background: var(--sidebar-bg);

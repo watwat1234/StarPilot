@@ -82,6 +82,11 @@ INJECTED_SECTION_PARAMS = {
     ],
 }
 
+# Override parent_key for specific keys when the qset-derived parent is incorrect.
+PARENT_KEY_OVERRIDES = {
+    "CSCManualLateralAcceleration": "CSCManualLateralAccelerationEnabled",
+}
+
 # Keys explicitly hidden from The Pond's generic settings UI.
 HIDDEN_KEYS = {
     "FrogsGoMoosTweak",
@@ -176,6 +181,10 @@ ALL_PARENT_KEYS = set()
 for cmap in PARENT_KEYS_MAPPING.values():
     for parent in cmap.values():
         ALL_PARENT_KEYS.add(parent)
+
+# Keys that have children via PARENT_KEY_OVERRIDES and need is_parent_toggle set.
+for _child_key, _parent_key in PARENT_KEY_OVERRIDES.items():
+    ALL_PARENT_KEYS.add(_parent_key)
 
 def get_variables_data():
     filepath = os.path.join(REPO_ROOT, "starpilot/common/starpilot_variables.py")
@@ -512,7 +521,10 @@ def parse_cpp_file(filename):
         elif widget_type == "dropdown":
             if options_endpoint: s["options_endpoint"] = options_endpoint
             if dropdown_options: s["options"] = dropdown_options
-        if key in child_to_parent: s["parent_key"] = child_to_parent[key]
+        if key in PARENT_KEY_OVERRIDES:
+            s["parent_key"] = PARENT_KEY_OVERRIDES[key]
+        elif key in child_to_parent:
+            s["parent_key"] = child_to_parent[key]
         if key in ALL_PARENT_KEYS: s["is_parent_toggle"] = True
 
         if key == "CELead":

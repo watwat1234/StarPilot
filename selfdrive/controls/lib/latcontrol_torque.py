@@ -54,11 +54,20 @@ MIN_LATERAL_CONTROL_SPEED = 0.3
 # moving at least at this speed, producing meaningful FF torque at low speed.
 # It does NOT affect physical lateral-accel safety limits elsewhere.
 LAT_ACCEL_MIN_SPEED = 4.5
+# Smooth ramp range for the FF floor. Below RAMP_START_SPEED we blend the real
+# v_ego with the floored value, so that very slow creep doesn't get its FF
+# amplified 100x (which causes wheel jiggle from model curvature noise).
+# At RAMP_START_SPEED and above, the full floor applies.
+LAT_ACCEL_FLOOR_RAMP_START = 2.0
 # Curvature threshold above which we consider the model "actively requesting a turn".
 # Used to keep FF authority alive while the car is stopped with a real turn pending
 # (e.g. preturned wheel at a stop sign with blinker on), so the wheel doesn't drift
 # back to center while waiting to creep forward.
 ACTIVE_TURN_CURVATURE = 0.005
+# When stopped with an active turn request, hold output lat-accel at least at
+# this fraction of the recent peak so the MDPS centering spring doesn't drag
+# the wheel back through neutral. Decays each tick so it can't lock up forever.
+PRETURN_HOLD_DECAY_PER_TICK = 0.995  # ~0.6s half-life at 100Hz when no longer reinforced
 
 # Low-speed stiction-break boost.
 # At low speed the MDPS rack has static friction the controller's normal FF
@@ -1514,6 +1523,10 @@ class LatControlTorque(LatControl):
     self.prev_steering_pressed = False
     self.debug_counter = 0
     self.prev_desired_lateral_accel = 0.0
+    # Peak torque (signed, in lat-accel space) commanded recently while turning.
+    # Used to hold the wheel preturned at standstill instead of letting the
+    # MDPS centering spring drag it back to zero.
+    self.preturn_hold_lataccel = 0.0
 
     self.is_bolt = CP.carFingerprint in BOLT_CARS
     self.is_bolt_2022_2023 = CP.carFingerprint in BOLT_2022_2023_CARS
@@ -1609,15 +1622,19 @@ class LatControlTorque(LatControl):
       # in this controller. Keeps the FF non-trivial at low speed so the wheel
       # actually moves into a turn from a near-stop instead of waiting until
       # v_ego^2 grows enough to produce real torque.
-      # Skip the floor at true standstill so model/sensor jitter doesn't get
-      # amplified into real torque commands while parked — UNLESS the model is
-      # actively asking for a turn (e.g. preturned wheel at a stop sign), in
-      # which case keep the FF authority alive so the wheel holds its preturn.
+      # Blended ramp: at very low speed, blend real v_ego with the floor so we
+      # don't amplify model curvature noise 100x and cause wheel jiggle. The
+      # full floor only kicks in once we're rolling enough that small curvature
+      # commands correspond to real turn requests, not noise.
+      # Standstill exception: if the model is actively asking for a turn
+      # (e.g. preturned wheel at a stop sign), still apply the full floor so
+      # the wheel holds its preturn position.
       active_turn_request = abs(desired_curvature) > ACTIVE_TURN_CURVATURE
-      if CS.vEgo < MIN_LATERAL_CONTROL_SPEED and not active_turn_request:
-        v_ego_lat = CS.vEgo
-      else:
+      if active_turn_request:
         v_ego_lat = max(CS.vEgo, LAT_ACCEL_MIN_SPEED)
+      else:
+        ramp = np.interp(CS.vEgo, [0.0, LAT_ACCEL_FLOOR_RAMP_START], [0.0, 1.0])
+        v_ego_lat = CS.vEgo + ramp * max(0.0, LAT_ACCEL_MIN_SPEED - CS.vEgo)
       v_ego_lat_sq = v_ego_lat ** 2
       curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
       lateral_accel_deadzone = curvature_deadzone * v_ego_lat_sq
@@ -1763,6 +1780,22 @@ class LatControlTorque(LatControl):
       freeze_integrator = (steer_limited_by_safety or CS.steeringPressed or
                            CS.vEgo < self.low_speed_reset_threshold or unwind_detected)
       output_lataccel = self.pid.update(pid_log.error, error_rate=-measurement_rate, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
+
+      # Preturn-hold: track recent peak output in the direction the model is
+      # asking for. While stopped with an active turn request, ratchet output
+      # up to at least that magnitude so the wheel keeps its preturn instead
+      # of being dragged back through neutral by the MDPS centering spring.
+      if active_turn_request and np.sign(output_lataccel) == np.sign(desired_curvature) and abs(output_lataccel) > abs(self.preturn_hold_lataccel):
+        self.preturn_hold_lataccel = output_lataccel
+      else:
+        self.preturn_hold_lataccel *= PRETURN_HOLD_DECAY_PER_TICK
+      if not active_turn_request or np.sign(self.preturn_hold_lataccel) != np.sign(desired_curvature):
+        self.preturn_hold_lataccel = 0.0
+      if (CS.vEgo < MIN_LATERAL_CONTROL_SPEED and active_turn_request and
+          np.sign(self.preturn_hold_lataccel) == np.sign(output_lataccel) and
+          abs(self.preturn_hold_lataccel) > abs(output_lataccel)):
+        output_lataccel = self.preturn_hold_lataccel
+
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       if self.is_bolt_2017:
         output_torque *= get_bolt_2017_torque_scale(setpoint, desired_lateral_jerk, CS.vEgo)

@@ -63,7 +63,19 @@ LAT_ACCEL_FLOOR_RAMP_START = 2.0
 # Used to keep FF authority alive while the car is stopped with a real turn pending
 # (e.g. preturned wheel at a stop sign with blinker on), so the wheel doesn't drift
 # back to center while waiting to creep forward.
-ACTIVE_TURN_CURVATURE = 0.005
+# Raised well above typical model jitter (~0.001-0.005 on straight roads at low
+# speed) so noise can't intermittently trigger the full FF floor and cause the
+# wheel to jiggle.
+ACTIVE_TURN_CURVATURE_ON = 0.020
+ACTIVE_TURN_CURVATURE_OFF = 0.010
+# Curvature below which we treat the model as "no turn" for the purpose of
+# releasing preturn-hold at standstill (separate from the latch hysteresis).
+PRETURN_RELEASE_CURVATURE = 0.005
+# Below this speed and below this curvature, treat the request as straight (no
+# FF amplification). Catches the bulk of model output noise on straight roads
+# at low speed where vision-derived curvature is least reliable.
+LOW_SPEED_CURVATURE_DEADZONE_SPEED = 4.0
+LOW_SPEED_CURVATURE_DEADZONE = 0.008
 # When stopped with an active turn request, hold output lat-accel at least at
 # this fraction of the recent peak so the MDPS centering spring doesn't drag
 # the wheel back through neutral. Decays each tick so it can't lock up forever.
@@ -1527,6 +1539,11 @@ class LatControlTorque(LatControl):
     # Used to hold the wheel preturned at standstill instead of letting the
     # MDPS centering spring drag it back to zero.
     self.preturn_hold_lataccel = 0.0
+    # Hysteresis latch for "model is actively asking for a turn". Latches on
+    # above ACTIVE_TURN_CURVATURE_ON, off below ACTIVE_TURN_CURVATURE_OFF, so
+    # noisy curvature near the threshold doesn't flap on/off and cause torque
+    # spikes from intermittent FF floor activation.
+    self.active_turn_latched = False
 
     self.is_bolt = CP.carFingerprint in BOLT_CARS
     self.is_bolt_2022_2023 = CP.carFingerprint in BOLT_2022_2023_CARS
@@ -1612,12 +1629,37 @@ class LatControlTorque(LatControl):
       self.measurement_rate_filter.x = 0.0
       self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len, maxlen=self.lat_accel_request_buffer_len)
       self.prev_desired_lateral_accel = 0.0
+      self.active_turn_latched = False
+      self.preturn_hold_lataccel = 0.0
     else:
       if self.prev_steering_pressed and not CS.steeringPressed:
         self.pid.i *= self.steer_release_i_decay
 
       measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
       roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
+
+      # Hysteretic latch on whether the model is actively requesting a turn.
+      # Latches above ACTIVE_TURN_CURVATURE_ON, releases below
+      # ACTIVE_TURN_CURVATURE_OFF, so noisy curvature near the boundary
+      # doesn't flap the FF-floor on/off and cause torque spikes.
+      if self.active_turn_latched:
+        if abs(desired_curvature) < ACTIVE_TURN_CURVATURE_OFF:
+          self.active_turn_latched = False
+      else:
+        if abs(desired_curvature) > ACTIVE_TURN_CURVATURE_ON:
+          self.active_turn_latched = True
+      active_turn_request = self.active_turn_latched
+
+      # Low-speed curvature deadzone: at low speed, vision-derived curvature
+      # is noisy on straight roads — zero out tiny requests so they don't
+      # drive any FF/error and cause wheel jiggle. Skip if a real turn is
+      # already latched, so we don't accidentally kill a small-but-real turn
+      # command (e.g. wide intersection at low speed).
+      if (not active_turn_request and
+          CS.vEgo < LOW_SPEED_CURVATURE_DEADZONE_SPEED and
+          abs(desired_curvature) < LOW_SPEED_CURVATURE_DEADZONE):
+        desired_curvature = 0.0
+
       # Floored speed used only for the curvature -> lateral-accel space conversion
       # in this controller. Keeps the FF non-trivial at low speed so the wheel
       # actually moves into a turn from a near-stop instead of waiting until
@@ -1629,7 +1671,6 @@ class LatControlTorque(LatControl):
       # Standstill exception: if the model is actively asking for a turn
       # (e.g. preturned wheel at a stop sign), still apply the full floor so
       # the wheel holds its preturn position.
-      active_turn_request = abs(desired_curvature) > ACTIVE_TURN_CURVATURE
       if active_turn_request:
         v_ego_lat = max(CS.vEgo, LAT_ACCEL_MIN_SPEED)
       else:
@@ -1781,19 +1822,30 @@ class LatControlTorque(LatControl):
                            CS.vEgo < self.low_speed_reset_threshold or unwind_detected)
       output_lataccel = self.pid.update(pid_log.error, error_rate=-measurement_rate, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
 
-      # Preturn-hold: track recent peak output in the direction the model is
-      # asking for. While stopped with an active turn request, ratchet output
-      # up to at least that magnitude so the wheel keeps its preturn instead
-      # of being dragged back through neutral by the MDPS centering spring.
-      if active_turn_request and np.sign(output_lataccel) == np.sign(desired_curvature) and abs(output_lataccel) > abs(self.preturn_hold_lataccel):
-        self.preturn_hold_lataccel = output_lataccel
-      else:
-        self.preturn_hold_lataccel *= PRETURN_HOLD_DECAY_PER_TICK
-      if not active_turn_request or np.sign(self.preturn_hold_lataccel) != np.sign(desired_curvature):
+      # Preturn-hold: while moving and actively turning, track the peak output
+      # in the model's requested direction. At standstill, *apply* that held
+      # torque so the MDPS centering spring can't drag the wheel back through
+      # neutral while we wait to creep forward. Releases when the car starts
+      # moving again (PID takes over) or the model clearly stops requesting
+      # the turn (curvature drops below PRETURN_RELEASE_CURVATURE or flips
+      # to the other direction).
+      desired_dir = float(np.sign(desired_curvature))
+      hold_dir = float(np.sign(self.preturn_hold_lataccel))
+      release = False
+      if abs(desired_curvature) < PRETURN_RELEASE_CURVATURE:
+        release = True
+      elif hold_dir != 0.0 and desired_dir != 0.0 and hold_dir != desired_dir:
+        release = True
+      if release:
         self.preturn_hold_lataccel = 0.0
-      if (CS.vEgo < MIN_LATERAL_CONTROL_SPEED and active_turn_request and
-          np.sign(self.preturn_hold_lataccel) == np.sign(output_lataccel) and
-          abs(self.preturn_hold_lataccel) > abs(output_lataccel)):
+      elif CS.vEgo >= MIN_LATERAL_CONTROL_SPEED and active_turn_request and \
+           np.sign(output_lataccel) == desired_dir and \
+           abs(output_lataccel) > abs(self.preturn_hold_lataccel):
+        # Ratchet up while moving
+        self.preturn_hold_lataccel = output_lataccel
+
+      if CS.vEgo < MIN_LATERAL_CONTROL_SPEED and abs(self.preturn_hold_lataccel) > abs(output_lataccel) and \
+         (np.sign(output_lataccel) == 0.0 or np.sign(output_lataccel) == np.sign(self.preturn_hold_lataccel)):
         output_lataccel = self.preturn_hold_lataccel
 
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)

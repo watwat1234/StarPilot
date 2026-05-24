@@ -80,6 +80,10 @@ LOW_SPEED_CURVATURE_DEADZONE = 0.008
 # this fraction of the recent peak so the MDPS centering spring doesn't drag
 # the wheel back through neutral. Decays each tick so it can't lock up forever.
 PRETURN_HOLD_DECAY_PER_TICK = 0.995  # ~0.6s half-life at 100Hz when no longer reinforced
+# Speed at which preturn-hold blends fully out to normal PID control. Above
+# standstill, hold authority fades linearly so the PID can take over without
+# a sudden release that would let the wheel snap back to center during launch.
+PRETURN_HOLD_FADE_OUT_SPEED = 3.0  # m/s (~6.7 mph)
 
 # Low-speed stiction-break boost.
 # At low speed the MDPS rack has static friction the controller's normal FF
@@ -1823,12 +1827,14 @@ class LatControlTorque(LatControl):
       output_lataccel = self.pid.update(pid_log.error, error_rate=-measurement_rate, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
 
       # Preturn-hold: while moving and actively turning, track the peak output
-      # in the model's requested direction. At standstill, *apply* that held
-      # torque so the MDPS centering spring can't drag the wheel back through
-      # neutral while we wait to creep forward. Releases when the car starts
-      # moving again (PID takes over) or the model clearly stops requesting
-      # the turn (curvature drops below PRETURN_RELEASE_CURVATURE or flips
-      # to the other direction).
+      # in the model's requested direction. At standstill *and during launch*,
+      # apply that held torque so the MDPS centering spring can't drag the
+      # wheel back through neutral while we wait to creep forward, AND so the
+      # wheel doesn't snap back the moment we start rolling (before PID has
+      # had time to take over). Authority fades linearly from full at
+      # standstill to none at PRETURN_HOLD_FADE_OUT_SPEED.
+      # Releases entirely when the model clearly stops requesting the turn
+      # (curvature drops below PRETURN_RELEASE_CURVATURE or flips direction).
       desired_dir = float(np.sign(desired_curvature))
       hold_dir = float(np.sign(self.preturn_hold_lataccel))
       release = False
@@ -1838,15 +1844,17 @@ class LatControlTorque(LatControl):
         release = True
       if release:
         self.preturn_hold_lataccel = 0.0
-      elif CS.vEgo >= MIN_LATERAL_CONTROL_SPEED and active_turn_request and \
+      elif active_turn_request and \
            np.sign(output_lataccel) == desired_dir and \
            abs(output_lataccel) > abs(self.preturn_hold_lataccel):
-        # Ratchet up while moving
+        # Ratchet up while the PID is commanding more than what we've held
         self.preturn_hold_lataccel = output_lataccel
 
-      if CS.vEgo < MIN_LATERAL_CONTROL_SPEED and abs(self.preturn_hold_lataccel) > abs(output_lataccel) and \
-         (np.sign(output_lataccel) == 0.0 or np.sign(output_lataccel) == np.sign(self.preturn_hold_lataccel)):
-        output_lataccel = self.preturn_hold_lataccel
+      hold_fade = float(np.interp(CS.vEgo, [0.0, PRETURN_HOLD_FADE_OUT_SPEED], [1.0, 0.0]))
+      effective_hold = self.preturn_hold_lataccel * hold_fade
+      if abs(effective_hold) > abs(output_lataccel) and \
+         (np.sign(output_lataccel) == 0.0 or np.sign(output_lataccel) == np.sign(effective_hold)):
+        output_lataccel = effective_hold
 
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       if self.is_bolt_2017:

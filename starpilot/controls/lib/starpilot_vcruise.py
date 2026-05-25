@@ -4,6 +4,7 @@ import math
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 
+from openpilot.starpilot.common.experimental_state import CEStatus, is_manual_ce_status
 from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, CRUISING_SPEED, PLANNER_TIME
 from openpilot.starpilot.controls.lib.curve_speed_controller import CurveSpeedController
 from openpilot.starpilot.controls.lib.low_speed_turn_speed_controller import LowSpeedTurnSpeedController, LSTSC_MIN_SPEED, LSTSC_MAX_SPEED, LSTSC_MIN_STEER_ANGLE_DEG
@@ -60,6 +61,7 @@ class StarPilotVCruise:
     self.tracked_model_length = 0.0
 
     self.stop_sign_confirmed = False
+    self._lstsc_set_cem = False
 
   # ===== Main update =====
 
@@ -209,6 +211,22 @@ class StarPilotVCruise:
       self.lstsc_controlling_speed = False
       self.lstsc.target_set = False
       self.lstsc_target = v_cruise
+
+    # CEM override: when LSTSC is actively controlling speed, force experimental mode
+    # so the E2E model also slows for the curve. We write CEStatus directly to params_memory
+    # so this takes effect even when the user has manually overridden CEM to chill mode
+    # (e.g. after pressing gas at a green light). We only restore OFF on the way out if
+    # the status is still the one we wrote — a manual tap by the user takes precedence.
+    params_memory = self.starpilot_planner.params_memory
+    if self.lstsc_controlling_speed and starpilot_toggles.conditional_experimental_mode:
+      if not self._lstsc_set_cem:
+        params_memory.put_int("CEStatus", CEStatus["SIGNAL"])
+        self._lstsc_set_cem = True
+    elif self._lstsc_set_cem:
+      current = params_memory.get_int("CEStatus")
+      if not is_manual_ce_status(current) and current == CEStatus["SIGNAL"]:
+        params_memory.put_int("CEStatus", CEStatus["OFF"])
+      self._lstsc_set_cem = False
 
     # Pfeiferj's Speed Limit Controller
     self.slc.starpilot_toggles = starpilot_toggles

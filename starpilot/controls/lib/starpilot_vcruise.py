@@ -129,8 +129,12 @@ class StarPilotVCruise:
       self.force_stop_timer = max(self.force_stop_timer - DT_MDL * 0.25, 0.0)
 
     force_stop_enabled = self.force_stop_timer >= 0.5
-    # Stay committed across model dropouts until standstill
-    force_stop_enabled |= self.forcing_stop and not sm["carState"].standstill
+    # Stay committed across model dropouts until standstill, but only while the
+    # activation conditions are still present. If the car leaves standstill with no
+    # active force_stop_active (e.g. light turned green), drop the holdover immediately
+    # so Force Stop doesn't carry into the subsequent turn.
+    leaving_standstill = self.forcing_stop and not sm["carState"].standstill
+    force_stop_enabled |= leaving_standstill and force_stop_active
 
     # Override: gas/accel pedal during an active force stop
     self.override_force_stop |= sm["carState"].gasPressed

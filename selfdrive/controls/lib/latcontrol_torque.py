@@ -84,6 +84,15 @@ PRETURN_HOLD_DECAY_PER_TICK = 0.995  # ~0.6s half-life at 100Hz when no longer r
 # standstill, hold authority fades linearly so the PID can take over without
 # a sudden release that would let the wheel snap back to center during launch.
 PRETURN_HOLD_FADE_OUT_SPEED = 3.0  # m/s (~6.7 mph)
+# Number of consecutive ticks (at 100Hz, so 0.5s) that desired_curvature must
+# stay below PRETURN_RELEASE_CURVATURE / flipped direction before we release
+# the preturn-hold. Protects against single-frame model jitter on launch
+# wiping out the held torque just when we need it most.
+PRETURN_RELEASE_DWELL_TICKS = 50
+# Same idea for the latch OFF threshold — require sustained low curvature
+# before releasing, so a brief jitter during launch doesn't cause the FF
+# floor to collapse and the wheel to lose torque.
+ACTIVE_TURN_OFF_DWELL_TICKS = 50
 
 # Low-speed stiction-break boost.
 # At low speed the MDPS rack has static friction the controller's normal FF
@@ -1548,6 +1557,11 @@ class LatControlTorque(LatControl):
     # noisy curvature near the threshold doesn't flap on/off and cause torque
     # spikes from intermittent FF floor activation.
     self.active_turn_latched = False
+    # Dwell counters so single-frame model jitter (common right when the car
+    # transitions from standstill to rolling) doesn't immediately release the
+    # latch or the preturn-hold.
+    self.active_turn_off_ticks = 0
+    self.preturn_release_ticks = 0
 
     self.is_bolt = CP.carFingerprint in BOLT_CARS
     self.is_bolt_2022_2023 = CP.carFingerprint in BOLT_2022_2023_CARS
@@ -1635,6 +1649,8 @@ class LatControlTorque(LatControl):
       self.prev_desired_lateral_accel = 0.0
       self.active_turn_latched = False
       self.preturn_hold_lataccel = 0.0
+      self.active_turn_off_ticks = 0
+      self.preturn_release_ticks = 0
     else:
       if self.prev_steering_pressed and not CS.steeringPressed:
         self.pid.i *= self.steer_release_i_decay
@@ -1644,12 +1660,22 @@ class LatControlTorque(LatControl):
 
       # Hysteretic latch on whether the model is actively requesting a turn.
       # Latches above ACTIVE_TURN_CURVATURE_ON, releases below
-      # ACTIVE_TURN_CURVATURE_OFF, so noisy curvature near the boundary
-      # doesn't flap the FF-floor on/off and cause torque spikes.
+      # ACTIVE_TURN_CURVATURE_OFF (and only after sustained low curvature,
+      # not a single frame), so noisy curvature near the boundary doesn't
+      # flap the FF-floor on/off and cause torque spikes. The dwell is
+      # especially important during the standstill->rolling transition,
+      # where modeld switches from held curvature to live curvature and
+      # can briefly publish low values before re-acquiring the turn.
       if self.active_turn_latched:
         if abs(desired_curvature) < ACTIVE_TURN_CURVATURE_OFF:
+          self.active_turn_off_ticks += 1
+        else:
+          self.active_turn_off_ticks = 0
+        if self.active_turn_off_ticks >= ACTIVE_TURN_OFF_DWELL_TICKS:
           self.active_turn_latched = False
+          self.active_turn_off_ticks = 0
       else:
+        self.active_turn_off_ticks = 0
         if abs(desired_curvature) > ACTIVE_TURN_CURVATURE_ON:
           self.active_turn_latched = True
       active_turn_request = self.active_turn_latched
@@ -1837,13 +1863,22 @@ class LatControlTorque(LatControl):
       # (curvature drops below PRETURN_RELEASE_CURVATURE or flips direction).
       desired_dir = float(np.sign(desired_curvature))
       hold_dir = float(np.sign(self.preturn_hold_lataccel))
-      release = False
-      if abs(desired_curvature) < PRETURN_RELEASE_CURVATURE:
-        release = True
+      release_now = False
+      if CS.steeringPressed:
+        # Driver is fighting the wheel — don't hold against them
+        release_now = True
       elif hold_dir != 0.0 and desired_dir != 0.0 and hold_dir != desired_dir:
-        release = True
-      if release:
+        # Direction flip — release immediately (we want the wheel the other way)
+        release_now = True
+      elif abs(desired_curvature) < PRETURN_RELEASE_CURVATURE:
+        self.preturn_release_ticks += 1
+        if self.preturn_release_ticks >= PRETURN_RELEASE_DWELL_TICKS:
+          release_now = True
+      else:
+        self.preturn_release_ticks = 0
+      if release_now:
         self.preturn_hold_lataccel = 0.0
+        self.preturn_release_ticks = 0
       elif active_turn_request and \
            np.sign(output_lataccel) == desired_dir and \
            abs(output_lataccel) > abs(self.preturn_hold_lataccel):

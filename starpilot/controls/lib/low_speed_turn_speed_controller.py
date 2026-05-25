@@ -30,7 +30,7 @@ SATURATION_LATCH_TIME = 0.4
 SATURATION_RELEASE_TIME = 0.5
 
 COMFORT_DECEL = 1.5
-HARD_DECEL = 2.0
+HARD_DECEL = 3.0
 SOFT_DECEL_MIN = 0.3
 
 MIN_SAMPLES_PER_CELL = 5
@@ -510,11 +510,7 @@ class LowSpeedTurnSpeedController:
       self.target = v_ego
 
     if predictive_target is not None:
-      time_to_curve = float(self.starpilot_planner.time_to_curve)
-      pacing = max(time_to_curve, 3.0) if np.isfinite(time_to_curve) else 3.0
-      decel_rate = max((v_ego - predictive_target) / pacing, 0.0)
-      self.target = min(self.target, v_ego - decel_rate * DT_MDL)
-      self.target = max(self.target, predictive_target)
+      self.target = min(self.target, predictive_target)
       self.intervention_active = True
 
     self.target = float(np.clip(self.target, LSTSC_MIN_SPEED, v_ego))

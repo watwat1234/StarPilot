@@ -75,6 +75,15 @@ class StarPilotVCruise:
                     and float(getattr(lead, "dRel", float("inf"))) < ACTIVATION_M
                     and float(getattr(lead, "vLead", float("inf"))) < v_ego + 2.0)
 
+    # Blinker + slow speed guard: suppress activation when actively turning through an
+    # intersection. driving_in_curve uses lateral_acceleration = v_ego² * curvature which
+    # reads near zero at low speed even through a tight turn. Blinker alone isn't enough —
+    # the driver may signal while approaching a stop sign intending to turn after stopping.
+    # Combining blinker + slow speed (< ~10 mph) catches the mid-turn case without
+    # blocking legitimate pre-stop approaches with a blinker on.
+    blinker_turning = (bool(sm["carState"].leftBlinker or sm["carState"].rightBlinker)
+                       and v_ego < 4.5)  # ~10 mph
+
     # CEM/model path: model predicted stop within ACTIVATION_M.
     # Exclude when a lead is present (raw or filtered) — the handoff_to_stopped_lead path
     # in CEM can set stop_light_detected even with a lead present, which would incorrectly
@@ -85,7 +94,8 @@ class StarPilotVCruise:
                 and self.override_force_stop_timer <= 0
                 and not self.starpilot_planner.driving_in_curve
                 and not self.starpilot_planner.tracking_lead
-                and not lead_present)
+                and not lead_present
+                and not (blinker_turning and not self.forcing_stop))
 
     # Dashboard path: ADAS camera confirms a stop sign on our road. Field is 0 on
     # platforms that don't publish ADAS_0x380, so dash_path is naturally inert there.
@@ -96,7 +106,8 @@ class StarPilotVCruise:
                  and self.override_force_stop_timer <= 0
                  and not self.starpilot_planner.driving_in_curve
                  and not self.starpilot_planner.tracking_lead
-                 and not lead_present)
+                 and not lead_present
+                 and not (blinker_turning and not self.forcing_stop))
 
     force_stop_active = cem_path or dash_path
 

@@ -959,14 +959,14 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.SOFT_DISABLE: soft_disable_alert("Communication Issue Between Processes"),
     ET.PERMANENT: Alert("Communication Issue Between Processes", "",
                         AlertStatus.normal, AlertSize.small,
-                        Priority.LOWER, VisualAlert.none, AudibleAlert.none, 1.),
+                        Priority.LOWER, VisualAlert.none, AudibleAlert.none, 1., creation_delay=30.),
     ET.NO_ENTRY: comm_issue_alert,
   },
   EventName.commIssueAvgFreq: {
     ET.SOFT_DISABLE: soft_disable_alert("Low Communication Rate Between Processes"),
     ET.PERMANENT: Alert("Low Communication Rate Between Processes", "",
                         AlertStatus.normal, AlertSize.small,
-                        Priority.LOWER, VisualAlert.none, AudibleAlert.none, 1.),
+                        Priority.LOWER, VisualAlert.none, AudibleAlert.none, 1., creation_delay=30.),
     ET.NO_ENTRY: NoEntryAlert("Low Communication Rate Between Processes"),
   },
 

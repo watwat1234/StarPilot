@@ -1233,6 +1233,53 @@ def test_standstill_moving_lead_depart_accel_hold_cancels_if_lead_brakes(model_v
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_standstill_radar_only_lead_does_not_trigger_depart_accel(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  sm = make_sm(
+    0.0,
+    desired_accel=0.45,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(status=True, d_rel=11.2, v_lead=0.63, a_lead=0.36, radar=True, model_prob=0.998),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["starpilotPlan"].vCruise = 10.0
+  sm["modelV2"].action.shouldStop = False
+
+  planner.update(sm, make_toggles(model_version))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target <= 0.0
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_low_speed_radar_only_lead_does_not_trigger_depart_accel_hold(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=1.25)
+
+  sm = make_sm(
+    1.25,
+    desired_accel=0.20,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(status=True, d_rel=9.95, v_lead=0.43, a_lead=0.44, radar=True, model_prob=0.999),
+  )
+  sm["carState"].standstill = False
+  sm["controlsState"].longControlState = LongCtrlState.pid
+  sm["starpilotPlan"].vCruise = 10.0
+  sm["modelV2"].action.shouldStop = False
+
+  planner.update(sm, make_toggles(model_version))
+
+  assert planner.output_a_target <= 0.0
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_acc_mode_damps_far_radar_mild_lead_brake_more_than_close_brake(model_version):
   far_v_ego = 29.26
   far_v_cruise = 32.22

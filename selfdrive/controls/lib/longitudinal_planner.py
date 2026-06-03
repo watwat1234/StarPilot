@@ -45,6 +45,8 @@ LEAD_DEPART_CONFIDENT_MAX_GAP = 5.25
 LEAD_DEPART_CONFIDENT_MIN_LEAD_SPEED = 0.3
 LEAD_DEPART_CONFIDENT_MIN_LEAD_DELTA = 0.25
 LEAD_DEPART_CONFIDENT_MIN_LEAD_ACCEL = 0.2
+RADAR_ONLY_DEPART_HOLD_MAX_EGO_SPEED = 1.6
+RADAR_ONLY_DEPART_HOLD_MAX_DISTANCE = 18.0
 LEAD_DEPART_ACCEL_HOLD_TIME = 1.2
 LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 1.5
 LEAD_DEPART_ACCEL_HOLD_MIN_LEAD_SPEED = 0.6
@@ -960,6 +962,8 @@ class LongitudinalPlanner:
       return False
 
     lead_radar = bool(getattr(lead, "radar", False))
+    if lead_radar:
+      return False
     lead_prob = float(getattr(lead, "modelProb", 1.0 if lead_radar else 0.0))
     if not lead_radar and lead_prob < LEAD_DEPART_ACCEL_HOLD_MIN_MODEL_PROB:
       return False
@@ -980,6 +984,8 @@ class LongitudinalPlanner:
       return None
 
     lead_radar = bool(getattr(lead, "radar", False))
+    if lead_radar:
+      return None
     lead_prob = float(getattr(lead, "modelProb", 1.0 if lead_radar else 0.0))
     if not lead_radar and lead_prob < LEAD_DEPART_ACCEL_HOLD_MIN_MODEL_PROB:
       return None
@@ -1903,14 +1909,26 @@ class LongitudinalPlanner:
 
     standstill_nudge_gap = max(float(getattr(starpilot_toggles, "stop_distance", STOP_DISTANCE)), STOP_DISTANCE) - 0.5
     moving_leads = [lead for lead in (self.lead_one, self.lead_two)
-                    if lead.status and lead.vLead > STANDSTILL_LEAD_NUDGE_MIN_SPEED and lead.dRel >= standstill_nudge_gap]
+                    if lead.status and not bool(getattr(lead, "radar", False)) and
+                    lead.vLead > STANDSTILL_LEAD_NUDGE_MIN_SPEED and lead.dRel >= standstill_nudge_gap]
     confident_depart_ready = any(self.is_confident_lead_depart(lead, float(sm['carState'].vEgo))
                                  for lead in (self.lead_one, self.lead_two))
     lead_depart_ready = any(
       lead.status and
+      not bool(getattr(lead, "radar", False)) and
       lead.vLead >= STANDSTILL_LEAD_DEPART_MIN_LEAD_SPEED and
       lead.dRel >= standstill_nudge_gap + STANDSTILL_LEAD_DEPART_MIN_GAP_MARGIN
       for lead in (self.lead_one, self.lead_two)
+    )
+    radar_depart_hold = bool(
+      float(sm['carState'].vEgo) <= RADAR_ONLY_DEPART_HOLD_MAX_EGO_SPEED and
+      any(
+        lead.status and
+        bool(getattr(lead, "radar", False)) and
+        float(getattr(lead, "dRel", 0.0)) > 0.0 and
+        float(getattr(lead, "dRel", 0.0)) <= RADAR_ONLY_DEPART_HOLD_MAX_DISTANCE
+        for lead in (self.lead_one, self.lead_two)
+      )
     )
 
     if lead_control_active and sm['carState'].standstill and moving_leads:
@@ -2126,6 +2144,12 @@ class LongitudinalPlanner:
     if close_release_hold_cap is not None:
       self.a_desired = min(self.a_desired, close_release_hold_cap)
       output_a_target = min(output_a_target, close_release_hold_cap)
+
+    if radar_depart_hold and lead_depart_accel_floor is None and not confident_depart_ready and not lead_depart_ready:
+      self.a_desired = min(self.a_desired, 0.0)
+      output_a_target = min(output_a_target, 0.0)
+      if sm['carState'].standstill:
+        output_should_stop = True
 
     if lead_depart_accel_hold_active:
       output_a_target = max(output_a_target, lead_depart_accel_floor)

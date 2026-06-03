@@ -29,7 +29,7 @@ def joystickd_thread():
     cc_msg = messaging.new_message('carControl')
     cc_msg.valid = True
     CC = cc_msg.carControl
-    CC.enabled = sm['selfdriveState'].enabled
+    CC.enabled = True
     CC.latActive = not sm['carState'].steerFaultTemporary and not sm['carState'].steerFaultPermanent
     CC.longActive = False  # lateral-only joystick mode: use pedals normally
     CC.cruiseControl.cancel = sm['carState'].cruiseState.enabled and (not CC.enabled or not CP.pcmCruise)

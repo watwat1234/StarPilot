@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_bolt_2017_steer_ratio_scale,
 )
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.car.cruise_state import should_cancel_stock_cruise
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -275,7 +276,7 @@ class Controls:
       CC.enabled,
       self.sm['starpilotCarState'].alwaysOnLateralEnabled,
     )
-    cancel_requested = CS.cruiseState.enabled and (not CC.enabled or not self.CP.pcmCruise)
+    cancel_requested = should_cancel_stock_cruise(self.CP, CS.cruiseState.enabled, CC.enabled)
     CC.cruiseControl.cancel = cancel_requested and not pacifica_hybrid_aol
 
     legacy_resume_hack = False

@@ -18,6 +18,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.gps import get_gps_location_service
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
+from openpilot.selfdrive.car.cruise_state import should_flag_cruise_mismatch
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
@@ -463,7 +464,8 @@ class SelfdriveD:
         self.CP.openpilotLongitudinalControl and not self.CP.pcmCruise
       )
       effective_pcm_cruise = self.CP.pcmCruise or preap_software_cruise
-      cruise_mismatch = CS.cruiseState.enabled and (not self.enabled or not effective_pcm_cruise) and not pacifica_hybrid_aol
+      cruise_mismatch = should_flag_cruise_mismatch(self.CP, CS.cruiseState.enabled, self.enabled,
+                                                    effective_pcm_cruise) and not pacifica_hybrid_aol
       self.cruise_mismatch_counter = self.cruise_mismatch_counter + 1 if cruise_mismatch else 0
       if self.cruise_mismatch_counter > int(6. / DT_CTRL):
         self.events.add(EventName.cruiseMismatch)

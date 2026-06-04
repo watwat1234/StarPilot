@@ -27,9 +27,9 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.controls.lib.drive_helpers import smooth_value
-from openpilot.selfdrive.modeld.compile_modeld import POLICY_INPUTS, WARP_INPUTS, make_npy_inputs, make_tensor_inputs
-from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, get_curvature_from_plan, smooth_value
+from openpilot.selfdrive.modeld.compile_modeld import POLICY_INPUTS, WARP_INPUTS, make_input_queues
+from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.fill_model_msg import PublishState, fill_model_msg, fill_pose_msg
 from openpilot.selfdrive.modeld.helpers import get_tg_input_devices
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
@@ -113,9 +113,25 @@ def _combined_model_path(model_id: str, use_builtin_model: bool) -> Path:
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action, v_ego: float) -> log.ModelDataV2.Action:
-  desired_curv_unscaled, desired_accel = model_output["action"][0]
-  desired_curvature = float(desired_curv_unscaled) / max(1.0, v_ego) ** 2
-  should_stop = (v_ego < 0.3 and desired_accel < 0.1)
+  if "action" in model_output:
+    desired_curv_unscaled, desired_accel = model_output["action"][0]
+    desired_curvature = float(desired_curv_unscaled) / max(1.0, v_ego) ** 2
+    should_stop = (v_ego < 0.3 and desired_accel < 0.1)
+  else:
+    plan = model_output["plan"][0]
+    desired_accel, should_stop = get_accel_from_plan(
+      plan[:, Plan.VELOCITY][:, 0],
+      plan[:, Plan.ACCELERATION][:, 0],
+      ModelConstants.T_IDXS,
+      action_t=DT_MDL,
+    )
+    desired_curvature = get_curvature_from_plan(
+      plan[:, Plan.T_FROM_CURRENT_EULER][:, 2],
+      plan[:, Plan.ORIENTATION_RATE][:, 2],
+      ModelConstants.T_IDXS,
+      v_ego,
+      DT_MDL,
+    )
 
   desired_accel = smooth_value(float(desired_accel), prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -184,25 +200,16 @@ class ModelState:
     self.frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
     input_devices = get_tg_input_devices(PROCESS_NAME, usbgpu)
     self.WARP_DEV, self.QUEUE_DEV = input_devices["WARP_DEV"], input_devices["QUEUE_DEV"]
-    tensor_inputs = jits.get("tensor_inputs")
-    if tensor_inputs is None:
-      tensor_inputs = make_tensor_inputs(self.vision_input_shapes, self.policy_input_shapes, self.frame_skip, device=self.QUEUE_DEV)
-    self.npy, npy_tensors = make_npy_inputs(self.policy_input_shapes)
-    self.input_queues = {**tensor_inputs, **npy_tensors}
+    self.input_queues, self.npy = make_input_queues(
+      self.vision_input_shapes, self.policy_input_shapes, self.frame_skip, device=self.QUEUE_DEV
+    )
     self.full_frames: dict[str, Tensor] = {}
     self._blob_cache: dict[tuple[str, int], Tensor] = {}
     self.parser = Parser()
     self.frame_buf_params = {key: get_nv12_info(cam_w, cam_h) for key in ("img", "big_img")}
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
-
-    camera_jit = jits[(cam_w, cam_h)]
-    self.split_warp_layout = "run_policy" in jits and not isinstance(camera_jit, dict)
-    if self.split_warp_layout:
-      self.run_policy = jits["run_policy"]
-      self.warp_enqueue = camera_jit
-    else:
-      self.run_policy = camera_jit["run_policy"]
-      self.warp_enqueue = camera_jit["warp_enqueue"]
+    self.run_policy = jits["run_policy"]
+    self.warp_enqueue = jits[(cam_w, cam_h)]
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     return {key: model_outputs[np.newaxis, value] for key, value in output_slices.items()}
@@ -225,25 +232,20 @@ class ModelState:
     self.npy["tfm"][:, :] = transforms["img"][:, :]
     self.npy["big_tfm"][:, :] = transforms["big_img"][:, :]
 
-    if self.split_warp_layout:
-      img, big_img = self.warp_enqueue(
-        **{key: self.input_queues[key] for key in WARP_INPUTS},
-        frame=self.full_frames["img"],
-        big_frame=self.full_frames["big_img"],
-      )
-      if prepare_only:
-        return None
-      policy_inputs = {key: self.input_queues[key] for key in POLICY_INPUTS if key in self.input_queues}
-      vision_output, policy_output, off_policy_output = self.run_policy(**policy_inputs, img=img, big_img=big_img)
-    else:
-      if prepare_only:
-        self.warp_enqueue(**self.input_queues, frame=self.full_frames["img"], big_frame=self.full_frames["big_img"])
-        return None
-      vision_output, policy_output, off_policy_output = self.run_policy(
-        **self.input_queues,
-        frame=self.full_frames["img"],
-        big_frame=self.full_frames["big_img"],
-      )
+    img, big_img = self.warp_enqueue(
+      **{key: self.input_queues[key] for key in WARP_INPUTS},
+      frame=self.full_frames["img"],
+      big_frame=self.full_frames["big_img"],
+    )
+
+    if prepare_only:
+      return None
+
+    vision_output, policy_output, off_policy_output = self.run_policy(
+      **{key: self.input_queues[key] for key in POLICY_INPUTS if key in self.input_queues},
+      img=img,
+      big_img=big_img,
+    )
 
     vision_output = vision_output.numpy().flatten()
     policy_output = policy_output.numpy().flatten()

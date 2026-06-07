@@ -565,7 +565,7 @@ class StarPilotVariables:
     )
     toggle.lkas_allowed_for_aol = hyundai_can_use_lkas_for_aol or toggle.car_make == "honda"
     longitudinalActuatorDelay = CP.longitudinalActuatorDelay
-    toggle.openpilot_longitudinal = CP.openpilotLongitudinalControl and not toggle.disable_openpilot_long
+    toggle.openpilot_longitudinal = (CP.openpilotLongitudinalControl or (CP.brand == "hyundai" and self.params.get_bool("AlphaLongitudinalEnabled") and CP.alphaLongitudinalAvailable)) and not toggle.disable_openpilot_long
     if not toggle.redneck_cruise_available or toggle.openpilot_longitudinal:
       self.params.put_bool("RedneckCruise", False)
     toggle.redneck_cruise = self.get_value(

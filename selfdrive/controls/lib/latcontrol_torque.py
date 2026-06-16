@@ -2022,6 +2022,9 @@ class LatControlTorque(LatControl):
       kd_scale = getattr(self.torque_params, "kd", getattr(self.torque_params, "kdDEPRECATED", 1.0))
       self.torque_ff_scale_pos = float(kp_scale)
       self.torque_ff_scale_neg = float(ki_scale)
+      if self.is_bolt_2022_2023:
+        # Symmetrize right-side (negative) scaling to match left-side (1.03) to prevent right-curve oscillation
+        self.torque_ff_scale_neg = 1.03
       self.torque_ki_mult = float(kd_scale)
       if self.use_bolt_ki_multiplier and self.torque_ki_mult > 0.0 and self.torque_ki_mult != 1.0:
         self.pid._k_i = [self.pid._k_i[0], [k * self.torque_ki_mult for k in self.pid._k_i[1]]]

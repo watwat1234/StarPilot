@@ -50,6 +50,17 @@ UNWIND_LAT_ACCEL_NEAR_ZERO = 0.3
 PHASE_LAT_ACCEL_DEADBAND = 0.1  # m/s^2
 PHASE_RATE_DEADBAND = 0.2  # m/s^3
 
+# Chunk 5 - turn-in event detection
+TURN_IN_LA_THRESHOLD = 0.4     # m/s^2, event arms on crossing this
+TURN_IN_REARM_LA = 0.3         # hysteresis: |desired_la| must fall below this to re-arm
+TURN_IN_MAX_V = 14.0           # m/s
+EVENT_PRE_S = 1.0              # pre-roll seconds, captures the unwind-freeze approach
+EVENT_POST_S = 3.0             # seconds after t0; the overcorrection window
+EVENT_MIN_S = 1.0              # discard events truncated shorter than this
+EVENT_REFRACTORY_S = 2.0       # minimum spacing between event starts
+AT_LIMIT_TORQUE = 0.99         # steer_max = 1.0 (latcontrol.py:17)
+WORST_EVENTS_N = 10
+
 
 def reconstruct_unwind(samples: list[ControlSample]) -> tuple[np.ndarray, np.ndarray]:
   n = len(samples)
@@ -539,6 +550,217 @@ def summarize_bolt_gain_bands(
   print_gains_table("Dynamic gain bands - right (desired_la < 0) [medFF/medFric/n]", desired_la < 0)
 
 
+@dataclass
+class TurnInEvent:
+  t0_idx: int
+  t0_mono: int
+  t_rel: float
+  direction: str
+  sign: float
+  v0: float
+  pre_n: int
+  post_n: int
+  peak_in: float
+  t_in: float
+  peak_opp: float
+  t_opp: float
+  peak_abs: float
+  peak_tq: float
+  at_limit: float
+  pressed: float
+  mean_i_pre: float
+
+
+def detect_turn_in_events(samples: list[ControlSample]) -> tuple[list[TurnInEvent], int, int]:
+  events: list[TurnInEvent] = []
+  discarded_truncated = 0
+  no_preroll_count = 0
+
+  if not samples:
+    return events, discarded_truncated, no_preroll_count
+
+  t0_mono_start = samples[0].mono_time
+  armed = True
+  prev_t0_mono = -float("inf")
+
+  for t0 in range(1, len(samples)):
+    s = samples[t0]
+    prev_s = samples[t0 - 1]
+    abs_la = abs(s.desired_la)
+
+    if not armed:
+      if abs_la < TURN_IN_REARM_LA:
+        armed = True
+      continue
+
+    crossing = (abs_la >= TURN_IN_LA_THRESHOLD) and (abs(prev_s.desired_la) < TURN_IN_LA_THRESHOLD)
+    turn_in_dir = (s.desired_la * s.desired_jerk) > 0.0
+    speed_ok = s.v_ego < TURN_IN_MAX_V
+    active_ok = s.torque_active
+    not_pressed = not s.steering_pressed
+    refractory_ok = ((s.mono_time - prev_t0_mono) / 1e9) >= EVENT_REFRACTORY_S
+
+    if crossing and turn_in_dir and speed_ok and active_ok and not_pressed and refractory_ok:
+      armed = False
+      prev_t0_mono = s.mono_time
+
+      post_indices = []
+      for k in range(t0, len(samples)):
+        dt_t0 = (samples[k].mono_time - s.mono_time) / 1e9
+        if dt_t0 > EVENT_POST_S:
+          break
+        if not samples[k].torque_active:
+          break
+        if k > t0 and ((samples[k].mono_time - samples[k - 1].mono_time) / 1e9) > (1.5 * DT_CTRL):
+          break
+        post_indices.append(k)
+
+      post_duration = (samples[post_indices[-1]].mono_time - s.mono_time) / 1e9
+      if post_duration < EVENT_MIN_S:
+        discarded_truncated += 1
+        continue
+
+      pre_indices = []
+      for k in range(t0 - 1, -1, -1):
+        dt_pre = (s.mono_time - samples[k].mono_time) / 1e9
+        if dt_pre > EVENT_PRE_S:
+          break
+        if not samples[k].torque_active:
+          break
+        if ((samples[k + 1].mono_time - samples[k].mono_time) / 1e9) > (1.5 * DT_CTRL):
+          break
+        pre_indices.append(k)
+
+      pre_indices.reverse()
+      pre_n = len(pre_indices)
+      if pre_n == 0:
+        no_preroll_count += 1
+        mean_i_pre = float("nan")
+      else:
+        mean_i_pre = float(np.mean([abs(samples[k].i_term) for k in pre_indices]))
+
+      direction = "left" if s.desired_la > 0.0 else "right"
+      sign = 1.0 if s.desired_la > 0.0 else -1.0
+      v0 = s.v_ego
+      t_rel = (s.mono_time - t0_mono_start) / 1e9
+
+      post_samples = [samples[k] for k in post_indices]
+      post_n = len(post_samples)
+
+      errs = [sign * (ps.actual_la - ps.desired_la) for ps in post_samples]
+      times = [(ps.mono_time - s.mono_time) / 1e9 for ps in post_samples]
+
+      peak_in = max(errs)
+      t_in_idx = errs.index(peak_in)
+      t_in = times[t_in_idx]
+
+      post_after_tin = post_samples[t_in_idx + 1 :]
+      if post_after_tin:
+        opp_errs_after = [-sign * (ps.actual_la - ps.desired_la) for ps in post_after_tin]
+        times_after = [(ps.mono_time - s.mono_time) / 1e9 for ps in post_after_tin]
+        peak_opp = max(opp_errs_after)
+        t_opp = times_after[opp_errs_after.index(peak_opp)]
+      else:
+        peak_opp = float("nan")
+        t_opp = float("nan")
+
+      peak_abs = max(abs(ps.desired_la - ps.actual_la) for ps in post_samples)
+      peak_tq = max(abs(ps.torque_cmd) for ps in post_samples)
+      at_limit = sum(1 for ps in post_samples if abs(ps.torque_cmd) >= AT_LIMIT_TORQUE) / post_n
+      pressed = sum(1 for ps in post_samples if ps.steering_pressed) / post_n
+
+      events.append(TurnInEvent(
+        t0_idx=t0,
+        t0_mono=s.mono_time,
+        t_rel=t_rel,
+        direction=direction,
+        sign=sign,
+        v0=v0,
+        pre_n=pre_n,
+        post_n=post_n,
+        peak_in=peak_in,
+        t_in=t_in,
+        peak_opp=peak_opp,
+        t_opp=t_opp,
+        peak_abs=peak_abs,
+        peak_tq=peak_tq,
+        at_limit=at_limit,
+        pressed=pressed,
+        mean_i_pre=mean_i_pre,
+      ))
+
+  return events, discarded_truncated, no_preroll_count
+
+
+def summarize_turn_in_events(
+  events: list[TurnInEvent],
+  discarded_truncated: int,
+  no_preroll_count: int,
+) -> None:
+  print("\nTurn-in events:")
+  if not events and discarded_truncated == 0:
+    print("  no turn-in events detected")
+    return
+
+  n_total = len(events)
+  n_left = sum(1 for e in events if e.direction == "left")
+  n_right = sum(1 for e in events if e.direction == "right")
+
+  print(
+    f"  total={n_total:d}  left={n_left:d}  right={n_right:d}  "
+    f"discarded_truncated={discarded_truncated:d}  no_preroll={no_preroll_count:d}"
+  )
+  print(
+    f"  {'dir':6s} {'n':>4s}   {'peak_in med/p90':17s}  {'peak_opp med/p90':17s}  {'peak_abs med/p90':17s}  {'at_limit med/p90':17s}  {'t_in med':>8s}"
+  )
+
+  for d_lbl in ("left", "right"):
+    d_events = [e for e in events if e.direction == d_lbl]
+    n = len(d_events)
+    n_str = f"({n})" if n < 5 else f"{n:d}"
+    if n == 0:
+      print(f"  {d_lbl:6s} {n_str:>4s}   {'--':17s}  {'--':17s}  {'--':17s}  {'--':17s}  {'--':>8s}")
+    else:
+      in_arr = np.array([e.peak_in for e in d_events])
+      opp_arr = np.array([e.peak_opp for e in d_events])
+      abs_arr = np.array([e.peak_abs for e in d_events])
+      lim_arr = np.array([e.at_limit for e in d_events])
+      tin_arr = np.array([e.t_in for e in d_events])
+
+      in_str = f"{np.median(in_arr):+.4f}/{np.percentile(in_arr, 90):+.4f}"
+      opp_valid = opp_arr[np.isfinite(opp_arr)]
+      if opp_valid.size > 0:
+        opp_str = f"{np.median(opp_valid):+.4f}/{np.percentile(opp_valid, 90):+.4f}"
+      else:
+        opp_str = "--"
+      abs_str = f"{np.median(abs_arr):.4f}/{np.percentile(abs_arr, 90):.4f}"
+      lim_str = f"{np.median(lim_arr):.4f}/{np.percentile(lim_arr, 90):.4f}"
+      tin_str = f"{np.median(tin_arr):.4f}"
+
+      print(
+        f"  {d_lbl:6s} {n_str:>4s}   {in_str:17s}  {opp_str:17s}  {abs_str:17s}  {lim_str:17s}  {tin_str:>8s}"
+      )
+
+  if events:
+    worst_events = sorted(events, key=lambda e: e.peak_abs, reverse=True)[:WORST_EVENTS_N]
+    print("\n  worst events (by peak_abs); t_rel is relative to the first controlsState sample:")
+    print(
+      f"  {'t_rel':9s} {'dir':6s} {'v0':>5s} {'peak_in':>7s} {'t_in':>5s} {'peak_opp':>8s} {'t_opp':>5s} {'peak_abs':>8s} {'peak_tq':>7s} {'at_limit':>8s} {'pressed':>7s} {'mean_i_pre':>10s}"
+    )
+    for e in worst_events:
+      mins = int(e.t_rel // 60)
+      secs = e.t_rel % 60
+      t_rel_str = f"{mins:02d}:{secs:04.1f}"
+      opp_str = f"{e.peak_opp:+8.4f}" if np.isfinite(e.peak_opp) else "      --"
+      topp_str = f"{e.t_opp:5.2f}" if np.isfinite(e.t_opp) else "   --"
+      i_pre_str = f"{e.mean_i_pre:.4f}" if np.isfinite(e.mean_i_pre) else "--"
+      print(
+        f"  {t_rel_str:9s} {e.direction:6s} {e.v0:5.2f} "
+        f"{e.peak_in:+7.4f} {e.t_in:5.2f} {opp_str:>8s} {topp_str:>5s} "
+        f"{e.peak_abs:8.4f} {e.peak_tq:7.4f} {e.at_limit:8.4f} {e.pressed:7.4f} {i_pre_str:>10s}"
+      )
+
+
 def main() -> None:
   # helpers.py:101 subsamples via the global numpy RNG; seed so TorqueEstimator fit is reproducible
   np.random.seed(0)
@@ -741,6 +963,9 @@ def main() -> None:
   )
   summarize_bolt_dynamic_gains(control_samples, car_params.carFingerprint, ff_scale, friction_scale, threshold_ratio)
   summarize_bolt_gain_bands(control_samples, car_params.carFingerprint, ff_scale, friction_scale)
+
+  events, disc_trunc, no_pre = detect_turn_in_events(control_samples)
+  summarize_turn_in_events(events, disc_trunc, no_pre)
 
 
 if __name__ == "__main__":

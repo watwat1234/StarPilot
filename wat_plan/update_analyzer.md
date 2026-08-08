@@ -327,7 +327,9 @@ Build in the order A → B → C; each is testable before the next, and the dete
 
 The new discriminating test is whether the oscillating cells **coincide with the `ff_scale` peak band** — the `0.2–0.4` and `0.4–0.7` rows at `<6` / `6–10`, where the onset sigmoid has opened and the low-speed weight is still near 1. If they coincide, the dynamic gain layer is the mechanism. If `ff_scale` comes back flat near 1.0 across all cells, this hypothesis is dead and static-friction over-application returns as the explanation.
 
-## Chunk 5 — Turn-in event analysis
+## Chunk 5 — Turn-in event analysis — **IN PROGRESS**
+
+Task list and review history in `update_analyzer_chunk5_task.md`.
 
 Independent of Chunk 4; either can be skipped without breaking the other.
 
@@ -335,7 +337,14 @@ Independent of Chunk 4; either can be skipped without breaking the other.
 - Per event: peak `|error|`, peak `|torque_cmd|`, time `at_limit`, time-to-peak, and the **peak opposite-sign error in the following 3 s** — the left overcorrection, quantified.
 - Aggregate by direction; print the worst ~10 events with route-relative timestamps so specific moments can be found in the log.
 
+Two refinements added when the task list was written, both load-bearing:
+
+- **A 1 s pre-roll before the crossing.** `unwind_detected` requires `|setpoint| < 0.3`, so the integrator freeze happens on the *approach* — entirely below the 0.4 arming threshold. Without a pre-roll this chunk could not see the mechanism Chunk 2 confirmed. Carries `mean|i|` over the pre-roll.
+- **`steering_pressed` gates arming but does not break the window.** A driver grabbing the wheel is the expected response to a slam; breaking on it would systematically discard the worst events. Reported as a `pressed` fraction column instead.
+
 **Verify:** worst events should cluster on right turns, and the opposite-sign-overshoot column should be materially larger for rights than lefts.
+
+This is also the **before** half of a before/after — when a controller fix lands, the same table on a re-drive is the pass/fail.
 
 ## Chunk 6 — N-route side-by-side
 

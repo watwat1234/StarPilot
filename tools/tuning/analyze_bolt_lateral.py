@@ -10,8 +10,13 @@ from openpilot.selfdrive.locationd.torqued import TorqueEstimator
 from opendbc.car.gm.interface import NON_LINEAR_TORQUE_PARAMS
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   BOLT_CARS,
+  BOLT_2022_2023_CARS,
   DEADZONE_BOOST_LAT_ACCEL,
   FF_SCALE_BLEND_LAT_ACCEL,
+  get_bolt_2022_2023_ff_scale,
+  get_bolt_2022_2023_friction_scale,
+  get_bolt_2022_2023_friction_threshold,
+  get_friction_threshold,
 )
 
 
@@ -41,6 +46,9 @@ LOW_ROLL_THRESHOLD_DEG = 1.5
 DT_CTRL = 0.01
 UNWIND_D_DES_THRESHOLD = -1.0
 UNWIND_LAT_ACCEL_NEAR_ZERO = 0.3
+
+OSC_MIN_CROSSINGS = 6     # sign changes of detrended error per ~2 s window (~1.5 Hz floor)
+OSC_MIN_P2P = 0.15        # m/s^2, peak-to-peak, so sensor noise is not counted
 
 PHASE_LAT_ACCEL_DEADBAND = 0.1  # m/s^2
 PHASE_RATE_DEADBAND = 0.2  # m/s^3
@@ -425,6 +433,217 @@ def summarize_bolt_effective_tune(car_params) -> None:
   )
 
 
+def reconstruct_bolt_2022_2023_gains(
+  samples: list[ControlSample], car_fingerprint: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+  n = len(samples)
+  if car_fingerprint not in BOLT_2022_2023_CARS or n == 0:
+    return (
+      np.full(n, np.nan, dtype=float),
+      np.full(n, np.nan, dtype=float),
+      np.full(n, np.nan, dtype=float),
+      np.full(n, np.nan, dtype=float),
+    )
+
+  ff_scale = np.zeros(n, dtype=float)
+  friction_scale = np.zeros(n, dtype=float)
+  friction_threshold = np.zeros(n, dtype=float)
+  threshold_ratio = np.zeros(n, dtype=float)
+
+  for k, s in enumerate(samples):
+    la = s.desired_la
+    jerk = s.desired_jerk
+    v = s.v_ego
+    ff_scale[k] = get_bolt_2022_2023_ff_scale(la, jerk, v)
+    friction_scale[k] = get_bolt_2022_2023_friction_scale(v, la, jerk)
+    th = get_bolt_2022_2023_friction_threshold(v, la, jerk)
+    friction_threshold[k] = th
+    base_th = get_friction_threshold(v)
+    threshold_ratio[k] = th / base_th if base_th != 0.0 else 1.0
+
+  return ff_scale, friction_scale, friction_threshold, threshold_ratio
+
+
+def summarize_bolt_dynamic_gains(
+  samples: list[ControlSample],
+  car_fingerprint: str,
+  ff_scale: np.ndarray,
+  friction_scale: np.ndarray,
+  threshold_ratio: np.ndarray,
+) -> None:
+  if car_fingerprint not in BOLT_2022_2023_CARS:
+    print("\nBolt dynamic gains:\n  skipped (not a 2022-2023 Bolt)")
+    return
+
+  torque_active = np.array([s.torque_active for s in samples], dtype=bool)
+  steering_pressed = np.array([s.steering_pressed for s in samples], dtype=bool)
+  mask = torque_active & (~steering_pressed)
+
+  print("\nBolt dynamic gains:")
+  if not np.any(mask):
+    print("  No active non-steering-pressed samples found.")
+    return
+
+  ff_m = ff_scale[mask]
+  fr_m = friction_scale[mask]
+  tr_m = threshold_ratio[mask]
+
+  print(
+    f"  ff_scale [{np.min(ff_m):.4f},{np.max(ff_m):.4f}] med={np.median(ff_m):.4f}  "
+    f"friction_scale [{np.min(fr_m):.4f},{np.max(fr_m):.4f}] med={np.median(fr_m):.4f}  "
+    f"thresh_ratio [{np.min(tr_m):.4f},{np.max(tr_m):.4f}] med={np.median(tr_m):.4f}"
+  )
+
+
+def detect_oscillations(samples: list[ControlSample]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  n = len(samples)
+  osc = np.zeros(n, dtype=bool)
+  osc_hz = np.full(n, np.nan, dtype=float)
+  evaluated = np.zeros(n, dtype=bool)
+
+  if n == 0:
+    return osc, osc_hz, evaluated
+
+  segments = []
+  seg_start = None
+
+  for k, s in enumerate(samples):
+    active = s.torque_active and (not s.steering_pressed)
+    if active:
+      if seg_start is None:
+        seg_start = k
+      elif ((s.mono_time - samples[k - 1].mono_time) / 1e9) > 1.5 * DT_CTRL:
+        segments.append((seg_start, k))
+        seg_start = k
+    else:
+      if seg_start is not None:
+        segments.append((seg_start, k))
+        seg_start = None
+
+  if seg_start is not None:
+    segments.append((seg_start, n))
+
+  window_len = 201
+  half_win = 50
+  hop_step = 25
+
+  freqs = np.fft.rfftfreq(window_len, d=DT_CTRL)
+  hanning_win = np.hanning(window_len)
+
+  for start_i, end_i in segments:
+    seg_len = end_i - start_i
+    if seg_len < window_len:
+      continue
+
+    err = np.array([samples[k].desired_la - samples[k].actual_la for k in range(start_i, end_i)])
+    detrended = np.full(seg_len, np.nan, dtype=float)
+
+    for i in range(half_win, seg_len - half_win):
+      detrended[i] = err[i] - np.mean(err[i - half_win : i + half_win + 1])
+
+    for w_start in range(0, seg_len - window_len + 1, hop_step):
+      w_end = w_start + window_len
+      sub = detrended[w_start:w_end]
+
+      if np.any(np.isnan(sub)):
+        continue
+
+      c0 = start_i + w_start + (window_len - hop_step) // 2
+      c_end = min(c0 + hop_step, end_i)
+      evaluated[c0:c_end] = True
+
+      crossings = int(np.sum((sub[:-1] * sub[1:]) < 0))
+      p2p = float(np.ptp(sub))
+
+      if crossings >= OSC_MIN_CROSSINGS and p2p >= OSC_MIN_P2P:
+        fft_vals = np.abs(np.fft.rfft(sub * hanning_win))
+        dom_idx = 1 + int(np.argmax(fft_vals[1:]))
+        dom_freq = float(freqs[dom_idx])
+
+        osc[c0:c_end] = True
+        osc_hz[c0:c_end] = dom_freq
+
+  return osc, osc_hz, evaluated
+
+
+def summarize_band_tables(
+  samples: list[ControlSample],
+  car_fingerprint: str,
+  osc: np.ndarray,
+  osc_hz: np.ndarray,
+  evaluated: np.ndarray,
+  ff_scale: np.ndarray,
+  friction_scale: np.ndarray,
+) -> None:
+  if not samples:
+    return
+
+  torque_active = np.array([s.torque_active for s in samples], dtype=bool)
+  steering_pressed = np.array([s.steering_pressed for s in samples], dtype=bool)
+  desired_la = np.array([s.desired_la for s in samples])
+  v_ego = np.array([s.v_ego for s in samples])
+
+  base_mask = torque_active & (~steering_pressed) & evaluated & np.isfinite(desired_la)
+
+  la_bins = [(0.0, 0.2), (0.2, 0.4), (0.4, 0.7), (0.7, 1.1), (1.1, 1.6), (1.6, float("inf"))]
+  la_labels = ["0-0.2", "0.2-0.4", "0.4-0.7", "0.7-1.1", "1.1-1.6", "1.6+"]
+
+  v_bins = [(0.0, 6.0), (6.0, 10.0), (10.0, 14.0), (14.0, 20.0), (20.0, float("inf"))]
+  v_labels = ["<6", "6-10", "10-14", "14-20", "20+"]
+
+  def print_osc_table(title: str, dir_mask: np.ndarray):
+    print(f"\n{title}:")
+    header = f"  {'|desired_la|':12s}" + "".join(f"{lbl:>18s}" for lbl in v_labels)
+    print(header)
+    for (la_min, la_max), la_lbl in zip(la_bins, la_labels):
+      row_str = f"  {la_lbl:12s}"
+      for v_min, v_max in v_bins:
+        cell_mask = base_mask & dir_mask & (np.abs(desired_la) >= la_min) & (np.abs(desired_la) < la_max) & (v_ego >= v_min) & (v_ego < v_max)
+        n = int(cell_mask.sum())
+        if n == 0:
+          cell_val = "--"
+        else:
+          o_cell = osc[cell_mask]
+          hz_cell = osc_hz[cell_mask]
+          frac = float(np.mean(o_cell))
+          hz_vals = hz_cell[o_cell & np.isfinite(hz_cell)]
+          hz_str = f"{np.median(hz_vals):.1f}" if hz_vals.size > 0 else "--"
+          n_str = f"({n})" if n < 50 else f"{n}"
+          cell_val = f"{frac:.4f}/{hz_str}/{n_str}"
+        row_str += f"{cell_val:>18s}"
+      print(row_str)
+
+  def print_gains_table(title: str, dir_mask: np.ndarray):
+    print(f"\n{title}:")
+    if car_fingerprint not in BOLT_2022_2023_CARS:
+      print("  skipped (not a 2022-2023 Bolt)")
+      return
+    header = f"  {'|desired_la|':12s}" + "".join(f"{lbl:>18s}" for lbl in v_labels)
+    print(header)
+    for (la_min, la_max), la_lbl in zip(la_bins, la_labels):
+      row_str = f"  {la_lbl:12s}"
+      for v_min, v_max in v_bins:
+        cell_mask = base_mask & dir_mask & (np.abs(desired_la) >= la_min) & (np.abs(desired_la) < la_max) & (v_ego >= v_min) & (v_ego < v_max)
+        n = int(cell_mask.sum())
+        if n == 0:
+          cell_val = "--"
+        else:
+          ff_cell = ff_scale[cell_mask]
+          fr_cell = friction_scale[cell_mask]
+          ff_valid = ff_cell[np.isfinite(ff_cell)]
+          fr_valid = fr_cell[np.isfinite(fr_cell)]
+          ff_str = f"{np.median(ff_valid):.4f}" if ff_valid.size > 0 else "--"
+          fr_str = f"{np.median(fr_valid):.4f}" if fr_valid.size > 0 else "--"
+          cell_val = f"{ff_str}/{fr_str}"
+        row_str += f"{cell_val:>18s}"
+      print(row_str)
+
+  print_osc_table("Oscillation — Left (desired_la > 0) [frac/medHz/n]", desired_la > 0)
+  print_osc_table("Oscillation — Right (desired_la < 0) [frac/medHz/n]", desired_la < 0)
+  print_gains_table("Dynamic Gains — Left (desired_la > 0) [medFF/medFric]", desired_la > 0)
+  print_gains_table("Dynamic Gains — Right (desired_la < 0) [medFF/medFric]", desired_la < 0)
+
+
 def main() -> None:
   # helpers.py:101 subsamples via the global numpy RNG; seed so TorqueEstimator fit is reproducible
   np.random.seed(0)
@@ -621,6 +840,13 @@ def main() -> None:
       f" bucket_points={len(torque_estimator.filtered_points)}"
     )
   summarize_torque_points(car_params.carFingerprint, points)
+
+  ff_scale, friction_scale, _, threshold_ratio = reconstruct_bolt_2022_2023_gains(
+    control_samples, car_params.carFingerprint
+  )
+  summarize_bolt_dynamic_gains(control_samples, car_params.carFingerprint, ff_scale, friction_scale, threshold_ratio)
+  osc, osc_hz, evaluated = detect_oscillations(control_samples)
+  summarize_band_tables(control_samples, car_params.carFingerprint, osc, osc_hz, evaluated, ff_scale, friction_scale)
 
 
 if __name__ == "__main__":

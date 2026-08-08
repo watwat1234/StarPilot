@@ -250,7 +250,7 @@ Self-contained rework of the `masks` tuple in `summarize_control_samples`.
 
 ## Chunk 4 — Oscillation detection and the 2D band table — **RE-SCOPED (2026-08-07)**
 
-The largest chunk, and the one that answers "a specific curvature to the right."
+The largest chunk, and the one that answers "a specific curvature to the right." Task list and review history in `update_analyzer_chunk4_task.md`.
 
 ### The hypothesis has changed
 

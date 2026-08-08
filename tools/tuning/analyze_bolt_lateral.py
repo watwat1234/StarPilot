@@ -8,6 +8,11 @@ import numpy as np
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 from openpilot.selfdrive.locationd.torqued import TorqueEstimator
 from opendbc.car.gm.interface import NON_LINEAR_TORQUE_PARAMS
+from openpilot.selfdrive.controls.lib.latcontrol_torque import (
+  BOLT_CARS,
+  DEADZONE_BOOST_LAT_ACCEL,
+  FF_SCALE_BLEND_LAT_ACCEL,
+)
 
 
 @dataclass
@@ -390,7 +395,40 @@ def resolve_effective_tune(car_params, log_params: dict[str, bytes], live_snapsh
   }
 
 
+def summarize_bolt_effective_tune(car_params) -> None:
+  if car_params.carFingerprint not in BOLT_CARS or car_params.lateralTuning.which() != "torque":
+    return
+
+  torque_tune = car_params.lateralTuning.torque
+  ff_scale_pos = float(getattr(torque_tune, "kp", getattr(torque_tune, "kpDEPRECATED", 1.0)))
+  ff_scale_neg = float(getattr(torque_tune, "ki", getattr(torque_tune, "kiDEPRECATED", 1.0)))
+  ki_mult = float(getattr(torque_tune, "kd", getattr(torque_tune, "kdDEPRECATED", 1.0)))
+  deadzone_boost = float(getattr(torque_tune, "kf", getattr(torque_tune, "kfDEPRECATED", 0.0)))
+
+  if ff_scale_pos == ff_scale_neg:
+    asym_str = "symmetric"
+  else:
+    diff = (ff_scale_neg / ff_scale_pos) - 1.0 if ff_scale_pos != 0.0 else 0.0
+    direction = "right" if diff >= 0 else "left"
+    asym_str = f"{diff:+.1%} {direction}"
+
+  # Note: With a +-0.05 blend this is effectively a step at ff = 0
+  ki_applied_str = "(applied to pid._k_i)" if (ki_mult > 0.0 and ki_mult != 1.0) else "(not applied)"
+  dz_str = f"(reach |latAccel|<{DEADZONE_BOOST_LAT_ACCEL:.2f}, unscaled additive)" if deadzone_boost != 0.0 else "(inactive)"
+
+  print(
+    f"  bolt: ffAsym left=x{ff_scale_pos:.4f} right=x{ff_scale_neg:.4f} ({asym_str}), "
+    f"blended over ff in [-{FF_SCALE_BLEND_LAT_ACCEL:.4f},+{FF_SCALE_BLEND_LAT_ACCEL:.4f}]"
+  )
+  print(
+    f"        kiMult={ki_mult:.4f} {ki_applied_str}  deadzoneBoost={deadzone_boost:.4f} {dz_str}"
+  )
+
+
 def main() -> None:
+  # helpers.py:101 subsamples via the global numpy RNG; seed so TorqueEstimator fit is reproducible
+  np.random.seed(0)
+
   parser = argparse.ArgumentParser(description="Analyze a Bolt route for lateral tuning opportunities.")
   parser.add_argument("route", help="Route name, e.g. dongle/route")
   parser.add_argument("--mode", choices=("auto", "qlog", "rlog"), default="auto")
@@ -437,7 +475,7 @@ def main() -> None:
       if lateral_state.which() == "torqueState":
         torque_state = lateral_state.torqueState
         v = latest["carState"].vEgo
-        curvature = torque_state.desiredLateralAccel / (v * v) if v > 1.0 else 0.0
+        curvature = torque_state.desiredLateralAccel / (v * v) if v > 1.0 else float("nan")
         control_samples.append(ControlSample(
           v_ego=v,
           steering_pressed=latest["carState"].steeringPressed,
@@ -468,16 +506,36 @@ def main() -> None:
   torque_tune = car_params.lateralTuning.torque
   print(f"carFingerprint={car_params.carFingerprint}")
   print(f"steerRatio={car_params.steerRatio:.4f} steerActuatorDelay={car_params.steerActuatorDelay:.4f}")
-  print(
-    "staticTune="
-    f"latAccelFactor={torque_tune.latAccelFactor:.4f} "
-    f"friction={torque_tune.friction:.4f} "
-    f"latAccelOffset={torque_tune.latAccelOffset:.4f} "
-    f"kp={getattr(torque_tune, 'kpDEPRECATED', 0.0):.4f} "
-    f"ki={getattr(torque_tune, 'kiDEPRECATED', 0.0):.4f} "
-    f"kd={getattr(torque_tune, 'kdDEPRECATED', 0.0):.4f} "
-    f"kf={getattr(torque_tune, 'kfDEPRECATED', 0.0):.4f}"
-  )
+  if car_params.carFingerprint in BOLT_CARS:
+    ff_scale_pos = float(getattr(torque_tune, "kp", getattr(torque_tune, "kpDEPRECATED", 1.0)))
+    ff_scale_neg = float(getattr(torque_tune, "ki", getattr(torque_tune, "kiDEPRECATED", 1.0)))
+    ki_mult = float(getattr(torque_tune, "kd", getattr(torque_tune, "kdDEPRECATED", 1.0)))
+    deadzone_boost = float(getattr(torque_tune, "kf", getattr(torque_tune, "kfDEPRECATED", 0.0)))
+    print(
+      "staticTune="
+      f"latAccelFactor={torque_tune.latAccelFactor:.4f} "
+      f"friction={torque_tune.friction:.4f} "
+      f"latAccelOffset={torque_tune.latAccelOffset:.4f} "
+      f"ffScalePos={ff_scale_pos:.4f} "
+      f"ffScaleNeg={ff_scale_neg:.4f} "
+      f"kiMult={ki_mult:.4f} "
+      f"deadzoneBoost={deadzone_boost:.4f}"
+    )
+  else:
+    kp = float(getattr(torque_tune, "kp", getattr(torque_tune, "kpDEPRECATED", 0.0)))
+    ki = float(getattr(torque_tune, "ki", getattr(torque_tune, "kiDEPRECATED", 0.0)))
+    kd = float(getattr(torque_tune, "kd", getattr(torque_tune, "kdDEPRECATED", 0.0)))
+    kf = float(getattr(torque_tune, "kf", getattr(torque_tune, "kfDEPRECATED", 0.0)))
+    print(
+      "staticTune="
+      f"latAccelFactor={torque_tune.latAccelFactor:.4f} "
+      f"friction={torque_tune.friction:.4f} "
+      f"latAccelOffset={torque_tune.latAccelOffset:.4f} "
+      f"kp={kp:.4f} "
+      f"ki={ki:.4f} "
+      f"kd={kd:.4f} "
+      f"kf={kf:.4f}"
+    )
 
   if live_torque_snapshots:
     last = live_torque_snapshots[-1]
@@ -544,6 +602,8 @@ def main() -> None:
       abs(e_fr - s_fr) > 1e-6
     ):
       print("  WARNING: effective tune differs from static tune; report figures reflect the effective tune.")
+
+    summarize_bolt_effective_tune(car_params)
 
   summarize_control_samples(control_samples)
 

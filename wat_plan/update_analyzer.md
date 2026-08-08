@@ -43,17 +43,17 @@ Likewise the toggle state is recoverable: `initData.params` is a `Map(Text, Data
 
 # Status at a glance (2026-08-07)
 
-- **Chunks 1 and 2 are done.** Both ran against the single already-recorded route; no second drive was needed or done.
+- **Chunks 1, 1b and 2 are done.** All ran against the single already-recorded route; no second drive was needed or done.
 - **The `unwind_detected` sign asymmetry is confirmed as real**, with a mechanism that accounts for both halves of the reported symptom. See Chunk 2's result section.
 - **Chunk 1 falsified the plan's own premise** that Force Auto-Tune was active: the controller ran the static tune the whole time. Two separate reasons, either sufficient — GM is absent from torqued's `ALLOWED_CARS`, and `ForceAutoTune` requires TuningLevel 3 while the device sits at 2.
 - **Two UI defects surfaced along the way** and are tracked outside this plan: the mici and galaxy UIs display settings the backend refuses to read (no tuning-level filtering), and neither has the Tuning Level selector that only the legacy Qt panel provides.
-- **Chunk 1 is incomplete.** The effective-tune section omits the four repurposed tune fields that carry this car's dominant feedforward terms, including an ~11% right-biased asymmetric ff gain — a *third* independent right-turn contributor. Chunk 1b's target. See "What Chunk 1 missed" below.
+- ~~**Chunk 1 is incomplete.**~~ **Closed by Chunk 1b (2026-08-07).** The effective-tune section now reports the four repurposed tune fields under their real names and states the ~11% right-biased asymmetric ff gain explicitly — a *third* independent right-turn contributor, confirmed at 1.03 left vs 1.1449 right. See "What Chunk 1 missed" below for the mechanism.
 - **Still unexplained:** the oscillation at one particular rightward curvature. Chunk 4's target — but the hypothesis has changed; see the re-scoped Chunk 4.
-- **Known measurement quirk:** `TorqueEstimator fit` is not reproducible run-to-run — `get_points` subsamples via `np.random.choice` with no seed ([helpers.py:101](../selfdrive/locationd/helpers.py)). Two runs over the identical route gave 1.0936 and 1.1158. Being seeded in Chunk 1b rather than "before Chunk 6", so that every verification from here on can include the `TorqueEstimator fit` line instead of excluding it as known-noisy.
+- ~~**Known measurement quirk:**~~ **RESOLVED by Chunk 1b (2026-08-07).** `TorqueEstimator fit` was not reproducible run-to-run — `get_points` subsamples via `np.random.choice` with no seed ([helpers.py:101](../selfdrive/locationd/helpers.py)), and two runs over the identical route gave 1.0936 and 1.1158. `main` now seeds the global RNG; two consecutive runs are byte-identical. The canonical seeded fit is **`latAccelFactor=1.1087 latAccelOffset=-0.3454 friction=0.1623`** (bucket_points 11522), and that line is admissible in every verification from here on.
 
 # Chunk ordering
 
-Originally six chunks (1b added later), each independently runnable and verifiable against the route already recorded. Ordered so the cheapest hypothesis-killing work lands first. **Superseded after Chunk 2 — see "Decision point resolved" below.** Current order is **1b → 4 → 5 → 6 → controller fix → re-drive → compare**.
+Originally six chunks (1b added later), each independently runnable and verifiable against the route already recorded. Ordered so the cheapest hypothesis-killing work lands first. **Superseded after Chunk 2 — see "Decision point resolved" below.** Order was **1b → 4 → 5 → 6 → controller fix → re-drive → compare**; with 1b done, **Chunk 4 is next**.
 
 **Decision point after Chunk 2.** If the `unwind_detected` table comes back starkly asymmetric, the diagnosis is essentially done and the right next move may be to stop and address the controller rather than build Chunks 3–5. If it comes back symmetric, the hypothesis is dead, the P-gain/delay explanation moves to the front, and Chunks 3–4 become the priority. Re-decide there rather than committing now.
 
@@ -69,9 +69,9 @@ The effective tune is the **static** tune: `latAccelFactor=2.0 latAccelOffset=0.
 
 Three consequences that reframe the remaining chunks — all hypotheses to test, not conclusions:
 
-1. **An uncorrected feedforward bias.** Two independent estimators on this route put the plant offset near −0.33 (`liveTorqueFiltered` −0.3182, `TorqueEstimator fit` −0.3411). The controller applied 0.0, leaving ff ~0.34 m/s² rightward of what the plant wants — the direction of the reported slam.
+1. **An uncorrected feedforward bias.** Two independent estimators on this route put the plant offset near −0.33 (`liveTorqueFiltered` −0.3182, `TorqueEstimator fit` −0.3454 seeded; −0.3411 in the original unseeded draw). The controller applied 0.0, leaving ff ~0.34 m/s² rightward of what the plant wants — the direction of the reported slam.
 2. **The integrator is absorbing it.** `|i| ≈ 0.19–0.22` in every steady-state bucket, against a steady-state MAE of 0.09. That is feedback doing feedforward's job — and it raises the stakes on the `unwind_detected` freeze, which releases exactly that compensation.
-3. **Friction is over-applied.** Controller uses `0.130 × 2.0 = 0.260`; the estimator infers `0.1537 × 1.0936 ≈ 0.168`, i.e. ~1.55×. Over-applied friction near center is the standard chatter mechanism — retained as the *fallback* explanation for the oscillation, not the leading one; see the re-scoped Chunk 4.
+3. **Friction is over-applied.** Controller uses `0.130 × 2.0 = 0.260`; the estimator infers `0.1623 × 1.1087 ≈ 0.180`, i.e. **~1.44×** (was quoted as ~1.55× off the unseeded draw). Over-applied friction near center is the standard chatter mechanism — retained as the *fallback* explanation for the oscillation, not the leading one; see the re-scoped Chunk 4.
 4. **The feedforward carries an ~11% right-biased asymmetric gain** that Chunk 1 never reported. See below.
 
 The `unwind_detected` hypothesis is untouched by any of this: it derives from `desiredLateralAccel` alone and involves no tune value.
@@ -167,7 +167,7 @@ The table came back starkly asymmetric, which was the "diagnosis essentially don
 
 | chunk | status | why |
 |---|---|---|
-| 1b — complete the effective-tune reporting | **new, do first** | Chunk 1 mislabels four tune fields and omits the ~11% right-biased ff asymmetry. Cheap (reporting only), and it changes how every existing number in the report is read. |
+| 1b — complete the effective-tune reporting | **DONE (2026-08-07)** | Chunk 1 mislabelled four tune fields and omitted the ~11% right-biased ff asymmetry. Cheap (reporting only), and it changed how every existing number in the report is read. |
 | 3 — direction/speed splits | **superseded, drop** | Its purpose was the direction split on transients. The unwind table already delivered the split that mattered, with a cleaner phase definition than the jerk-sign buckets would have given. |
 | 4 — oscillation + 2D band table | **keep, re-scoped** | Still the only thing that can localise the oscillation, but the hypothesis has changed from static friction to the Bolt dynamic gain layer. See the rewritten Chunk 4. |
 | 5 — turn-in event analysis | **keep, re-purposed** | No longer exploration. Peak `|error|`, time `at_limit`, and peak opposite-sign error in the following 3 s are exactly the before/after metrics for validating a controller fix. Build it *before* changing the controller so the yardstick exists first. |
@@ -200,9 +200,25 @@ Before the re-drive, also settle whether the ~0.34 m/s² uncorrected ff bias sho
 
 ---
 
-## Chunk 1b — Complete the effective-tune reporting — **NEXT**
+## Chunk 1b — Complete the effective-tune reporting — **DONE (2026-08-07)**
 
-Reporting only; no new analysis. Cheap, and it changes how every existing number in the report is read. Rationale in "What Chunk 1 missed" above; task list in `update_analyzer_chunk1b_task.md`.
+Implemented and verified against the ON route in a single pass; task list and review history in `update_analyzer_chunk1b_task.md`.
+
+### Result
+
+The report now states the Bolt feedforward layer under its real names:
+
+```
+staticTune=... ffScalePos=1.0300 ffScaleNeg=1.1449 kiMult=0.8649 deadzoneBoost=0.0150
+  bolt: ffAsym left=x1.0300 right=x1.1449 (+11.2% right), blended over ff in [-0.0500,+0.0500]
+        kiMult=0.8649 (applied to pid._k_i)  deadzoneBoost=0.0150 (reach |latAccel|<0.15, unscaled additive)
+```
+
+All four values match the prediction from [interface.py:444-459](../opendbc_repo/opendbc/car/gm/interface.py), read off the logged `car_params` rather than hardcoded. **The ~11% right-biased ff asymmetry is confirmed as real and in force on the recorded route** — the third independent right-turn contributor, alongside the `unwind_detected` sign error and the uncorrected ~0.34 m/s² ff bias. `kiMult` clears the controller's `> 0.0 and != 1.0` gate, so Ki really did run 13.5% below nominal.
+
+Every pre-existing section came back unchanged from the Chunk 2 run, and two consecutive runs are byte-identical — the seed holds.
+
+### Original scope
 
 - Import `BOLT_CARS` from `openpilot.selfdrive.controls.lib.latcontrol_torque` rather than re-listing fingerprints — it is already `BOLT_2022_2023_CARS + BOLT_2018_2021_CARS + BOLT_2017_CARS` ([latcontrol_torque.py:107](../selfdrive/controls/lib/latcontrol_torque.py)).
 - In `main`, when `car_params.carFingerprint in BOLT_CARS`, print the four fields under their real names — `ffScalePos`, `ffScaleNeg`, `kiMult`, `deadzoneBoost` — instead of `kp/ki/kd/kf`. Keep the existing generic labels on non-Bolt platforms so the script stays usable elsewhere.
@@ -216,7 +232,11 @@ Two small correctness items, folded in here:
 - `curvature` is stored as `0.0` when `v <= 1.0` ([analyze_bolt_lateral.py:440](../tools/tuning/analyze_bolt_lateral.py)). Chunk 4 bins on curvature and those samples would form a fake zero-curvature pile. Store `float("nan")` and let the existing `np.isfinite` idiom exclude them.
 - Seed the RNG in `main` before constructing `TorqueEstimator`, so the `TorqueEstimator fit` line becomes reproducible and can be included in every verification from here on.
 
-**Verify:** re-run on the recorded route. `ControlsState tracking`, `Unwind reconstruction`, and `Torque map residuals` byte-identical to the Chunk 2 run. `Effective tune` gains the Bolt block reporting 1.03 / 1.1449 / 0.8649 / 0.015. `TorqueEstimator fit` now stable across two consecutive runs.
+**Verify:** re-run on the recorded route. `ControlsState tracking`, `Unwind reconstruction`, and `Torque map residuals` byte-identical to the Chunk 2 run. `Effective tune` gains the Bolt block reporting 1.03 / 1.1449 / 0.8649 / 0.015. `TorqueEstimator fit` now stable across two consecutive runs. — **all five verification steps passed.**
+
+## Chunk 4 is next
+
+Re-scoped Chunk 4 below is the only remaining diagnostic unknown: the oscillation at one particular rightward curvature. Note that Chunk 1b's result sharpens its discriminating test — the static-friction fallback is now ~1.44× over-applied rather than ~1.55×, and the `ff_scale` peak-band coincidence test is unchanged.
 
 ## Chunk 3 — Direction and speed splits, real at-limit column — **SUPERSEDED, do not build**
 

@@ -1,5 +1,6 @@
 # Chunk 1b task list — complete the effective-tune reporting
 
+**Status:** COMPLETE (Implemented Tasks 1-5 in `tools/tuning/analyze_bolt_lateral.py`)
 **Audience:** an implementing subagent (Gemini Flash). Follow the tasks literally and in order.
 **Only file to edit:** `tools/tuning/analyze_bolt_lateral.py`. Nothing else. No schema changes, no controller changes.
 **Depends on:** Chunks 1 and 2 (both complete).
@@ -135,3 +136,34 @@ If any expected value disagrees with the Context table — say `ffScaleNeg` come
 Do not implement direction/speed splits of the `masks` tuple (Chunk 3 — superseded, do not build). Do not implement oscillation detection, the 2D band table, or any reconstruction of the Bolt dynamic gain functions `get_bolt_2022_2023_ff_scale` / `_friction_scale` / `_friction_threshold` (Chunk 4). Do not implement turn-in event analysis (Chunk 5) or multi-route support (Chunk 6).
 
 Do not modify `latcontrol_torque.py`, `opendbc_repo/opendbc/car/gm/interface.py`, `cereal/log.capnp`, or any tune value. Importing from `latcontrol_torque.py` is in scope; editing it is not. Do not fix the `unwind_detected` sign asymmetry — that is a confirmed defect with its own review pending, and it is not this chunk.
+
+---
+
+## Implementation outcome & Verification (2026-08-07)
+
+Status: **Complete & Verified.** One implementation pass, no rework required. All five tasks landed in `tools/tuning/analyze_bolt_lateral.py` (+71/−11, single file).
+
+Verification against the recorded ON route, all five steps passed:
+
+1. `ControlsState tracking`, `Unwind reconstruction`, and `Torque map residuals` unchanged from the Chunk 2 run — every figure the plan quotes matches digit for digit (`active_samples=213342 unwind_frac=0.0259 unclassified=147347`, all four phase rows, `ff offset check n=857 mean_f=+0.1032`, `unwind mae=0.3144 bias=+0.0512`, `center 0.0516`). Task 4's NaN change is invisible in output, as required.
+2. `staticTune=... ffScalePos=1.0300 ffScaleNeg=1.1449 kiMult=0.8649 deadzoneBoost=0.0150` — matches the Context table exactly, read off the logged `car_params` rather than hardcoded.
+3. Bolt block prints `ffAsym left=x1.0300 right=x1.1449 (+11.2% right), blended over ff in [-0.0500,+0.0500]` and `kiMult=0.8649 (applied to pid._k_i)  deadzoneBoost=0.0150 (reach |latAccel|<0.15, unscaled additive)`.
+4. **Two consecutive runs produced byte-identical output**, including the `TorqueEstimator fit` line. The seed holds; that line is now admissible evidence in every verification from here on.
+5. Compiles clean.
+
+### Review notes
+
+Reviewed before the run; no correctness defects found. Three points worth keeping:
+
+- The non-Bolt branch was also rewritten to the nested `getattr(tune, "kp", getattr(tune, "kpDEPRECATED", 0.0))` chain, which Task 2 only asked for on the Bolt path. Harmless: `LateralTorqueTuning` ([car.capnp:557-567](../opendbc_repo/opendbc/car/car.capnp)) declares only the four `*DEPRECATED` names, so the outer lookup always falls through and non-Bolt output is unchanged.
+- The new top-level import of `latcontrol_torque` is side-effect free — no `Params()` construction at module scope there or in its `testing_grounds` dependency — so it cannot break the script off-device.
+- Three latent nits, none reachable with this tune: a negative asymmetry would print the sign twice (`-11.2% left`); `deadzone_boost != 0.0` is a looser gate than the controller's `> 0.0`, so a negative boost would print a reach annotation where the controller skips the branch; and `ff_scale_pos == 0.0` prints `+0.0% right` rather than flagging the ratio as undefined.
+
+### Seeded `TorqueEstimator fit` — the canonical numbers
+
+`latAccelFactor=1.1087 latAccelOffset=-0.3454 friction=0.1623 bucket_points=11522`
+
+These supersede the unseeded draws quoted earlier in the plan (1.0936 / 1.1158). Two figures in `update_analyzer.md` shift slightly as a result; both have been updated there, and neither changes a conclusion:
+
+- Estimator plant offset −0.3411 → **−0.3454**, still corroborating `liveTorqueFiltered` −0.3182. The ~0.34 m/s² uncorrected ff bias stands.
+- Friction over-application 1.55× → **~1.44×** (`0.1623 × 1.1087 ≈ 0.180` inferred against 0.260 applied). Still over-applied.

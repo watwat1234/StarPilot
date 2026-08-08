@@ -47,12 +47,13 @@ Likewise the toggle state is recoverable: `initData.params` is a `Map(Text, Data
 - **The `unwind_detected` sign asymmetry is confirmed as real**, with a mechanism that accounts for both halves of the reported symptom. See Chunk 2's result section.
 - **Chunk 1 falsified the plan's own premise** that Force Auto-Tune was active: the controller ran the static tune the whole time. Two separate reasons, either sufficient — GM is absent from torqued's `ALLOWED_CARS`, and `ForceAutoTune` requires TuningLevel 3 while the device sits at 2.
 - **Two UI defects surfaced along the way** and are tracked outside this plan: the mici and galaxy UIs display settings the backend refuses to read (no tuning-level filtering), and neither has the Tuning Level selector that only the legacy Qt panel provides.
-- **Still unexplained:** the oscillation at one particular rightward curvature. Chunk 4's target.
-- **Known measurement quirk:** `TorqueEstimator fit` is not reproducible run-to-run — `get_points` subsamples via `np.random.choice` with no seed ([helpers.py:101](../selfdrive/locationd/helpers.py)). Two runs over the identical route gave 1.0936 and 1.1158. Harmless now; it will masquerade as a real difference once Chunk 6 compares routes. Seed or average before then.
+- **Chunk 1 is incomplete.** The effective-tune section omits the four repurposed tune fields that carry this car's dominant feedforward terms, including an ~11% right-biased asymmetric ff gain — a *third* independent right-turn contributor. Chunk 1b's target. See "What Chunk 1 missed" below.
+- **Still unexplained:** the oscillation at one particular rightward curvature. Chunk 4's target — but the hypothesis has changed; see the re-scoped Chunk 4.
+- **Known measurement quirk:** `TorqueEstimator fit` is not reproducible run-to-run — `get_points` subsamples via `np.random.choice` with no seed ([helpers.py:101](../selfdrive/locationd/helpers.py)). Two runs over the identical route gave 1.0936 and 1.1158. Being seeded in Chunk 1b rather than "before Chunk 6", so that every verification from here on can include the `TorqueEstimator fit` line instead of excluding it as known-noisy.
 
 # Chunk ordering
 
-Six chunks, each independently runnable and verifiable against the route already recorded. Ordered so the cheapest hypothesis-killing work lands first. **Superseded after Chunk 2 — see "Decision point resolved" below.**
+Originally six chunks (1b added later), each independently runnable and verifiable against the route already recorded. Ordered so the cheapest hypothesis-killing work lands first. **Superseded after Chunk 2 — see "Decision point resolved" below.** Current order is **1b → 4 → 5 → 6 → controller fix → re-drive → compare**.
 
 **Decision point after Chunk 2.** If the `unwind_detected` table comes back starkly asymmetric, the diagnosis is essentially done and the right next move may be to stop and address the controller rather than build Chunks 3–5. If it comes back symmetric, the hypothesis is dead, the P-gain/delay explanation moves to the front, and Chunks 3–4 become the priority. Re-decide there rather than committing now.
 
@@ -70,9 +71,33 @@ Three consequences that reframe the remaining chunks — all hypotheses to test,
 
 1. **An uncorrected feedforward bias.** Two independent estimators on this route put the plant offset near −0.33 (`liveTorqueFiltered` −0.3182, `TorqueEstimator fit` −0.3411). The controller applied 0.0, leaving ff ~0.34 m/s² rightward of what the plant wants — the direction of the reported slam.
 2. **The integrator is absorbing it.** `|i| ≈ 0.19–0.22` in every steady-state bucket, against a steady-state MAE of 0.09. That is feedback doing feedforward's job — and it raises the stakes on the `unwind_detected` freeze, which releases exactly that compensation.
-3. **Friction is over-applied.** Controller uses `0.130 × 2.0 = 0.260`; the estimator infers `0.1537 × 1.0936 ≈ 0.168`, i.e. ~1.55×. Over-applied friction near center is the standard chatter mechanism — Chunk 4's target.
+3. **Friction is over-applied.** Controller uses `0.130 × 2.0 = 0.260`; the estimator infers `0.1537 × 1.0936 ≈ 0.168`, i.e. ~1.55×. Over-applied friction near center is the standard chatter mechanism — retained as the *fallback* explanation for the oscillation, not the leading one; see the re-scoped Chunk 4.
+4. **The feedforward carries an ~11% right-biased asymmetric gain** that Chunk 1 never reported. See below.
 
 The `unwind_detected` hypothesis is untouched by any of this: it derives from `desiredLateralAccel` alone and involves no tune value.
+
+### What Chunk 1 missed (2026-08-07)
+
+Chunk 1's goal was to state the effective tune "so results are interpretable." It reports `latAccelFactor` / `latAccelOffset` / `friction`, which is incomplete for a Bolt — and it *mislabels* four fields.
+
+On Bolts, four torque-tune fields are repurposed at construction ([latcontrol_torque.py:1909-1917](../selfdrive/controls/lib/latcontrol_torque.py)):
+
+| tune field | actual meaning | ACC 2022/2023 value |
+|---|---|---|
+| `kpDEPRECATED` | `torque_ff_scale_pos` — ff multiplier when `ff >= 0` (left) | 1.03 |
+| `kiDEPRECATED` | `torque_ff_scale_neg` — ff multiplier when `ff < 0` (right) | 1.07 × 1.07 = **1.1449** |
+| `kdDEPRECATED` | `torque_ki_mult` — scales `pid._k_i` | 0.93 × 0.93 = 0.8649 |
+| `kfDEPRECATED` | `torque_deadzone_boost` — additive near-center ff | 0.02 × 0.75 = 0.015 |
+
+Values from [interface.py:444-458](../opendbc_repo/opendbc/car/gm/interface.py).
+
+Three consequences:
+
+- **An asymmetric feedforward gain, right-biased by ~11%**, applied via `np.interp(ff, [-0.05, 0, 0.05], [neg, 1.0, pos])` ([latcontrol_torque.py:1997-1999](../selfdrive/controls/lib/latcontrol_torque.py)) — effectively a step at `ff = 0`. This is a **third** independent right-turn contributor, alongside the `unwind_detected` sign error (Chunk 2) and the uncorrected ~0.34 m/s² ff bias (consequence 1 above).
+- **Ki is 13.5% below nominal**, while consequence 2 above established the integrator is already doing feedforward's job (`|i| ≈ 0.19–0.22` against steady-state MAE 0.09). Less authority where more is already being demanded.
+- The `staticTune=` line in the analyzer **actively mislabels** all four as `kp/ki/kd/kf`, so a reader would take them for PID gains.
+
+None of this is resolved through the live/static toggle path — these come straight off `car_params.lateralTuning.torque` and were in force regardless of the Chunk 1 toggle finding.
 
 ### Original scope
 
@@ -142,12 +167,13 @@ The table came back starkly asymmetric, which was the "diagnosis essentially don
 
 | chunk | status | why |
 |---|---|---|
+| 1b — complete the effective-tune reporting | **new, do first** | Chunk 1 mislabels four tune fields and omits the ~11% right-biased ff asymmetry. Cheap (reporting only), and it changes how every existing number in the report is read. |
 | 3 — direction/speed splits | **superseded, drop** | Its purpose was the direction split on transients. The unwind table already delivered the split that mattered, with a cleaner phase definition than the jerk-sign buckets would have given. |
-| 4 — oscillation + 2D band table | **keep, independent value** | Nothing found so far explains the oscillation at one particular curvature. That remains the friction over-application (0.260 applied against ~0.168 inferred), and Chunk 4 is the only thing that can localise it. |
+| 4 — oscillation + 2D band table | **keep, re-scoped** | Still the only thing that can localise the oscillation, but the hypothesis has changed from static friction to the Bolt dynamic gain layer. See the rewritten Chunk 4. |
 | 5 — turn-in event analysis | **keep, re-purposed** | No longer exploration. Peak `|error|`, time `at_limit`, and peak opposite-sign error in the following 3 s are exactly the before/after metrics for validating a controller fix. Build it *before* changing the controller so the yardstick exists first. |
 | 6 — N-route side-by-side | **keep, needed for the fix** | Becomes the comparison harness for pre-fix vs post-fix drives rather than ON vs OFF toggle drives. |
 
-**Suggested order:** 5 → 6 → controller fix → re-drive → compare. Chunk 4 any time; it is independent.
+**Order:** 1b → 4 → 5 → 6 → controller fix → re-drive → compare.
 
 ## The indicated controller fix — out of scope here, needs its own review
 
@@ -165,9 +191,32 @@ unwind_detected = ((abs(setpoint) - abs(self.prev_desired_lateral_accel)) / self
 
 This is safety-relevant lateral behaviour and remains **out of scope for this plan**, which is diagnosis only. It needs its own review, and a before/after drive on the same roads. Note the fix changes behaviour on *both* sides: it stops freezing at right turn-in (removing the slam mechanism) and starts freezing at right turn-exit (which the controller has never done on this car), so the post-fix drive is testing two changes at once.
 
-Before the re-drive, also settle whether the ~0.34 m/s² uncorrected ff bias should be addressed separately — it is an independent contributor to the same symptom and will still be there after the sign fix.
+Two further notes on the fix:
+
+- **It does not eliminate every instance of the reported entry condition.** Entering a right turn *from a left-hand curve* (setpoint +0.5 → −2) passes through a stretch where `|setpoint|` is genuinely decreasing while still `< 0.3`, so the magnitude-rate form fires there too. That is semantically correct — it really is unwinding the left turn — but a right entry reached that way will still see a frozen integrator. Only right entries from straight are fully fixed.
+- **The correct classifier already exists in the same file.** `_bolt_2022_2023_transition_phase` ([latcontrol_torque.py:960](../selfdrive/controls/lib/latcontrol_torque.py)) separates turn-in from unwind via `tanh(la × jerk / scale)` — the direction-agnostic product form, which is right. The controller has a correct unwind classifier roughly a thousand lines from the broken one, feeding a different consumer.
+
+Before the re-drive, also settle whether the ~0.34 m/s² uncorrected ff bias should be addressed separately — it is an independent contributor to the same symptom and will still be there after the sign fix. The same question applies to the ~11% right-biased ff asymmetry from Chunk 1b: three contributors now push the same direction, and a fix to one alone may not be measurable against the other two.
 
 ---
+
+## Chunk 1b — Complete the effective-tune reporting — **NEXT**
+
+Reporting only; no new analysis. Cheap, and it changes how every existing number in the report is read. Rationale in "What Chunk 1 missed" above; task list in `update_analyzer_chunk1b_task.md`.
+
+- Import `BOLT_CARS` from `openpilot.selfdrive.controls.lib.latcontrol_torque` rather than re-listing fingerprints — it is already `BOLT_2022_2023_CARS + BOLT_2018_2021_CARS + BOLT_2017_CARS` ([latcontrol_torque.py:107](../selfdrive/controls/lib/latcontrol_torque.py)).
+- In `main`, when `car_params.carFingerprint in BOLT_CARS`, print the four fields under their real names — `ffScalePos`, `ffScaleNeg`, `kiMult`, `deadzoneBoost` — instead of `kp/ki/kd/kf`. Keep the existing generic labels on non-Bolt platforms so the script stays usable elsewhere.
+- Extend the `Effective tune` section with a Bolt block stating the asymmetry explicitly, e.g.
+  `ffAsym: left=×1.0300 right=×1.1449 (+11.2% right), blended over ff∈[-0.05,+0.05]`,
+  plus `kiMult` and `deadzoneBoost` with its `DEADZONE_BOOST_LAT_ACCEL = 0.15` reach.
+- Add this block **separately** from `resolve_effective_tune`'s static/live/effective triple — these values never pass through the live-params toggle path, so threading them through that function would misrepresent them.
+
+Two small correctness items, folded in here:
+
+- `curvature` is stored as `0.0` when `v <= 1.0` ([analyze_bolt_lateral.py:440](../tools/tuning/analyze_bolt_lateral.py)). Chunk 4 bins on curvature and those samples would form a fake zero-curvature pile. Store `float("nan")` and let the existing `np.isfinite` idiom exclude them.
+- Seed the RNG in `main` before constructing `TorqueEstimator`, so the `TorqueEstimator fit` line becomes reproducible and can be included in every verification from here on.
+
+**Verify:** re-run on the recorded route. `ControlsState tracking`, `Unwind reconstruction`, and `Torque map residuals` byte-identical to the Chunk 2 run. `Effective tune` gains the Bolt block reporting 1.03 / 1.1449 / 0.8649 / 0.015. `TorqueEstimator fit` now stable across two consecutive runs.
 
 ## Chunk 3 — Direction and speed splits, real at-limit column — **SUPERSEDED, do not build**
 
@@ -179,18 +228,55 @@ Self-contained rework of the `masks` tuple in `summarize_control_samples`.
 
 **Verify:** transient bucket `n` counts rise slightly vs the current report (saturated samples no longer excluded); steady-state buckets unchanged. `at_limit` should be non-zero in the low-speed right buckets if the slam is real.
 
-## Chunk 4 — Oscillation detection and the 2D band table
+## Chunk 4 — Oscillation detection and the 2D band table — **RE-SCOPED (2026-08-07)**
 
 The largest chunk, and the one that answers "a specific curvature to the right."
 
-- Segment into contiguous `latActive` runs (break on inactive, `steeringPressed`, or monotime gap).
+### The hypothesis has changed
+
+The original scope assumed the oscillation came from static friction over-application (0.260 applied against ~0.168 inferred). That is now the **fallback**, not the leading explanation, for one reason: static friction over-application chatters near center at *all* curvatures. The reported symptom is one *particular* rightward curvature.
+
+There is a dynamic gain layer that does predict a specific curvature, which this plan had not previously accounted for: `get_bolt_2022_2023_ff_scale`, `get_bolt_2022_2023_friction_scale`, and `get_bolt_2022_2023_friction_threshold` ([latcontrol_torque.py:974-1022](../selfdrive/controls/lib/latcontrol_torque.py)). It is **unconditionally active** on this car — `bolt_2022_2023_tuned_path_active = self.is_bolt_2022_2023`, with no testing-ground gate, unlike the Volt/G90/EV6 paths. Its shape:
+
+- **Curvature-banded.** `extra_scale = gain × σ((|la| − 0.12)/0.07) × σ((1.35 − |la|)/0.28)` — a gain bump that switches on near `|la| ≈ 0.12` and off near 1.35.
+- **Direction-asymmetric.** `FF_GAIN_LEFT` 0.11 vs `FF_GAIN_RIGHT` 0.06; `UNWIND_TAPER` 0.38/0.40; `UNWIND_FRICTION_REDUCTION` 0.27/0.28; `TURN_IN_FRICTION_BOOST` 0.10/0.07.
+- **Low-speed weighted.** `1/(1 + (v/9)²)` — strongest exactly where the symptom lives.
+- **Hard-switched on phase.** `tanh(la × jerk / 0.12)` saturates almost immediately (`|la·jerk| > 0.3 ⇒ |phase| > 0.99`), so the turn-in and unwind gain sets swap near-discontinuously rather than blending.
+
+A gain bump confined to a specific `|la|` band, direction-asymmetric, strongest below ~9 m/s, switched hard on the sign of `la × jerk`, is a much better fit for the reported symptom. Chunk 4 as originally written could not see any of it, because it binned outcomes without reconstructing the gains that produced them.
+
+### Part A — reconstruct the dynamic gains
+
+Import and call the real functions; do not reimplement them (same reuse discipline as the existing `NON_LINEAR_TORQUE_PARAMS` import):
+
+```python
+from openpilot.selfdrive.controls.lib.latcontrol_torque import (
+  get_bolt_2022_2023_ff_scale, get_bolt_2022_2023_friction_scale,
+  get_bolt_2022_2023_friction_threshold, get_friction_threshold,
+)
+```
+
+They are pure functions of `(desired_lateral_accel, desired_lateral_jerk, v_ego)` — all three already on `ControlSample` as `desired_la`, `desired_jerk`, `v_ego`. **No schema change, no re-drive.** They are scalar-only, so evaluate once with a list comprehension and cache the arrays; at ~200k samples that is a few seconds, acceptable for a one-shot report.
+
+Gate on `carFingerprint in BOLT_2022_2023_CARS` and print a skip line otherwise, so the section degrades cleanly on other platforms.
+
+### Part B — oscillation detector
+
+Unchanged from the original scope.
+
+- Segment into contiguous `latActive` runs (break on inactive, `steeringPressed`, or monotime gap — reuse the same gap guard as `reconstruct_unwind`, [analyze_bolt_lateral.py:59](../tools/tuning/analyze_bolt_lateral.py)).
 - On the tracking error `desired - actual`: detrend with a ~1 s moving mean, count sign changes in a sliding ~2 s window, require a minimum peak-to-peak amplitude so sensor noise isn't counted.
 - Dominant frequency per window via `np.fft.rfft` — numpy only, no new dependency.
-- 2D table: rows = `|desired lat accel|` bins (`0–0.2, 0.2–0.4, 0.4–0.7, 0.7–1.1, 1.1–1.6, 1.6+`), columns = speed bins (`<6, 6–10, 10–14, 14–20, 20+`), printed **twice — once left, once right**. Each cell: oscillating-sample fraction, median dominant Hz, and sample count so thin cells are visibly untrustworthy.
 
-Build the detector and the table in that order; the detector is testable on its own before any table rendering exists.
+### Part C — the 2D band table
+
+Rows = `|desired lat accel|` bins (`0–0.2, 0.2–0.4, 0.4–0.7, 0.7–1.1, 1.1–1.6, 1.6+`), columns = speed bins (`<6, 6–10, 10–14, 14–20, 20+`), printed **twice — once left, once right**. Each cell: oscillating-sample fraction, median dominant Hz, sample count so thin cells are visibly untrustworthy, **plus median `ff_scale` and median `friction_scale`** from Part A.
+
+Build in the order A → B → C; each is testable before the next, and the detector is testable on its own before any table rendering exists.
 
 **Verify:** near-zero prevalence in `center` and high-speed cells (which drive fine), non-zero in a right-side low-speed cell. If everything lights up, the amplitude threshold is too low.
+
+The new discriminating test is whether the oscillating cells **coincide with the `ff_scale` peak band** — the `0.2–0.4` and `0.4–0.7` rows at `<6` / `6–10`, where the onset sigmoid has opened and the low-speed weight is still near 1. If they coincide, the dynamic gain layer is the mechanism. If `ff_scale` comes back flat near 1.0 across all cells, this hypothesis is dead and static-friction over-application returns as the explanation.
 
 ## Chunk 5 — Turn-in event analysis
 
@@ -225,4 +311,6 @@ The genuinely untested condition is now the *live* one (latAccelFactor 1.2916, o
 
 ## Out of scope
 
-No changes to `latcontrol_torque.py`, the cereal schema, or any tune values. This is diagnosis only — the `unwind_detected` sign asymmetry is a suspected defect, but confirming it with data comes before touching the controller.
+No changes to `latcontrol_torque.py`, the cereal schema, or any tune values. This is diagnosis only — the `unwind_detected` sign asymmetry is a confirmed defect, but the controller fix gets its own review and its own before/after drive.
+
+Note that Chunks 1b and 4 *import from* `latcontrol_torque.py` (`BOLT_CARS`, the Bolt scale functions). Reading it is in scope; editing it is not.

@@ -24,6 +24,9 @@ class ControlSample:
   i_term: float
   f_term: float
   torque_cmd: float
+  mono_time: int
+  d_term: float
+  curvature: float
 
 
 LOW_ROLL_THRESHOLD_DEG = 1.5
@@ -135,6 +138,131 @@ def summarize_torque_points(car_fingerprint: str, points: np.ndarray) -> None:
     )
 
 
+# required tuning level per key; 5th field of the entry in common/params_keys.h
+PARAM_TUNING_LEVELS = {
+  "AdvancedLateralTune": 2,
+  "ForceAutoTune": 3,
+  "ForceAutoTuneOff": 2,
+  "SteerFriction": 3,
+  "SteerLatAccel": 3,
+}
+
+
+def _get_tuning_level(log_params: dict[str, bytes]) -> int:
+  if log_params.get("TuningLevelConfirmed", b"0") == b"1":
+    try:
+      return int(log_params.get("TuningLevel", b"2").decode())
+    except (ValueError, TypeError):
+      return 2
+  return 2
+
+
+def _param_bool(log_params: dict[str, bytes], key: str, tuning_level: int = 3) -> bool:
+  if tuning_level < PARAM_TUNING_LEVELS.get(key, 0):
+    return False
+  return log_params.get(key, b"0") == b"1"
+
+
+def _param_float(log_params: dict[str, bytes], key: str, default: float, tuning_level: int = 3) -> float:
+  if tuning_level < PARAM_TUNING_LEVELS.get(key, 0):
+    return default
+  val = log_params.get(key)
+  if val is None:
+    return default
+  try:
+    return float(val.decode())
+  except (ValueError, TypeError):
+    return default
+
+
+def clamp(val: float, min_val: float, max_val: float) -> float:
+  return max(min_val, min(val, max_val))
+
+
+def resolve_effective_tune(car_params, log_params: dict[str, bytes], live_snapshot):
+  if car_params.lateralTuning.which() != "torque":
+    return None
+
+  torque_tune = car_params.lateralTuning.torque
+  static_lat_accel_factor = torque_tune.latAccelFactor
+  static_lat_accel_offset = torque_tune.latAccelOffset
+  static_friction = torque_tune.friction
+
+  tuning_level = _get_tuning_level(log_params)
+
+  has_auto_tune = live_snapshot.useParams if live_snapshot is not None else False
+  alt = _param_bool(log_params, "AdvancedLateralTune", tuning_level)
+  force_auto_tune = alt and (not has_auto_tune) and _param_bool(log_params, "ForceAutoTune", tuning_level)
+  force_auto_tune_off = alt and has_auto_tune and _param_bool(log_params, "ForceAutoTuneOff", tuning_level)
+
+  if alt:
+    custom_friction = clamp(_param_float(log_params, "SteerFriction", static_friction, tuning_level), 0.0, 1.0)
+    custom_lat_accel = clamp(
+      _param_float(log_params, "SteerLatAccel", static_lat_accel_factor, tuning_level),
+      0.5 * static_lat_accel_factor,
+      1.5 * static_lat_accel_factor,
+    )
+  else:
+    custom_friction = static_friction
+    custom_lat_accel = static_lat_accel_factor
+
+  use_custom_friction = (
+    round(custom_friction, 2) != round(static_friction, 2) and not force_auto_tune
+  ) or force_auto_tune_off
+  use_custom_latAccel = (
+    round(custom_lat_accel, 2) != round(static_lat_accel_factor, 2) and not force_auto_tune
+  ) or force_auto_tune_off
+
+  use_live_params = has_auto_tune or force_auto_tune
+
+  lat_accel_factor = static_lat_accel_factor
+  lat_accel_offset = static_lat_accel_offset
+  friction = static_friction
+
+  if use_live_params and live_snapshot is not None:
+    if not use_custom_latAccel:
+      lat_accel_factor = live_snapshot.latAccelFactorFiltered
+      lat_accel_offset = live_snapshot.latAccelOffsetFiltered
+    if not use_custom_friction:
+      friction = live_snapshot.frictionCoefficientFiltered
+
+  if use_custom_latAccel:
+    lat_accel_factor = custom_lat_accel
+  if use_custom_friction:
+    friction = custom_friction
+
+  toggles = {
+    "AdvancedLateralTune": int(alt),
+    "ForceAutoTune": int(_param_bool(log_params, "ForceAutoTune", tuning_level)),
+    "ForceAutoTuneOff": int(_param_bool(log_params, "ForceAutoTuneOff", tuning_level)),
+    "hasAutoTune": int(has_auto_tune),
+    "tuningLevel": tuning_level,
+  }
+  resolved = {
+    "useLiveParams": int(use_live_params),
+    "useCustomLatAccel": int(use_custom_latAccel),
+    "useCustomFriction": int(use_custom_friction),
+  }
+  static_vals = (static_lat_accel_factor, static_lat_accel_offset, static_friction)
+  if live_snapshot is not None:
+    live_vals = (
+      live_snapshot.latAccelFactorFiltered,
+      live_snapshot.latAccelOffsetFiltered,
+      live_snapshot.frictionCoefficientFiltered,
+    )
+  else:
+    live_vals = None
+  effective_vals = (lat_accel_factor, lat_accel_offset, friction)
+
+  return {
+    "toggles": toggles,
+    "resolved": resolved,
+    "static": static_vals,
+    "live": live_vals,
+    "effective": effective_vals,
+  }
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Analyze a Bolt route for lateral tuning opportunities.")
   parser.add_argument("route", help="Route name, e.g. dongle/route")
@@ -148,6 +276,7 @@ def main() -> None:
   }
   log_reader = LogReader(args.route, default_mode=mode_map[args.mode], sort_by_time=True)
 
+  log_params: dict[str, bytes] = {}
   car_params = None
   live_torque_snapshots = []
   torque_estimator = None
@@ -155,7 +284,15 @@ def main() -> None:
   control_samples: list[ControlSample] = []
 
   for msg in log_reader:
-    which = msg.which()
+    try:
+      which = msg.which()
+    except Exception:
+      #print('skipping corrupted msg')
+      continue
+    if which == "initData":
+      log_params = {entry.key: entry.value for entry in msg.initData.params.entries}
+      continue
+
     if which == "carParams" and car_params is None:
       car_params = msg.carParams
       torque_estimator = TorqueEstimator(car_params, track_all_points=True)
@@ -172,8 +309,10 @@ def main() -> None:
       lateral_state = msg.controlsState.lateralControlState
       if lateral_state.which() == "torqueState":
         torque_state = lateral_state.torqueState
+        v = latest["carState"].vEgo
+        curvature = torque_state.desiredLateralAccel / (v * v) if v > 1.0 else 0.0
         control_samples.append(ControlSample(
-          v_ego=latest["carState"].vEgo,
+          v_ego=v,
           steering_pressed=latest["carState"].steeringPressed,
           lat_active=latest["carControl"].latActive,
           saturated=torque_state.saturated,
@@ -185,6 +324,9 @@ def main() -> None:
           i_term=torque_state.i,
           f_term=torque_state.f,
           torque_cmd=latest["carControl"].actuators.torque,
+          mono_time=msg.logMonoTime,
+          d_term=torque_state.d,
+          curvature=curvature,
         ))
     elif which == "liveTorqueParameters" and len(live_torque_snapshots) < 8:
       live_torque_snapshots.append(msg.liveTorqueParameters)
@@ -199,7 +341,7 @@ def main() -> None:
   print(f"carFingerprint={car_params.carFingerprint}")
   print(f"steerRatio={car_params.steerRatio:.4f} steerActuatorDelay={car_params.steerActuatorDelay:.4f}")
   print(
-    "torqueTune="
+    "staticTune="
     f"latAccelFactor={torque_tune.latAccelFactor:.4f} "
     f"friction={torque_tune.friction:.4f} "
     f"latAccelOffset={torque_tune.latAccelOffset:.4f} "
@@ -218,6 +360,62 @@ def main() -> None:
       f"friction={last.frictionCoefficientFiltered:.4f} "
       f"useParams={last.useParams} liveValid={last.liveValid}"
     )
+
+  last_snapshot = live_torque_snapshots[-1] if live_torque_snapshots else None
+  tune_res = resolve_effective_tune(car_params, log_params, last_snapshot)
+
+  print("\nEffective tune:")
+  if car_params.lateralTuning.which() != "torque":
+    print("  lateralTuning is not torque; skipped.")
+  elif tune_res is not None:
+    if not log_params:
+      print("  params unavailable in log; toggle state unknown")
+    else:
+      t = tune_res["toggles"]
+      print(
+        f"  toggles=AdvancedLateralTune={t['AdvancedLateralTune']} "
+        f"ForceAutoTune={t['ForceAutoTune']} "
+        f"ForceAutoTuneOff={t['ForceAutoTuneOff']} "
+        f"hasAutoTune={t['hasAutoTune']}(@route start) "
+        f"tuningLevel={t['tuningLevel']}"
+      )
+    r = tune_res["resolved"]
+    print(
+      f"  resolved=useLiveParams={r['useLiveParams']} "
+      f"useCustomLatAccel={r['useCustomLatAccel']} "
+      f"useCustomFriction={r['useCustomFriction']}"
+    )
+
+    s_laf, s_lao, s_fr = tune_res["static"]
+    s_famp = s_fr * s_laf
+    print(
+      f"  static=   latAccelFactor={s_laf:.4f} latAccelOffset={s_lao:.4f} "
+      f"friction={s_fr:.4f} frictionAmp={s_famp:.4f}"
+    )
+
+    if tune_res["live"] is not None:
+      l_laf, l_lao, l_fr = tune_res["live"]
+      l_famp = l_fr * l_laf
+      print(
+        f"  liveFilt= latAccelFactor={l_laf:.4f} latAccelOffset={l_lao:.4f} "
+        f"friction={l_fr:.4f} frictionAmp={l_famp:.4f}"
+      )
+    else:
+      print("  liveFilt= (no liveTorqueParameters in log)")
+
+    e_laf, e_lao, e_fr = tune_res["effective"]
+    e_famp = e_fr * e_laf
+    print(
+      f"  effective=latAccelFactor={e_laf:.4f} latAccelOffset={e_lao:.4f} "
+      f"friction={e_fr:.4f} frictionAmp={e_famp:.4f}"
+    )
+
+    if (
+      abs(e_laf - s_laf) > 1e-6 or
+      abs(e_lao - s_lao) > 1e-6 or
+      abs(e_fr - s_fr) > 1e-6
+    ):
+      print("  WARNING: effective tune differs from static tune; report figures reflect the effective tune.")
 
   summarize_control_samples(control_samples)
 

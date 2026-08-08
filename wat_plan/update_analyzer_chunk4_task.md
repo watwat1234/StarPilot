@@ -1,6 +1,6 @@
 # Chunk 4 task list — dynamic gain reconstruction, oscillation detection, band tables
 
-**Status:** COMPLETE (Implemented Parts A, B, C; Part A restored, AST call graph verified)
+**Status:** **PART A KEPT — PARTS B/C REVERTED (2026-08-07).** All three parts were implemented and run on the recorded route. Part A worked and stays in the file. The oscillation detector failed Verify step 4 and was removed; oscillation diagnosis is parked to decouple it from the slam/overcorrect work. Results, root causes and resume notes are in the Chunk 4 section of `update_analyzer.md` — read that before reviving anything here. **The tasks below describe the original scope and are no longer the live spec.**
 **Audience:** an implementing subagent. Follow the tasks literally and in order.
 **Only file to edit:** `tools/tuning/analyze_bolt_lateral.py`. Nothing else. No schema changes, no controller changes.
 **Depends on:** Chunks 1, 1b and 2 (all complete) — `ControlSample` already carries `mono_time`, `torque_active`, `curvature`, `desired_jerk`, and the RNG is seeded in `main`.

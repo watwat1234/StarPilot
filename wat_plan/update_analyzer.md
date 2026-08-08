@@ -234,9 +234,13 @@ Two small correctness items, folded in here:
 
 **Verify:** re-run on the recorded route. `ControlsState tracking`, `Unwind reconstruction`, and `Torque map residuals` byte-identical to the Chunk 2 run. `Effective tune` gains the Bolt block reporting 1.03 / 1.1449 / 0.8649 / 0.015. `TorqueEstimator fit` now stable across two consecutive runs. — **all five verification steps passed.**
 
-## Chunk 4 is next
+## Chunk 5 is next — the slam/overcorrect and the oscillation are now decoupled
 
-Re-scoped Chunk 4 below is the only remaining diagnostic unknown: the oscillation at one particular rightward curvature. Note that Chunk 1b's result sharpens its discriminating test — the static-friction fallback is now ~1.44× over-applied rather than ~1.55×, and the `ff_scale` peak-band coincidence test is unchanged.
+**Decision (2026-08-07, after Chunk 4 ran):** the slam/overcorrect is the priority and is being pursued on its own. Oscillation diagnosis is **parked**. Chunk 4's Part A landed and is kept; its oscillation detector was reverted. See Chunk 4 below for what survived and why.
+
+The decoupling is not just scheduling — Chunk 4 produced the evidence that these are two separate faults with two separate mechanisms. The `ff_scale` dynamic layer is banded to `|la| ∈ [0.12, 1.35]` and measured at `medFF ≈ 1.00` in the `1.6+` row on both sides, i.e. **switched off during a 90° turn**. It cannot be causing the slam. Whatever it does or does not do to the oscillation is a question that no longer blocks the slam work.
+
+Chunk 5 (turn-in event analysis) is the right next tool: it quantifies the left overcorrection directly, per event, which is exactly the symptom under investigation.
 
 ## Chunk 3 — Direction and speed splits, real at-limit column — **SUPERSEDED, do not build**
 
@@ -248,9 +252,34 @@ Self-contained rework of the `masks` tuple in `summarize_control_samples`.
 
 **Verify:** transient bucket `n` counts rise slightly vs the current report (saturated samples no longer excluded); steady-state buckets unchanged. `at_limit` should be non-zero in the low-speed right buckets if the slam is real.
 
-## Chunk 4 — Oscillation detection and the 2D band table — **RE-SCOPED (2026-08-07)**
+## Chunk 4 — Oscillation detection and the 2D band table — **PART A KEPT, PARTS B/C REVERTED (2026-08-07)**
 
-The largest chunk, and the one that answers "a specific curvature to the right." Task list and review history in `update_analyzer_chunk4_task.md`.
+Task list, review history and the full result are in `update_analyzer_chunk4_task.md`.
+
+### What was kept
+
+`reconstruct_bolt_2022_2023_gains`, `summarize_bolt_dynamic_gains` and the two `Dynamic gain bands` tables remain in `analyze_bolt_lateral.py`. They import and call the controller's own functions, so they stay accurate for free, and they are the tool that shows what the dynamic layer is doing during any maneuver — including a re-drive after a slam fix.
+
+### What Part A established
+
+- **The layer is live and shaped as predicted.** `ff_scale` ranges `[1.0000, 1.1192]`, peaking at **1.11 left / 1.06 right** — exactly `FF_GAIN_LEFT = 0.11` / `FF_GAIN_RIGHT = 0.06`. `friction_scale` medians `1.0900` almost everywhere, the flat `FRICTION_MULT`, hitting its `0.92` clamp floor in a few low-speed unwind cells. `thresh_ratio` spans `[0.859, 1.140]`, median 1.0.
+- **The layer is OFF during the slam.** Both `1.6+` rows read `medFF ≈ 1.00`: the `FF_CUTOFF = 1.35` sigmoid has closed. A 90° turn lives well above that. **This removes the dynamic layer from the slam's candidate list.**
+- **Consequence for the slam — the static asymmetry stands undiluted at high `|la|`.** In the mid band the layer is *left*-biased and partially cancels the static right bias (net ≈ `1.03 × 1.10 = 1.13` left vs `1.1449 × 1.055 = 1.21` right, so ~11.2% narrows to ~7%). Above `|la| ≈ 1.35` that cancellation disappears and the full **11.2% right-biased `ff_scale`** applies alone. The static asymmetry is therefore *worse* during the 90° turn than the mid-band figures suggest.
+
+### What was reverted and why
+
+The oscillation detector fired on nearly everything: `frac` of 0.3–1.0 in cells that drive fine, including `20+`, and in the `0–0.2` row it *rose* monotonically with speed (0.00 → 0.42), the opposite of the symptom. It failed the chunk's own Verify step 4. Two spec-level causes, both worth recording for whenever this is picked back up:
+
+1. **`medHz` was pinned to the detrend corner.** The 1 s moving-mean detrend high-passes at ~1 Hz and residual energy peaks just above the corner, so the FFT argmax landed there by construction. Every cell read 0.5–2.0 Hz. Real chatter is usually 2–5 Hz — the detector was not looking in the right band.
+2. **A boolean fraction against a fixed 0.15 m/s² p2p has no scale.** Overall MAE is 0.093 and transient MAE 0.29, so the threshold sat inside normal tracking error at speed, with no amplitude column to tell mild wander from a limit cycle.
+
+A third, structural problem: the 201-sample window plus 50-sample NaN edge needs **≥ ~3.0 s of continuous engagement** before it emits a verdict, which is comparable to the duration of the maneuver being hunted. Below 6 m/s on the right there were 44 evaluated samples at `0.2–0.4` and none above `0.4` — the symptom's own operating point was nearly empty, and `--` was indistinguishable from "no oscillation".
+
+### If oscillation work resumes
+
+Shorten the window to ~1 s and the detrend to ~0.35 s; require the FFT peak to stand ≥3× above its own median and restrict the search to ~1.5–8 Hz; add a median-p2p column so `frac` has a scale; print segment-duration stats so "no data" stops reading as "no oscillation". One unresolved observation worth re-testing rather than trusting: within the `ff_scale` peak band at moderate speed, right ran ~2× hotter than left (`0.4–0.7` @ 6–10: 0.733 right vs 0.306 left). That is the predicted direction and band, but against an unestablished false-positive floor it is not yet evidence.
+
+## Chunk 4 — original scope, for reference
 
 ### The hypothesis has changed
 

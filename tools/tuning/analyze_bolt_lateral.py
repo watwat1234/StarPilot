@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   BOLT_2022_2023_CARS,
   DEADZONE_BOOST_LAT_ACCEL,
   FF_SCALE_BLEND_LAT_ACCEL,
+  get_bolt_2022_2023_center_output_scale,
   get_bolt_2022_2023_ff_scale,
   get_bolt_2022_2023_friction_scale,
   get_bolt_2022_2023_friction_threshold,
@@ -341,6 +342,16 @@ def _param_float(log_params: dict[str, bytes], key: str, default: float, tuning_
     return default
 
 
+def _param_str(log_params: dict[str, bytes], key: str, default: str = "") -> str:
+  val = log_params.get(key)
+  if val is None:
+    return default
+  try:
+    return val.decode()
+  except (UnicodeDecodeError, AttributeError):
+    return default
+
+
 def clamp(val: float, min_val: float, max_val: float) -> float:
   return max(min_val, min(val, max_val))
 
@@ -359,7 +370,7 @@ def resolve_effective_tune(car_params, log_params: dict[str, bytes], live_snapsh
   has_auto_tune = live_snapshot.useParams if live_snapshot is not None else False
   alt = _param_bool(log_params, "AdvancedLateralTune", tuning_level)
   force_auto_tune = alt and (not has_auto_tune) and _param_bool(log_params, "ForceAutoTune", tuning_level)
-  force_auto_tune_off = alt and has_auto_tune and _param_bool(log_params, "ForceAutoTuneOff", tuning_level)
+  force_auto_tune_off = alt and _param_bool(log_params, "ForceAutoTuneOff", tuning_level)
 
   if alt:
     custom_friction = clamp(_param_float(log_params, "SteerFriction", static_friction, tuning_level), 0.0, 1.0)
@@ -461,10 +472,11 @@ def summarize_bolt_effective_tune(car_params) -> None:
 
 def reconstruct_bolt_2022_2023_gains(
   samples: list[ControlSample], car_fingerprint: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
   n = len(samples)
   if car_fingerprint not in BOLT_2022_2023_CARS or n == 0:
     return (
+      np.full(n, np.nan, dtype=float),
       np.full(n, np.nan, dtype=float),
       np.full(n, np.nan, dtype=float),
       np.full(n, np.nan, dtype=float),
@@ -475,6 +487,7 @@ def reconstruct_bolt_2022_2023_gains(
   friction_scale = np.zeros(n, dtype=float)
   friction_threshold = np.zeros(n, dtype=float)
   threshold_ratio = np.zeros(n, dtype=float)
+  center_output_scale = np.zeros(n, dtype=float)
 
   for k, s in enumerate(samples):
     la = s.desired_la
@@ -486,8 +499,9 @@ def reconstruct_bolt_2022_2023_gains(
     friction_threshold[k] = th
     base_th = get_gm_base_friction_threshold(v)
     threshold_ratio[k] = th / base_th if base_th != 0.0 else 1.0
+    center_output_scale[k] = get_bolt_2022_2023_center_output_scale(la, v)
 
-  return ff_scale, friction_scale, friction_threshold, threshold_ratio
+  return ff_scale, friction_scale, friction_threshold, threshold_ratio, center_output_scale
 
 
 def summarize_bolt_dynamic_gains(
@@ -496,6 +510,7 @@ def summarize_bolt_dynamic_gains(
   ff_scale: np.ndarray,
   friction_scale: np.ndarray,
   threshold_ratio: np.ndarray,
+  center_output_scale: np.ndarray,
 ) -> None:
   if car_fingerprint not in BOLT_2022_2023_CARS:
     print("\nBolt dynamic gains:\n  skipped (not a 2022-2023 Bolt)")
@@ -513,11 +528,13 @@ def summarize_bolt_dynamic_gains(
   ff_m = ff_scale[mask]
   fr_m = friction_scale[mask]
   tr_m = threshold_ratio[mask]
+  co_m = center_output_scale[mask]
 
   print(
     f"  ff_scale [{np.min(ff_m):.4f},{np.max(ff_m):.4f}] med={np.median(ff_m):.4f}  "
     f"friction_scale [{np.min(fr_m):.4f},{np.max(fr_m):.4f}] med={np.median(fr_m):.4f}  "
-    f"thresh_ratio [{np.min(tr_m):.4f},{np.max(tr_m):.4f}] med={np.median(tr_m):.4f}"
+    f"thresh_ratio [{np.min(tr_m):.4f},{np.max(tr_m):.4f}] med={np.median(tr_m):.4f}  "
+    f"center_output_scale [{np.min(co_m):.4f},{np.max(co_m):.4f}] med={np.median(co_m):.4f}"
   )
 
 
@@ -796,6 +813,7 @@ def main() -> None:
   log_reader = LogReader(args.route, default_mode=mode_map[args.mode], sort_by_time=True)
 
   log_params: dict[str, bytes] = {}
+  build_info: dict[str, object] | None = None
   car_params = None
   live_torque_snapshots = []
   torque_estimator = None
@@ -810,6 +828,12 @@ def main() -> None:
       continue
     if which == "initData":
       log_params = {entry.key: entry.value for entry in msg.initData.params.entries}
+      build_info = {
+        "commit": str(getattr(msg.initData, "gitCommit", "") or "unknown"),
+        "date": str(getattr(msg.initData, "gitCommitDate", "") or "unknown"),
+        "branch": str(getattr(msg.initData, "gitBranch", "") or "unknown"),
+        "dirty": bool(getattr(msg.initData, "dirty", False)),
+      }
       continue
 
     if which == "carParams" and car_params is None:
@@ -858,8 +882,35 @@ def main() -> None:
     raise RuntimeError("No carParams found in route.")
 
   torque_tune = car_params.lateralTuning.torque
+  print(f"route={args.route}")
+  if build_info is None:
+    print("build=(no initData in log)")
+  else:
+    print(
+      "build="
+      f"commit={str(build_info['commit'])[:12]} "
+      f"date={build_info['date']} "
+      f"branch={build_info['branch']} "
+      f"dirty={build_info['dirty']}"
+    )
   print(f"carFingerprint={car_params.carFingerprint}")
-  print(f"steerRatio={car_params.steerRatio:.4f} steerActuatorDelay={car_params.steerActuatorDelay:.4f}")
+  print(
+    f"steerRatio={car_params.steerRatio:.4f} "
+    f"steerActuatorDelay={car_params.steerActuatorDelay:.4f} (CP.steerActuatorDelay, not full_lateral_delay)"
+  )
+  if build_info is None:
+    print("flm=(no initData in log)")
+  else:
+    flm_profile = _param_str(log_params, "FLMActiveProfileId")
+    flm_applied = log_params.get("FLMTrialApplied", b"0") == b"1"
+    flm_overrides = _param_str(log_params, "FLMActiveOverrides", "{}")
+    print(
+      f"flm=trialApplied={int(flm_applied)} "
+      f"activeProfile={flm_profile or '(none)'} "
+      f"overrides={flm_overrides}"
+    )
+    if flm_applied or flm_overrides not in ("", "{}"):
+      print("  WARNING: an FLM trial was active on this route — tune values below may not be the static tune.")
   if car_params.carFingerprint in BOLT_CARS:
     ff_scale_pos = float(getattr(torque_tune, "kp", getattr(torque_tune, "kpDEPRECATED", 1.0)))
     ff_scale_neg = float(getattr(torque_tune, "ki", getattr(torque_tune, "kiDEPRECATED", 1.0)))
@@ -976,10 +1027,11 @@ def main() -> None:
     )
   summarize_torque_points(car_params.carFingerprint, points)
 
-  ff_scale, friction_scale, _, threshold_ratio = reconstruct_bolt_2022_2023_gains(
+  ff_scale, friction_scale, _, threshold_ratio, center_output_scale = reconstruct_bolt_2022_2023_gains(
     control_samples, car_params.carFingerprint
   )
-  summarize_bolt_dynamic_gains(control_samples, car_params.carFingerprint, ff_scale, friction_scale, threshold_ratio)
+  summarize_bolt_dynamic_gains(control_samples, car_params.carFingerprint, ff_scale, friction_scale, threshold_ratio,
+                               center_output_scale)
   summarize_bolt_gain_bands(control_samples, car_params.carFingerprint, ff_scale, friction_scale)
 
   events, disc_trunc, no_pre = detect_turn_in_events(control_samples)

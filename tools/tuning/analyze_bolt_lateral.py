@@ -16,7 +16,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_bolt_2022_2023_ff_scale,
   get_bolt_2022_2023_friction_scale,
   get_bolt_2022_2023_friction_threshold,
-  get_friction_threshold,
+  get_gm_base_friction_threshold,
 )
 
 
@@ -62,9 +62,18 @@ AT_LIMIT_TORQUE = 0.99         # steer_max = 1.0 (latcontrol.py:17)
 WORST_EVENTS_N = 10
 
 
-def reconstruct_unwind(samples: list[ControlSample]) -> tuple[np.ndarray, np.ndarray]:
+def reconstruct_unwind(samples: list[ControlSample]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Reconstruct the integrator-freeze gate both ways.
+
+  unwind_old mirrors the pre-d55b679f5 controller, which tested the signed setpoint rate.
+  unwind_new mirrors the shipped controller, which tests the magnitude rate. Both are reported
+  so a single run shows the flip directly.
+
+  d_des_rate stays SIGNED: the phase classifier keys entering/exiting off its sign.
+  """
   n = len(samples)
-  unwind = np.zeros(n, dtype=bool)
+  unwind_old = np.zeros(n, dtype=bool)
+  unwind_new = np.zeros(n, dtype=bool)
   d_des_rate = np.full(n, np.nan, dtype=float)
 
   prev_setpoint = 0.0
@@ -72,26 +81,32 @@ def reconstruct_unwind(samples: list[ControlSample]) -> tuple[np.ndarray, np.nda
   for k, s in enumerate(samples):
     if not s.torque_active:
       prev_setpoint = 0.0
-      unwind[k] = False
+      unwind_old[k] = False
+      unwind_new[k] = False
       d_des_rate[k] = np.nan
       continue
 
     # Gap guard: k == 0 or prev sample inactive or time gap > 1.5 * DT_CTRL
     if k == 0 or not samples[k - 1].torque_active or ((s.mono_time - samples[k - 1].mono_time) / 1e9 > 1.5 * DT_CTRL):
-      unwind[k] = False
+      unwind_old[k] = False
+      unwind_new[k] = False
       d_des_rate[k] = np.nan
       prev_setpoint = s.desired_la
       continue
 
+    near_zero = abs(s.desired_la) < UNWIND_LAT_ACCEL_NEAR_ZERO
     rate = (s.desired_la - prev_setpoint) / DT_CTRL
+    mag_rate = (abs(s.desired_la) - abs(prev_setpoint)) / DT_CTRL
     d_des_rate[k] = rate
-    unwind[k] = (rate < UNWIND_D_DES_THRESHOLD) and (abs(s.desired_la) < UNWIND_LAT_ACCEL_NEAR_ZERO)
+    unwind_old[k] = (rate < UNWIND_D_DES_THRESHOLD) and near_zero
+    unwind_new[k] = (mag_rate < UNWIND_D_DES_THRESHOLD) and near_zero
     prev_setpoint = s.desired_la
 
-  return unwind, d_des_rate
+  return unwind_old, unwind_new, d_des_rate
 
 
-def summarize_unwind_reconstruction(samples: list[ControlSample], unwind: np.ndarray, d_des_rate: np.ndarray) -> None:
+def summarize_unwind_reconstruction(samples: list[ControlSample], unwind_old: np.ndarray, unwind_new: np.ndarray,
+                                    d_des_rate: np.ndarray) -> None:
   if not samples:
     return
 
@@ -109,7 +124,8 @@ def summarize_unwind_reconstruction(samples: list[ControlSample], unwind: np.nda
     print("\nUnwind reconstruction:\n  No active samples found.")
     return
 
-  overall_unwind_frac = np.mean(unwind[torque_active_mask]) if active_count > 0 else 0.0
+  overall_unwind_old = np.mean(unwind_old[torque_active_mask]) if active_count > 0 else 0.0
+  overall_unwind_new = np.mean(unwind_new[torque_active_mask]) if active_count > 0 else 0.0
 
   classified_base = (
     torque_active_mask
@@ -131,9 +147,10 @@ def summarize_unwind_reconstruction(samples: list[ControlSample], unwind: np.nda
 
   print("\nUnwind reconstruction:")
   print(
-    f"  active_samples={active_count:5d} unwind_frac={overall_unwind_frac:.4f} unclassified={unclassified_count:5d}"
+    f"  active_samples={active_count:5d} unwind_old={overall_unwind_old:.4f} "
+    f"unwind_new={overall_unwind_new:.4f} unclassified={unclassified_count:5d}"
   )
-  print("  phase            n      unwind_frac  mean|i|     bias    mean|d_des|")
+  print("  phase            n      unwind_old  unwind_new   mean|i|     bias  mean|d_des|")
 
   phases = (
     ("entering_left", entering_left_mask),
@@ -145,14 +162,15 @@ def summarize_unwind_reconstruction(samples: list[ControlSample], unwind: np.nda
   for name, mask in phases:
     n = int(mask.sum())
     if n == 0:
-      u_str, i_str, b_str, d_str = "--", "--", "--", "--"
+      uo_str, un_str, i_str, b_str, d_str = "--", "--", "--", "--", "--"
     else:
-      u_str = f"{np.mean(unwind[mask]):.4f}"
+      uo_str = f"{np.mean(unwind_old[mask]):.4f}"
+      un_str = f"{np.mean(unwind_new[mask]):.4f}"
       i_str = f"{np.mean(np.abs(i_term[mask])):.4f}"
       b_str = f"{np.mean(actual_la[mask] - desired_la[mask]):+.4f}"
       d_str = f"{np.mean(np.abs(d_des_rate[mask])):.4f}"
     print(
-      f"  {name:16s} {n:5d}       {u_str:>6s}   {i_str:>6s}  {b_str:>7s}        {d_str:>6s}"
+      f"  {name:16s} {n:5d}  {uo_str:>10s}  {un_str:>10s}  {i_str:>8s}  {b_str:>7s}  {d_str:>10s}"
     )
 
   ff_mask = (
@@ -466,7 +484,7 @@ def reconstruct_bolt_2022_2023_gains(
     friction_scale[k] = get_bolt_2022_2023_friction_scale(v, la, jerk)
     th = get_bolt_2022_2023_friction_threshold(v, la, jerk)
     friction_threshold[k] = th
-    base_th = get_friction_threshold(v)
+    base_th = get_gm_base_friction_threshold(v)
     threshold_ratio[k] = th / base_th if base_th != 0.0 else 1.0
 
   return ff_scale, friction_scale, friction_threshold, threshold_ratio
@@ -943,8 +961,8 @@ def main() -> None:
 
   summarize_control_samples(control_samples)
 
-  unwind, d_des_rate = reconstruct_unwind(control_samples)
-  summarize_unwind_reconstruction(control_samples, unwind, d_des_rate)
+  unwind_old, unwind_new, d_des_rate = reconstruct_unwind(control_samples)
+  summarize_unwind_reconstruction(control_samples, unwind_old, unwind_new, d_des_rate)
 
   points = np.array(torque_estimator.all_torque_points) if torque_estimator is not None else np.empty((0, 2))
   if torque_estimator is not None and torque_estimator.filtered_points.is_calculable():

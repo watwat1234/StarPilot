@@ -96,11 +96,11 @@ The routes were driven on the latest branch; only the *analysis* used an old che
 
 | chunk | scope | status |
 |---|---|---|
-| C1 — the sign fix | one expression in `latcontrol_torque.py` | **next** |
-| C2 — validate and drive | test suite + subjective drive | after C1 |
-| C3 — analyzer repair | required before the analyzer runs at all | deferred |
+| C1 — the sign fix | one expression in `latcontrol_torque.py` | **done** — `d55b679f5` |
+| C2 — validate and drive | test suite + subjective drive | **done** — driver reports right turns "less slammy" |
+| C3 — analyzer repair | required before the analyzer runs at all | **done** — dual old/new unwind columns |
 | C4 — analyzer completeness | FLM awareness, `center_output_scale`, build provenance | deferred |
-| C5 — before/after measurement | re-run analyzer, diff against Chunk 5 | deferred |
+| C5 — before/after measurement | re-run analyzer, diff against Chunk 5 | **done** — provisional pass, see results |
 
 ---
 
@@ -204,6 +204,92 @@ That directly verifies the code does what it says, independent of sample size.
 **Secondary criterion — the Chunk 5 event table**, valid as a before because the drive was on current code. Right-side
 p90 `peak_abs` (1.1682), `at_limit` (0.7355) and `peak_opp` (0.6932) should fall toward the left figures (0.7054 /
 0.3915 / 0.4334). Still n=15 per direction, so suggestive rather than decisive.
+
+---
+
+## Chunk C5 — results (2026-08-08) — **provisional pass**
+
+Post-fix drive analyzed with the C3 analyzer. Both routes on `CHEVROLET_BOLT_ACC_2022_2023`, `tuningLevel=2`,
+`useLiveParams=0`, identical `effective=` tune (`latAccelFactor 2.0 / latAccelOffset 0.0 / friction 0.13`), both
+`verdict: consistent with static tune`. No FLM trial on either, so the C4 FLM blind spot does not contaminate this.
+
+### The stated primary criterion was invalid — do not reuse it
+
+C5 above claims the unwind flip "directly verifies the code does what it says." **It does not.** The analyzer
+reconstructs both conditions from logged `desiredLateralAccel`, so the columns are computed identically regardless of
+which build recorded the route. `entering_right unwind_new = 0.0000` is guaranteed by construction on *any* route —
+`|setpoint|` growing cannot yield a negative magnitude rate. The post-fix table reproduces the pre-fix table almost
+exactly, as it must:
+
+| phase | pre `old` | pre `new` | post `old` | post `new` |
+|---|---|---|---|---|
+| entering_left | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| entering_right | 0.0777 | 0.0000 | 0.0786 | 0.0000 |
+| exiting_left | 0.0579 | 0.0579 | 0.0643 | 0.0643 |
+| exiting_right | 0.0000 | 0.0539 | 0.0000 | 0.0649 |
+
+What this table *does* give is **exposure**: the two conditions disagree on 7.9% of `entering_right` and 6.5% of
+`exiting_right` samples. That bounds how much of the drive the fix could have changed.
+
+It also served its real purpose as a **known-answer control** on the pre-fix route: `unwind_old` reproduced the
+Chunk 2 baseline (0.0777 / 0.0000) exactly, confirming the reconstruction is faithful.
+
+**Nothing in the report verifies which commit drove the route.** That is exactly the gap C4 item 3
+(`initData.gitCommit`) exists to close, and it is now the highest-value remaining analyzer work.
+
+### Primary evidence: right-side overshoot fell, left held
+
+`Turn-in events`. Left is the control arm — the fix cannot affect left turns.
+
+| metric | right pre | right post | left pre | left post |
+|---|---|---|---|---|
+| `peak_opp` med | +0.0049 | **−0.0360** | +0.1656 | +0.1391 |
+| `peak_opp` p90 | 0.6932 | **0.2815** (−59%) | 0.4334 | 0.3644 (−16%) |
+| `at_limit` p90 | 0.7355 | **0.4267** (−42%) | 0.3915 | 0.3767 (−4%) |
+| `peak_abs` p90 | 1.1682 | 0.8869 (−24%) | 0.7054 | 1.0033 |
+| n | 15 | 31 | 16 | 31 |
+
+The asymmetry inverted: right `peak_opp` p90 went from 1.6× left to 0.77× left. The median right turn-in now shows
+*negative* opposite-direction excursion — no overcorrection at all. Left moved far less on both diagnostic metrics.
+Left `peak_abs` rising is one outlier (2.0681 at 37:45.6, `pressed=0.5033` — driver on the wheel).
+
+### Corroboration: integrator moved where the mechanism predicts
+
+Removing a spurious freeze during right turn-in should let the integrator wind specifically there. `mean|i|` by phase:
+
+| phase | pre | post | change |
+|---|---|---|---|
+| entering_left | 0.2015 | 0.2567 | +27% |
+| **entering_right** | 0.1639 | **0.3296** | **+101%** |
+| exiting_left | 0.2060 | 0.2910 | +41% |
+| exiting_right | 0.1743 | 0.3990 | +129% |
+
+Both right phases roughly doubled while left rose about a third. The two phases the fix touches moved most.
+
+### Confound, stated plainly
+
+**The routes are not matched.** The post-fix drive was deliberately block-circling to maximize turn count, versus a
+"cruise around town" pre-fix drive:
+
+- `low_speed_sharp` n 11457 → 25243 (2.2×) while total samples *fell* 172463 → 145748
+- `turn_in` n 5725 → 9049; `unwind` n 5732 → 16194 (2.8×)
+- `mean|d_des|` up in every phase, +13% to +49% — higher steering demand throughout
+- roll exposure down: `abs_p95_deg` 3.895 → 2.934
+
+Enriching the turn-in sample is a feature (n per direction doubled, 15 → 31). But it inflates the left-arm baseline
+and makes the across-the-board tracking degradation (`all` mae 0.0933 → 0.0997; `right |i|` 0.1903 → 0.3819)
+**not cleanly attributable** to the fix.
+
+**Second config delta:** `ForceAutoTuneOff` went 0 → 1 between drives and `liveTorqueFiltered` was reset
+(`latAccelFactor` 1.2916 → 2.0000). Control-path impact is nil — `useLiveParams=0` and `effective=` identical in both
+— but the single-variable property is no longer strictly intact.
+
+### Verdict
+
+Three independent signals agree: right-side overshoot down while left held, right-phase integrator up as the
+mechanism requires, and the driver's subjective report. **Suggestive and consistent, not proof** — a 2.2× shift in
+route character cannot be ruled out as a partial cause. Recorded as a provisional pass. A matched-route rerun (same
+loop as the pre-fix drive) would settle it cheaply.
 
 ---
 

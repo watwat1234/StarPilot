@@ -1,0 +1,100 @@
+route=4103f561284c7b04/00000101--2f56dfdd5a
+build=commit=d55b679f515a date='1786210409 2026-08-08 10:33:29 -0700' branch=Dom_wat_analyzer_tuning dirty=False
+carFingerprint=CHEVROLET_BOLT_ACC_2022_2023
+steerRatio=16.8000 steerActuatorDelay=0.2000 (CP.steerActuatorDelay, not full_lateral_delay)
+flm=trialApplied=0 activeProfile=flm-1784682467:baseline_fix:recommended overrides={}
+staticTune=latAccelFactor=2.0000 friction=0.1300 latAccelOffset=0.0000 ffScalePos=1.0300 ffScaleNeg=1.1449 kiMult=0.8649 deadzoneBoost=0.0150
+liveTorqueFiltered=latAccelFactor=2.0000 latAccelOffset=-0.3330 friction=0.1300 useParams=False liveValid=True
+
+Effective tune:
+  toggles=AdvancedLateralTune=1 ForceAutoTune=0 ForceAutoTuneOff=1 hasAutoTune=0(@route start) tuningLevel=2
+  resolved=useLiveParams=0 useCustomLatAccel=1 useCustomFriction=1
+  static=   latAccelFactor=2.0000 latAccelOffset=0.0000 friction=0.1300 frictionAmp=0.2600
+  liveFilt= latAccelFactor=2.0000 latAccelOffset=-0.3330 friction=0.1300 frictionAmp=0.2600
+  effective=latAccelFactor=2.0000 latAccelOffset=0.0000 friction=0.1300 frictionAmp=0.2600
+  bolt: ffAsym left=x1.0300 right=x1.1449 (+11.2% right), blended over ff in [-0.0500,+0.0500]
+        kiMult=0.8649 (applied to pid._k_i)  deadzoneBoost=0.0150 (reach |latAccel|<0.15, unscaled additive)
+
+Roll context:
+  valid=273353/273593 abs_mean_deg=1.939 abs_p95_deg=2.934 low_roll_deg<=1.5
+
+ControlsState tracking:
+  all          n=145748 mae=0.0997 bias=-0.0311 |p|=0.1329 |i|=0.2928 |f|=0.5941 torque=+0.0395
+  all_non_sat  n=145651 mae=0.0991 bias=-0.0304 |p|=0.1321 |i|=0.2927 |f|=0.5931 torque=+0.0397
+  left         n=51104 mae=0.1342 bias=-0.0511 |p|=0.1766 |i|=0.2655 |f|=0.4285 torque=-0.2936
+  right        n=30274 mae=0.1530 bias=-0.0394 |p|=0.2263 |i|=0.3819 |f|=1.2351 torque=+0.4307
+  center       n=64273 mae=0.0457 bias=-0.0096 |p|=0.0524 |i|=0.2723 |f|=0.4215 torque=+0.1206
+  steady_left  n=27457 mae=0.0867 bias=-0.0356 |p|=0.1037 |i|=0.2498 |f|=0.3514 torque=-0.2387
+  steady_right n=12660 mae=0.0904 bias=-0.0049 |p|=0.1099 |i|=0.3485 |f|=0.9987 torque=+0.4099
+  steady_left_low_roll n= 3882 mae=0.1278 bias=-0.0425 |p|=0.1567 |i|=0.2418 |f|=0.5658 torque=-0.4458
+  steady_right_low_roll n= 2195 mae=0.0751 bias=-0.0302 |p|=0.0929 |i|=0.2587 |f|=1.0086 torque=+0.4369
+  center_low_roll n= 6169 mae=0.0607 bias=-0.0349 |p|=0.0713 |i|=0.2298 |f|=0.1814 torque=-0.0261
+  steady_left_high_roll n=23575 mae=0.0799 bias=-0.0345 |p|=0.0950 |i|=0.2511 |f|=0.3161 torque=-0.2046
+  steady_right_high_roll n=10465 mae=0.0936 bias=+0.0004 |p|=0.1135 |i|=0.3673 |f|=0.9966 torque=+0.4043
+  low_speed_sharp n=25243 mae=0.3314 bias=-0.0358 |p|=1.0050 |i|=0.3444 |f|=1.7785 torque=+0.0646
+  turn_in      n= 9049 mae=0.2882 bias=-0.0621 |p|=0.8881 |i|=0.2553 |f|=1.7940 torque=-0.0826
+  unwind       n=16194 mae=0.3556 bias=-0.0210 |p|=1.0704 |i|=0.3942 |f|=1.7699 torque=+0.1469
+
+Unwind reconstruction:
+  active_samples=216690 unwind_old=0.0266 unwind_new=0.0246 unclassified=147166
+  phase            n      unwind_old  unwind_new   mean|i|     bias  mean|d_des|
+  entering_left    19164      0.0000      0.0000    0.2567  -0.0701      1.1251
+  entering_right   13302      0.0786      0.0000    0.3296  +0.0230      1.1766
+  exiting_left     22343      0.0643      0.0643    0.2910  -0.0086      1.2747
+  exiting_right    14715      0.0000      0.0649    0.3990  -0.0670      1.3816
+  ff offset check: n=  461 mean_f=-0.0323  (static predicts ~0.00, live predicts ~+0.33)
+  verdict: consistent with static tune
+
+TorqueEstimator fit: latAccelFactor=0.9865 latAccelOffset=-0.2909 friction=0.1493 bucket_points=8114
+
+Torque map residuals:
+  all          n=10948 mae=0.1892 bias=-0.1724
+  left         n= 1537 mae=0.1708 bias=-0.0989
+  right        n= 9411 mae=0.1922 bias=-0.1844
+  small        n= 2448 mae=0.2749 bias=-0.2741
+  mid          n= 7139 mae=0.1760 bias=-0.1660
+
+Linearized correction against current siglin:
+  all          scale=0.9090 offset=+0.1534 mae_fit=0.1100
+  left         scale=0.4495 offset=+0.3625 mae_fit=0.0954
+  right        scale=1.3146 offset=+0.2857 mae_fit=0.0951
+
+Bolt dynamic gains:
+  ff_scale [1.0000,1.1196] med=1.0311  friction_scale [0.9200,1.1736] med=1.0900  thresh_ratio [0.8662,1.2271] med=1.0017  center_output_scale [0.9390,1.0000] med=0.9866
+
+Dynamic gain bands - left (desired_la > 0) [medFF/medFric/n]:
+  |desired_la|                <6              6-10             10-14             14-20               20+
+  0-0.2       1.0238/1.0900/56401.0305/1.0900/104591.0339/1.0900/166411.0335/1.0900/292071.0327/1.0900/1907
+  0.2-0.4      1.0977/1.0909/6701.0919/1.0897/28491.0913/1.0900/59671.0917/1.0905/3925 1.0915/1.0887/603
+  0.4-0.7      1.1167/1.1363/3051.1003/1.0872/23031.1045/1.0902/40421.1037/1.0901/3751 1.1049/1.0902/393
+  0.7-1.1      1.0557/0.9200/2021.0681/0.9581/14121.0890/1.0892/19661.0879/1.0954/3243                --
+  1.1-1.6      1.0448/1.1399/6321.0437/0.9494/11121.0521/1.0959/10241.0490/1.0970/2363                --
+  1.6+        1.0028/1.0929/37251.0005/0.9924/4164 1.0163/1.0374/7541.0181/1.0962/1527                --
+
+Dynamic gain bands - right (desired_la < 0) [medFF/medFric/n]:
+  |desired_la|                <6              6-10             10-14             14-20               20+
+  0-0.2       1.0126/1.0900/52191.0146/1.0900/66921.0184/1.0900/105601.0162/1.0900/20857 1.0133/1.0900/811
+  0.2-0.4      1.0531/1.0965/312 1.0408/1.0218/9861.0489/1.0900/32191.0499/1.0902/2612 1.0510/1.0914/116
+  0.4-0.7      1.0618/1.1319/1791.0439/1.0265/15711.0529/1.0821/19241.0545/1.0871/1564  1.0563/1.0979/98
+  0.7-1.1      1.0492/1.1353/330 1.0385/0.9885/9171.0473/1.0941/19201.0471/1.0868/1292                --
+  1.1-1.6      1.0217/1.0891/731 1.0227/0.9518/935 1.0305/1.0917/9451.0290/1.0886/1102                --
+  1.6+        1.0017/0.9290/18331.0006/0.9737/6810 1.0032/0.9838/801 1.0093/1.0981/566                --
+
+Turn-in events:
+  total=62  left=31  right=31  discarded_truncated=18  no_preroll=1
+  dir       n   peak_in med/p90    peak_opp med/p90   peak_abs med/p90   at_limit med/p90   t_in med
+  left     31   +0.2305/+0.8316    +0.1391/+0.3644    0.4352/1.0033      0.0000/0.3767        1.0301
+  right    31   +0.3473/+0.6647    -0.0360/+0.2815    0.5208/0.8869      0.0000/0.4267        0.8810
+
+  worst events (by peak_abs); t_rel is relative to the first controlsState sample:
+  t_rel     dir       v0 peak_in  t_in peak_opp t_opp peak_abs peak_tq at_limit pressed mean_i_pre
+  37:45.6   left   10.99 +0.4787  2.79  -0.0518  2.98   2.0681  1.0000   0.3767  0.5033     0.3878
+  38:43.7   left   10.52 +1.7345  0.50  +0.0823  2.50   1.7345  1.0000   0.1894  0.5316     0.0174
+  32:30.1   right   4.72 +1.6238  2.45  -1.4470  2.69   1.6238  1.0000   0.4267  0.4267     0.1366
+  34:44.3   left   13.10 +0.2207  1.03  +0.2758  1.33   1.0966  1.0000   0.1927  0.0664     0.7624
+  32:57.5   right  11.56 +1.0795  2.86  -0.9880  2.99   1.0795  0.8394   0.0000  0.0333     0.3973
+  37:27.0   left   12.09 +0.3080  1.60  +0.1585  2.36   1.0033  0.9463   0.0000  0.0631     0.1970
+  27:29.8   left    5.77 +1.0010  2.23  +0.9659  2.99   1.0010  1.0000   0.6333  0.1000     0.1233
+  11:02.1   left    9.63 +0.1404  0.45  +0.9267  1.61   0.9267  1.0000   0.7833  0.1667     0.3158
+  10:04.5   left    8.99 +0.4030  0.00  +0.9007  0.44   0.9007  1.0000   0.7276  0.0000     0.2396
+  40:35.2   right   7.92 +0.6534  0.60  +0.2747  1.05   0.8927  1.0000   0.0800  0.0000     0.5994

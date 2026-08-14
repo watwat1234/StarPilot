@@ -198,6 +198,12 @@ def test_missing_bounded_value_uses_explicit_default():
   assert value == 1.0
 
 
+def test_device_shutdown_hours_convert_directly_to_seconds():
+  assert spv.device_shutdown_seconds(6) == 6 * 60 * 60
+  assert spv.device_shutdown_seconds(0) == 60 * 60
+  assert spv.device_shutdown_seconds(31) == 30 * 60 * 60
+
+
 def test_favorite_button_flags_map_to_three_slots():
   toggle = SimpleNamespace()
 
@@ -222,3 +228,9 @@ def test_set_speed_limit_available_on_redneck_helper_path():
 
 def test_set_speed_limit_unavailable_on_stock_pcm_without_helper():
   assert spv.set_speed_limit_available(openpilot_longitudinal=False, has_cc_long=False, pcm_cruise_speed=True) is False
+
+
+def test_speed_limit_controller_available_on_openpilot_longitudinal_or_redneck():
+  assert spv.speed_limit_controller_available(openpilot_longitudinal=True, redneck_cruise=False) is True
+  assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=True) is True
+  assert spv.speed_limit_controller_available(openpilot_longitudinal=False, redneck_cruise=False) is False

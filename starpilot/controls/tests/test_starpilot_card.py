@@ -8,6 +8,8 @@ from openpilot.common.params import ParamKeyType
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_ACTION_ACCEL_COUNTER,
   FAVORITE_ACTION_DISTANCE_INCREASE,
+  FAVORITE_ACTION_TRAFFIC_MODE_COUNTER,
+  FAVORITE_ACTION_TOGGLE_TRAFFIC_MODE,
   FAVORITE_SLOTS_PARAM,
 )
 from openpilot.starpilot.controls import starpilot_card as spc
@@ -407,14 +409,51 @@ def test_genesis_g90_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp
   assert ret.alwaysOnLateralEnabled is True
 
 
-@pytest.mark.parametrize("fingerprint", [spc.HYUNDAI_CAR.GENESIS_G70_2020, spc.HYUNDAI_CAR.HYUNDAI_PALISADE])
-def test_legacy_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_path, fingerprint):
+def test_genesis_g70_main_cruise_button_waits_for_cruise_availability(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
   monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
 
   card = spc.StarPilotCard(
-    SimpleNamespace(brand="hyundai", carFingerprint=fingerprint),
+    SimpleNamespace(brand="hyundai", carFingerprint=spc.HYUNDAI_CAR.GENESIS_G70_2020),
+    SimpleNamespace(alternativeExperience=spc.ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL),
+  )
+
+  car_state = make_car_state(button_events=[SimpleNamespace(type=spc.ButtonType.mainCruise, pressed=True)])
+  starpilot_car_state = SimpleNamespace(distancePressed=False)
+  sm = make_sm()
+  toggles = make_toggles(always_on_lateral=True, main_cruise_aol_toggle=True)
+
+  card.update(make_car_state(), starpilot_car_state, sm, toggles)
+  ret = card.update(car_state, starpilot_car_state, sm, toggles)
+  assert ret.alwaysOnLateralAllowed is False
+  assert ret.alwaysOnLateralEnabled is False
+
+  car_state.buttonEvents = []
+  car_state.cruiseState.available = True
+  ret = card.update(car_state, starpilot_car_state, sm, toggles)
+  assert ret.alwaysOnLateralAllowed is True
+  assert ret.alwaysOnLateralEnabled is True
+
+  car_state.buttonEvents = [SimpleNamespace(type=spc.ButtonType.mainCruise, pressed=True)]
+  ret = card.update(car_state, starpilot_car_state, sm, toggles)
+  assert ret.alwaysOnLateralAllowed is True
+  assert ret.alwaysOnLateralEnabled is True
+
+  car_state.buttonEvents = []
+  car_state.cruiseState.available = False
+  ret = card.update(car_state, starpilot_car_state, sm, toggles)
+  assert ret.alwaysOnLateralAllowed is False
+  assert ret.alwaysOnLateralEnabled is False
+
+
+def test_legacy_hyundai_main_cruise_button_toggles_aol_immediately(monkeypatch, tmp_path):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+
+  card = spc.StarPilotCard(
+    SimpleNamespace(brand="hyundai", carFingerprint=spc.HYUNDAI_CAR.HYUNDAI_PALISADE),
     SimpleNamespace(alternativeExperience=spc.ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL),
   )
 
@@ -780,3 +819,41 @@ def test_favorite_wheel_action_can_press_virtual_resume(monkeypatch, tmp_path):
   card.handle_button_event("lkas", make_sm(), make_toggles(favorite_1_via_lkas=True))
 
   assert card.params_memory.get_int(FAVORITE_ACTION_ACCEL_COUNTER) == 1
+
+
+def test_favorite_action_toggles_traffic_mode_when_longitudinal_control_is_active(monkeypatch, tmp_path):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+
+  card = spc.StarPilotCard(SimpleNamespace(brand="gm"), SimpleNamespace(alternativeExperience=0))
+  card.params.put(FAVORITE_SLOTS_PARAM, [
+    {"enabled": True, "show_onroad": True, "key": FAVORITE_ACTION_TOGGLE_TRAFFIC_MODE, "label": "Toggle Traffic Mode"},
+  ])
+
+  sm = make_sm()
+  sm["carControl"].longActive = True
+  card.handle_button_event("lkas", sm, make_toggles(favorite_1_via_lkas=True))
+
+  card.update(make_car_state(), SimpleNamespace(distancePressed=False), sm, make_toggles())
+
+  assert card.traffic_mode_enabled is True
+  assert card.params_memory.get_int(FAVORITE_ACTION_TRAFFIC_MODE_COUNTER) == 1
+
+
+def test_favorite_traffic_mode_action_is_consumed_when_not_active(monkeypatch, tmp_path):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+
+  card = spc.StarPilotCard(SimpleNamespace(brand="gm"), SimpleNamespace(alternativeExperience=0))
+  card.params.put(FAVORITE_SLOTS_PARAM, [
+    {"enabled": True, "show_onroad": True, "key": FAVORITE_ACTION_TOGGLE_TRAFFIC_MODE, "label": "Toggle Traffic Mode"},
+  ])
+
+  sm = make_sm()
+  card.handle_button_event("lkas", sm, make_toggles(favorite_1_via_lkas=True))
+  card.update(make_car_state(), SimpleNamespace(distancePressed=False), sm, make_toggles())
+
+  assert card.traffic_mode_enabled is False
+  assert card._favorite_traffic_mode_counter == 1

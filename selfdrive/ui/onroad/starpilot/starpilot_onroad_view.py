@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.widgets import (
 )
 from openpilot.selfdrive.ui.onroad.starpilot.stopping_point import render_stopping_point
 from openpilot.selfdrive.ui.onroad.starpilot.pause_indicators import render_lateral_paused, render_longitudinal_paused
+from openpilot.selfdrive.ui.onroad.starpilot.pip_sidecam import PipSideCamera
 from openpilot.selfdrive.ui.onroad.starpilot.weather_icon import render_weather_icon
 from openpilot.selfdrive.ui.lib.starpilot_status import (
   get_screen_edge_color,
@@ -36,6 +37,8 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._min_fps = 99.9
     self._max_fps = 0.0
     self._avg_fps = 0.0
+
+    self._pip_sidecam = PipSideCamera()
 
     self.layout_manager = WidgetLayoutManager(self._content_rect)
 
@@ -94,12 +97,14 @@ class StarPilotOnroadView(AugmentedRoadView):
       self._render_overlays()
       self._render_road_name()
 
+    # PiP renders last so it always sits on top of every other on-road overlay.
+    self._pip_sidecam.render(self._content_rect)
+
   def _draw_border(self, rect: rl.Rectangle):
     border_width = self._get_border_width()
     rl.draw_rectangle_rounded_lines_ex(rect, 0.12, 10, border_width, rl.BLACK)
     border_rect = rl.Rectangle(rect.x + border_width, rect.y + border_width,
                                 rect.width - 2 * border_width, rect.height - 2 * border_width)
-    render_behind(border_rect, border_width)
     render_overlay(border_rect, border_width)
 
   def _render_slc(self):
@@ -131,8 +136,8 @@ class StarPilotOnroadView(AugmentedRoadView):
     if not self._params.get_bool("EnableTorqueBarWidget", default=True):
       return
     rl.begin_scissor_mode(
-      int(self._content_rect.x), int(self._content_rect.y),
-      int(self._content_rect.width), int(self._content_rect.height),
+      int(round(self._content_rect.x)), int(round(self._content_rect.y)),
+      int(round(self._content_rect.width)), int(round(self._content_rect.height)),
     )
     self._torque_bar.render(self._content_rect)
     rl.end_scissor_mode()
@@ -141,19 +146,19 @@ class StarPilotOnroadView(AugmentedRoadView):
     """Render path features in the parent's clipped road-overlay layer."""
     mr = self.model_renderer
 
-    # Only render if we have path data
-    if not mr._path.projected_points.size:
-      return
+    if mr._path.projected_points.size:
+      # Path edges (always rendered if track_edge_vertices exist)
+      if mr._track_edge_vertices.size >= 4:
+        render_path_edges(mr)
 
-    # Path edges (always rendered if track_edge_vertices exist)
-    if mr._track_edge_vertices.size >= 4:
-      render_path_edges(mr)
+      # Render adjacent lanes (incorporates both adjacent path and blind spot warnings)
+      render_adjacent_lanes(mr)
 
-    # Render adjacent lanes (incorporates both adjacent path and blind spot warnings)
-    render_adjacent_lanes(mr)
+      # Render stopping point atop the path
+      render_stopping_point(mr, self._font_bold)
 
-    # Render stopping point atop the path
-    render_stopping_point(mr, self._font_bold)
+    # Keep the CSC glow above the camera/model/path layers, but below the HUD.
+    render_behind(rect, self._get_border_width())
 
   def _full_alert_showing(self) -> bool:
     alert_showing, _ = self.alert_renderer.will_render()

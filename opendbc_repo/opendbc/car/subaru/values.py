@@ -19,6 +19,11 @@ class CarControllerParams:
     MAX_LATERAL_JERK=3.0 + (ACCELERATION_DUE_TO_GRAVITY * 0.06),
     MAX_ANGLE_RATE=1,
   )
+  LEGACY_2025_ANGLE_LIMITS: AngleSteeringLimits = AngleSteeringLimits(
+    545,
+    ([0., 5., 35.], [5., .8, .15]),
+    ([0., 5., 35.], [5., .8, .15]),
+  )
 
   def __init__(self, CP):
     self.STEER_STEP = 2                # how often we update the steer cmd
@@ -74,6 +79,9 @@ class SubaruSafetyFlags(IntFlag):
   PREGLOBAL_REVERSED_DRIVER_TORQUE = 4
   STOP_AND_GO = 8
   LKAS_ANGLE = 16
+  D_PLATFORM = 32
+  D_PLATFORM_CAMERA = 64
+  LEGACY_2025_ANGLE_LIMITS = 128
 
 
 class SubaruFlags(IntFlag):
@@ -90,6 +98,8 @@ class SubaruFlags(IntFlag):
   PREGLOBAL = 16
   HYBRID = 32
   LKAS_ANGLE = 64
+  D_PLATFORM = 128
+  D_PLATFORM_CAMERA = 256
 
 
 GLOBAL_ES_ADDR = 0x787
@@ -100,6 +110,18 @@ class CanBus:
   main = 0
   alt = 1
   camera = 2
+
+  @staticmethod
+  def main_for_cp(CP):
+    return CanBus.alt if CP.flags & SubaruFlags.D_PLATFORM else CanBus.main
+
+  @staticmethod
+  def alt_for_cp(CP):
+    return CanBus.alt
+
+  @staticmethod
+  def angle_for_cp(CP):
+    return CanBus.camera if CP.flags & SubaruFlags.D_PLATFORM_CAMERA else CanBus.main
 
 
 class Footnote(Enum):
@@ -221,10 +243,15 @@ class CAR(Platforms):
   SUBARU_OUTBACK_2023 = SubaruGen2PlatformConfig(
     [SubaruCarDocs("Subaru Outback 2023-24", "All", car_parts=CarParts.common([CarHarness.subaru_d]))],
     SUBARU_OUTBACK.specs,
+    flags=SubaruFlags.LKAS_ANGLE | SubaruFlags.D_PLATFORM,
+  )
+  SUBARU_LEGACY_2025 = SubaruGen2PlatformConfig(
+    [SubaruCarDocs("Subaru Legacy 2025", "All", car_parts=CarParts.common([CarHarness.subaru_d]))],
+    SUBARU_OUTBACK.specs,
     flags=SubaruFlags.LKAS_ANGLE,
   )
   SUBARU_ASCENT_2023 = SubaruGen2PlatformConfig(
-    [SubaruCarDocs("Subaru Ascent 2023", "All", car_parts=CarParts.common([CarHarness.subaru_d]))],
+    [SubaruCarDocs("Subaru Ascent 2023-25", "All", car_parts=CarParts.common([CarHarness.subaru_d]))],
     SUBARU_ASCENT.specs,
     flags=SubaruFlags.LKAS_ANGLE,
   )
@@ -296,6 +323,8 @@ FW_QUERY_CONFIG = FwQueryConfig(
   # We don't get the EPS from non-OBD queries on GEN2 cars. Note that we still attempt to match when it exists
   non_essential_ecus={
     Ecu.eps: list(CAR.with_flags(SubaruFlags.GLOBAL_GEN2)),
+    # Some 2023+ Ascent firmware queries return the engine only from a logging request.
+    Ecu.engine: [CAR.SUBARU_ASCENT_2023],
   }
 )
 

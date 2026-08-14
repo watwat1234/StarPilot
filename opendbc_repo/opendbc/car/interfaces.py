@@ -187,12 +187,18 @@ class CarInterfaceBase(ABC):
     ret.rotationalInertia = scale_rot_inertia(ret.mass, ret.wheelbase)
     ret.tireStiffnessFront, ret.tireStiffnessRear = scale_tire_stiffness(ret.mass, ret.wheelbase, ret.centerToFront, ret.tireStiffnessFactor)
 
-    toggles_to_check = ("force_torque_controller", "nnff", "nnff_lite")
+    force_torque_controller = bool(getattr(starpilot_toggles, "force_torque_controller", False))
+    toggles_to_check = ("nnff", "nnff_lite")
     modified_civic_force_torque = (
       candidate == HONDA.HONDA_CIVIC_BOSCH and
       bool(ret.flags & HondaFlags.EPS_MODIFIED)
     )
+    # ForceTorqueController converts PID-based paths to torque control. It must
+    # not reinitialize cars that already selected torque control: those paths
+    # may have vehicle-specific torque tuning applied in their interface.
+    force_torque_conversion = force_torque_controller and ret.lateralTuning.which() != "torque"
     if ret.steerControlType != structs.CarParams.SteerControlType.angle and (
+      force_torque_conversion or
       any(getattr(starpilot_toggles, toggle, False) for toggle in toggles_to_check) or
       modified_civic_force_torque
     ):
@@ -226,6 +232,9 @@ class CarInterfaceBase(ABC):
           fp_ret.flags |= int(HondaStarPilotFlags.HAS_CAMERA_MESSAGES)
 
       elif platform in HYUNDAI:
+        if CP.openpilotLongitudinalControl and not (CP.flags & HyundaiFlags.CANFD):
+          fp_ret.flags |= HyundaiStarPilotFlags.MAIN_CRUISE_STATE_TRACKING.value
+
         if candidate in CANFD_CAR:
           hda2 = Ecu.adas in [fw.ecu for fw in car_fw]
           CAN = CanBus(None, fingerprint, bool(CP.flags & HyundaiFlags.CANFD_LKA_STEERING))
@@ -235,11 +244,11 @@ class CarInterfaceBase(ABC):
             fp_ret.flags |= HyundaiStarPilotFlags.SPEED_LIMIT_AVAILABLE.value
 
         fp_ret.redneckCruiseAvailable = bool(CP.flags & HyundaiFlags.NON_SCC) and not bool(CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS)
-        if fp_ret.redneckCruiseAvailable and params.get_bool("RedneckCruise") and \
-            not CP.openpilotLongitudinalControl:
+        if fp_ret.redneckCruiseAvailable and params.get_bool("RedneckCruise"):
           fp_ret.pcmCruiseSpeed = False
+          CP.openpilotLongitudinalControl = True
 
-        hyundai_has_lda_button = (
+        hyundai_has_lda_button = not (CP.flags & HyundaiFlags.CANFD) and (
           0x391 in fingerprint[0] or
           0x50C in fingerprint[0] or
           candidate in ALT_BUS_LDA_BUTTON_CARS or

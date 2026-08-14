@@ -6,6 +6,7 @@ import pytest
 import openpilot.selfdrive.controls.lib.longcontrol as longcontrol
 import openpilot.selfdrive.controls.lib.longcontrol_vehicle_tunes as vehicle_tunes
 from opendbc.car.gm.values import CAR, GMFlags
+from opendbc.car.subaru.values import CAR as SUBARU_CAR
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 from openpilot.selfdrive.controls.lib.longcontrol import (
   LongControl,
@@ -555,6 +556,87 @@ def test_update_releases_stopping_on_small_sustained_positive_target():
   assert lc.long_control_state == LongCtrlState.starting
 
 
+def test_corolla_tss2_stop_release_ramps_positive_target():
+  CP = make_longcontrol_cp(
+    brand="toyota",
+    carFingerprint=TOYOTA_CAR.TOYOTA_COROLLA_TSS2,
+  )
+  tuning = vehicle_tunes.LongControlVehicleTuning(CP)
+  tuning.reset()
+
+  first_target = tuning.shape_toyota_corolla_accel_target(1.5, 0.0, False, -0.15)
+  assert first_target < 0.0
+  assert first_target < 1.5
+
+  target = first_target
+  for _ in range(100):
+    target = tuning.shape_toyota_corolla_accel_target(1.5, 0.0, False, target)
+  assert target > 1.4
+
+  for _ in range(100):
+    target = tuning.shape_toyota_corolla_accel_target(1.5, 0.0, False, target)
+  assert target == pytest.approx(1.5, abs=0.01)
+
+
+def test_corolla_tss2_target_filter_does_not_delay_hard_braking():
+  CP = make_longcontrol_cp(
+    brand="toyota",
+    carFingerprint=TOYOTA_CAR.TOYOTA_COROLLA_TSS2,
+  )
+  tuning = vehicle_tunes.LongControlVehicleTuning(CP)
+  tuning.shape_toyota_corolla_accel_target(1.0, 1.0, False, 0.0)
+
+  assert tuning.shape_toyota_corolla_accel_target(-1.0, 1.0, False, 0.5) == -1.0
+
+
+def test_corolla_tss2_longcontrol_release_does_not_step_to_full_accel():
+  CP = make_longcontrol_cp(
+    brand="toyota",
+    carFingerprint=TOYOTA_CAR.TOYOTA_COROLLA_TSS2,
+  )
+  lc = LongControl(CP)
+  lc.long_control_state = LongCtrlState.stopping
+  lc.last_output_accel = -0.15
+  CS = car.CarState.new_message(vEgo=0.0, aEgo=0.0, brakePressed=False)
+  CS.cruiseState.standstill = False
+
+  output_accel = lc.update(
+    active=True,
+    CS=CS,
+    a_target=1.5,
+    should_stop=False,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=make_toggles(vEgoStarting=0.1),
+  )
+
+  assert lc.long_control_state == LongCtrlState.pid
+  assert output_accel < 0.0
+
+
+def test_subaru_impreza_stop_release_caps_launch_accel():
+  CP = make_longcontrol_cp(
+    brand="subaru",
+    carFingerprint=SUBARU_CAR.SUBARU_IMPREZA_2020,
+    vEgoStarting=0.5,
+  )
+  lc = LongControl(CP)
+  lc.long_control_state = LongCtrlState.stopping
+  CS = car.CarState.new_message(vEgo=0.0, aEgo=0.0, brakePressed=False)
+  CS.cruiseState.standstill = False
+
+  output_accel = lc.update(
+    active=True,
+    CS=CS,
+    a_target=1.8,
+    should_stop=False,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=make_toggles(vEgoStarting=0.5),
+  )
+
+  assert lc.long_control_state == LongCtrlState.pid
+  assert output_accel == pytest.approx(vehicle_tunes.SUBARU_IMPREZA_STOP_RELEASE_MAX_ACCEL)
+
+
 def test_update_releases_stopping_immediately_after_confirmed_lead_departure():
   CP = car.CarParams.new_message(startingState=True, vEgoStarting=0.5)
   CP.longitudinalTuning.kpBP = [0.0]
@@ -673,6 +755,40 @@ def test_stopping_state_follows_stronger_moving_stop_target():
   assert output_accel < -1.43
 
 
+def test_elantra_lead_stop_releases_stale_hard_brake_after_target_eases():
+  CP = make_longcontrol_cp(brand="hyundai", carFingerprint="HYUNDAI_ELANTRA_2021")
+  tuning = vehicle_tunes.LongControlVehicleTuning(CP)
+
+  assert tuning.shape_stopping_accel(-1.20, -0.25, True, 1.0, True, -0.85) == pytest.approx(-0.85)
+  assert tuning.shape_stopping_accel(-1.20, -1.50, True, 1.0, True, -0.85) == pytest.approx(-1.20)
+  assert tuning.shape_stopping_accel(-1.20, -0.25, True, 1.0, False, -0.85) == pytest.approx(-1.20)
+
+
+def test_elantra_stopped_lead_handoff_holds_braking_direction_without_touching_brakes():
+  CP = make_longcontrol_cp(brand="hyundai", carFingerprint="HYUNDAI_ELANTRA_2021")
+  tuning = vehicle_tunes.LongControlVehicleTuning(CP)
+  stopped_lead = SimpleNamespace(status=True, vLead=0.1, dRel=14.0)
+
+  assert tuning.shape_hyundai_elantra_lead_target(0.14, 1.1, False, (stopped_lead,)) == pytest.approx(0.05)
+  assert tuning.cap_hyundai_elantra_lead_output(0.14, 1.1, False, (stopped_lead,)) == pytest.approx(0.05)
+  assert tuning.cap_hyundai_elantra_lead_output(-0.5, 1.1, False, (stopped_lead,)) == pytest.approx(-0.5)
+
+
+def test_elantra_stopped_lead_handoff_releases_for_moving_lead_and_other_cars():
+  elantra = vehicle_tunes.LongControlVehicleTuning(
+    make_longcontrol_cp(brand="hyundai", carFingerprint="HYUNDAI_ELANTRA_2021")
+  )
+  other_car = vehicle_tunes.LongControlVehicleTuning(
+    make_longcontrol_cp(brand="hyundai", carFingerprint="HYUNDAI_SONATA")
+  )
+  moving_lead = SimpleNamespace(status=True, vLead=0.8, dRel=14.0)
+  stopped_lead = SimpleNamespace(status=True, vLead=0.1, dRel=14.0)
+
+  assert elantra.shape_hyundai_elantra_lead_target(0.14, 1.1, False, (moving_lead,)) == pytest.approx(0.14)
+  assert elantra.shape_hyundai_elantra_lead_target(0.14, 1.1, True, (stopped_lead,)) == pytest.approx(0.14)
+  assert other_car.shape_hyundai_elantra_lead_target(0.14, 1.1, False, (stopped_lead,)) == pytest.approx(0.14)
+
+
 def test_volt_testing_ground_handoff_freezes_integrator(monkeypatch):
   CP = car.CarParams.new_message()
   CP.brand = "gm"
@@ -713,6 +829,68 @@ def test_non_interceptor_volt_testing_ground_handoff_freezes_integrator(monkeypa
 
   assert freeze
   assert lc.vehicle_tuning.integrator_hold_frames > 0
+
+
+def test_volt_cruise_integrator_releases_stale_negative_bias():
+  CP = car.CarParams.new_message()
+  CP.brand = "gm"
+  CP.carFingerprint = "CHEVROLET_VOLT_ASCM"
+  CP.longitudinalTuning.kpBP = [0.0]
+  CP.longitudinalTuning.kpV = [0.0]
+  CP.longitudinalTuning.kiBP = [0.0]
+  CP.longitudinalTuning.kiV = [0.5]
+
+  lc = LongControl(CP)
+  lc.long_control_state = LongCtrlState.pid
+  lc.pid.i = -0.20
+  CS = car.CarState.new_message(vEgo=18.0, aEgo=0.0, brakePressed=False, gasPressed=False)
+  CS.cruiseState.standstill = False
+
+  output_accel = lc.update(
+    active=True,
+    CS=CS,
+    a_target=0.0,
+    should_stop=False,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=make_toggles(),
+    has_lead=False,
+  )
+
+  assert lc.pid.i > -0.20
+  assert output_accel > -0.20
+
+
+@pytest.mark.parametrize("kwargs", [
+  {"has_lead": True},
+  {"should_stop": True},
+  {"a_target": -0.25},
+  {"aEgo": 0.25},
+  {"vEgo": 4.0},
+])
+def test_volt_cruise_integrator_does_not_release_outside_settled_open_road(kwargs):
+  CP = car.CarParams.new_message()
+  CP.brand = "gm"
+  CP.carFingerprint = "CHEVROLET_VOLT_ASCM"
+  CP.longitudinalTuning.kpBP = [0.0]
+  CP.longitudinalTuning.kpV = [0.0]
+  CP.longitudinalTuning.kiBP = [0.0]
+  CP.longitudinalTuning.kiV = [0.5]
+
+  lc = LongControl(CP)
+  pid = SimpleNamespace(i=-0.20)
+  v_ego = kwargs.get("vEgo", 18.0)
+  a_ego = kwargs.get("aEgo", 0.0)
+  a_target = kwargs.get("a_target", 0.0)
+  lc.vehicle_tuning.trim_volt_cruise_integrator(
+    pid,
+    a_target=a_target,
+    error=a_target - a_ego,
+    v_ego=v_ego,
+    should_stop=kwargs.get("should_stop", False),
+    has_lead=kwargs.get("has_lead", False),
+  )
+
+  assert pid.i == pytest.approx(-0.20)
 
 
 def test_negative_target_unwinds_positive_accel_command_after_sign_flip():
@@ -1031,6 +1209,30 @@ def test_toyota_sienna_target_filter_smooths_mild_high_speed_handoffs():
   filtered = tuning.shape_toyota_sienna_accel_target(-0.20, 20.0, False)
 
   assert -0.20 < filtered < 0.30
+
+
+def test_toyota_sienna_target_filter_unwinds_braking_before_acceleration():
+  CP = make_longcontrol_cp(brand="toyota", carFingerprint=TOYOTA_CAR.TOYOTA_SIENNA_4TH_GEN)
+  tuning = vehicle_tunes.LongControlVehicleTuning(CP)
+
+  tuning.shape_toyota_sienna_accel_target(-1.2, 20.0, False)
+  recovering = tuning.shape_toyota_sienna_accel_target(1.2, 20.0, False)
+
+  assert recovering == pytest.approx(-1.1272727273)
+
+
+def test_toyota_sienna_target_filter_ramps_low_speed_acceleration():
+  CP = make_longcontrol_cp(brand="toyota", carFingerprint=TOYOTA_CAR.TOYOTA_SIENNA_4TH_GEN)
+  tuning = vehicle_tunes.LongControlVehicleTuning(CP)
+
+  first = tuning.shape_toyota_sienna_accel_target(1.5, 2.0, False)
+  assert 0.0 < first < 1.5
+
+  for _ in range(100):
+    filtered = tuning.shape_toyota_sienna_accel_target(1.5, 3.0, False)
+  assert filtered < 1.5
+
+  assert tuning.shape_toyota_sienna_accel_target(-1.5, 3.0, False) == pytest.approx(-1.5)
 
 
 def test_toyota_sienna_target_filter_bypasses_stop_and_urgent_braking():

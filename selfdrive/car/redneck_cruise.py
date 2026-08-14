@@ -2,6 +2,7 @@ from cereal import car
 from opendbc.car import apply_hysteresis
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_CTRL
+from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 
 ButtonType = car.CarState.ButtonEvent.Type
 
@@ -45,9 +46,16 @@ def select_redneck_target_speed(v_cruise_kph: float, speed_cluster_ms: float,
                                 starpilot_target_speed_ms: float, plan_speeds_ms: list[float],
                                 lookahead_points: int, allow_plan_decrease: bool = True,
                                 lead_present: bool = False, lead_distance_m: float = 0.0,
-                                lead_rel_speed_ms: float = 0.0) -> float:
+                                lead_rel_speed_ms: float = 0.0,
+                                slc_target_speed_ms: float = 0.0) -> float:
   target_speed_ms = float(speed_cluster_ms)
-  if v_cruise_kph > 0:
+  if slc_target_speed_ms > 0:
+    target_speed_ms = float(slc_target_speed_ms)
+    # SLC is an upper bound for the button-spammed stock setpoint. A driver-set
+    # speed below the posted target must still be able to slow the car down.
+    if 0 < v_cruise_kph < V_CRUISE_UNSET:
+      target_speed_ms = min(target_speed_ms, float(v_cruise_kph) * CV.KPH_TO_MS)
+  elif v_cruise_kph > 0:
     target_speed_ms = float(v_cruise_kph) * CV.KPH_TO_MS
   elif starpilot_target_speed_ms > 0:
     target_speed_ms = float(starpilot_target_speed_ms)

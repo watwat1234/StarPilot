@@ -11,7 +11,7 @@ const FAVORITE_OPTION_COLLATOR = new Intl.Collator(undefined, { numeric: true, s
 const FAVORITE_ACTION_PREFIX = "__starpilot_favorite_action__:"
 const GALAXY_DEVELOPER_MODE_KEY = "GalaxyDeveloperMode"
 const HIDDEN_SECTION_NAMES = new Set(["Model & Customization"])
-const HIDDEN_SETTING_KEYS = new Set(["DisableWideRoad", "HumanAcceleration", "ReverseCruise"])
+const HIDDEN_SETTING_KEYS = new Set(["HumanAcceleration", "ReverseCruise"])
 const GM_MAKES = ["Buick", "Cadillac", "Chevrolet", "GMC", "Holden"]
 const HKG_MAKES = ["Genesis", "Hyundai", "Kia"]
 const VEHICLE_SETTING_MAKES = {
@@ -106,6 +106,7 @@ function isSettingVisible(section, param) {
   // This policy controls Galaxy rendering only; hidden params retain their stored values.
   if (HIDDEN_SETTING_KEYS.has(param.key) || !isVehicleSettingVisible(section, param)) return false
   if (RADAR_REQUIRED_KEYS.has(param.key) && !state.values.HasRadar) return false
+  if (param.key === "AlphaLongitudinalEnabled" && !state.values.AlphaLongitudinalAvailable) return false
   if (state.values[GALAXY_DEVELOPER_MODE_KEY]) return true
   return section.name === "Favorites" || param.settings_tier === "simple"
 }
@@ -437,6 +438,10 @@ function formatSliderValue(val, stepStr, precisionInt, key) {
   if (key === "SwitchbackModeCooldown") {
     if (v === 0) return "Off"
     return v === 1 ? "1 min" : `${v} min`
+  }
+
+  if (key === "DeviceShutdown") {
+    return v === 1 ? "1 hour" : `${v} hours`
   }
 
   const volumeKeys = [
@@ -1097,6 +1102,11 @@ async function updateParam(key, elType) {
     return
   }
 
+  if (elType === "checkbox" && formattedVal && param.confirm_message && !window.confirm(param.confirm_message)) {
+    revertInput(key, current, elType)
+    return
+  }
+
   try {
     const res = await fetch("/api/params", {
       method: "PUT",
@@ -1227,6 +1237,12 @@ function clearSearchFilter() {
 const cancelButtonKeys = new Set(["CancelButtonControl", "LongCancelButtonControl", "VeryLongCancelButtonControl"])
 
 function getSettingLockReason(param) {
+  if (param?.requires_offroad && state.values.IsOnroad) {
+    return "This setting can only be changed while parked."
+  }
+  if (param?.requires_parked && !state.values.VehicleParked) {
+    return "This setting can only be changed while the vehicle is in Park."
+  }
   if (param?.disabled_when_key_true && state.values[param.disabled_when_key_true]) {
     return param.disabled_reason || "Disabled by another setting."
   }
@@ -1529,7 +1545,7 @@ function renderSettingRow(p) {
         ? formatSliderValue(defaultNumeric, String(bounds.step), p.precision, p.key)
         : "N/A"
       const canReset = !updating && defaultNumeric !== null && Math.abs(defaultNumeric - currentNumeric) > epsilon
-      const stepLabel = formatStepValue(bounds.step, precision)
+      const stepLabel = p.key === "DeviceShutdown" ? "1 hour" : formatStepValue(bounds.step, precision)
       return html`
             <div class="ds-stepper">
               <button

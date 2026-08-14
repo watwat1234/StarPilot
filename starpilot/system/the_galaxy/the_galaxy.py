@@ -97,6 +97,7 @@ GITLAB_SUBMISSIONS_PROJECT_ID = "71992109"
 GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "")
 LEGACY_LATERAL_METHOD_API_PREFIX = "/api/" + "".join(("f", "t", "m"))
 VASM_CONFIGURATION_KEYS = {"VASMEnabled", "VASMConfidenceThreshold", "VASMSmoothSeconds", "VASMAnnotationConfig"}
+PIP_PREVIEW_CONFIGURATION_KEYS = {"PIPPreviewEnabled", "PIPPreviewMask", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM"}
 MODEL_SMOOTHING_KEYS = {"LatSmoothSeconds", "LongSmoothSeconds"}
 
 GALAXY_DEPS_PATH = "/data/galaxy_deps"
@@ -636,6 +637,7 @@ MODEL_DOWNLOAD_ALL_PARAM = "DownloadAllModels"
 MODEL_DOWNLOAD_PROGRESS_PARAM = "ModelDownloadProgress"
 MODEL_CANCEL_DOWNLOAD_PARAM = "CancelModelDownload"
 MODEL_SORT_MODE_PARAM = "ModelSortMode"
+DEFAULT_MODEL_SORT_MODE = "release_date"
 MODEL_USER_FAVORITES_PARAM = "UserFavorites"
 MAPS_DOWNLOAD_PARAM = "DownloadMaps"
 MAPS_CANCEL_DOWNLOAD_PARAM = "CancelDownloadMaps"
@@ -950,6 +952,7 @@ _TROUBLESHOOT_CEM_KEYS = [
   "CELead",
   "CESlowerLead",
   "CEStoppedLead",
+  "CEOpenRoad",
   "CEModelStopTime",
   "CESignalSpeed",
   "ShowCEMStatus",
@@ -2416,6 +2419,8 @@ def _get_favorite_slot_options():
           continue
         if param_data.get("ui_type") != "toggle" or param_data.get("data_type") != "bool":
           continue
+        if key == "AlphaLongitudinalEnabled" and not _get_alpha_longitudinal_available():
+          continue
 
         seen.add(key)
         options.append({
@@ -2602,6 +2607,51 @@ def _normalize_vasm_config(data):
   }
   if not config["poly_left"] and not config["poly_right"]:
     raise ValueError("At least one window polygon is required.")
+  return config
+
+
+def _normalize_pip_preview_config(data):
+  if not isinstance(data, dict):
+    raise ValueError("Configuration must be a JSON object.")
+
+  try:
+    width = int(data.get("width", 0))
+    height = int(data.get("height", 0))
+  except (TypeError, ValueError) as exc:
+    raise ValueError("Invalid camera dimensions.") from exc
+  if not (1 <= width <= 8192 and 1 <= height <= 8192):
+    raise ValueError("Camera dimensions are out of range.")
+
+  try:
+    crop_size = int(data.get("crop_size", 0))
+  except (TypeError, ValueError) as exc:
+    raise ValueError("Invalid crop size.") from exc
+  if not (10 <= crop_size <= 8192):
+    raise ValueError("Crop size is out of range.")
+
+  def normalize_center(key):
+    point = data.get(key)
+    if not point:
+      return []
+    if not isinstance(point, (list, tuple)) or len(point) != 2:
+      raise ValueError(f"{key} requires an (x, y) center point.")
+    try:
+      x, y = float(point[0]), float(point[1])
+    except (TypeError, ValueError) as exc:
+      raise ValueError(f"{key} contains a non-numeric point.") from exc
+    if not (math.isfinite(x) and math.isfinite(y) and 0 <= x <= width and 0 <= y <= height):
+      raise ValueError(f"{key} center is outside the camera frame.")
+    return [round(x), round(y)]
+
+  config = {
+    "width": width,
+    "height": height,
+    "center_left": normalize_center("center_left"),
+    "center_right": normalize_center("center_right"),
+    "crop_size": crop_size,
+  }
+  if not config["center_left"] and not config["center_right"]:
+    raise ValueError("At least one window center is required.")
   return config
 
 
@@ -3164,6 +3214,30 @@ def _get_has_radar():
   try:
     with car.CarParams.from_bytes(cp_bytes) as cp:
       return not bool(getattr(cp, "radarUnavailable", False))
+  except Exception:
+    return False
+
+def _get_vehicle_parked():
+  try:
+    sm = messaging.SubMaster(["carState"], poll="carState")
+    sm.update(100)
+    if not sm.seen["carState"] or not sm.alive["carState"] or not sm.valid["carState"]:
+      return False
+
+    gear_shifter = getattr(getattr(car, "CarState", None), "GearShifter", None)
+    park_value = getattr(gear_shifter, "park", None)
+    return park_value is not None and getattr(sm["carState"], "gearShifter", None) == park_value
+  except Exception:
+    return False
+
+def _get_alpha_longitudinal_available():
+  cp_bytes = _safe_params_get_live_raw("CarParamsPersistent")
+  if not cp_bytes:
+    return False
+
+  try:
+    with car.CarParams.from_bytes(cp_bytes) as cp:
+      return bool(getattr(cp, "alphaLongitudinalAvailable", False))
   except Exception:
     return False
 
@@ -3992,6 +4066,8 @@ def setup(app):
       "/assets/components/tools/device_settings_layout.json",
       "/assets/components/tools/v_asm.js",
       "/assets/components/tools/v_asm.css",
+      "/assets/components/tools/pip_sidecam.js",
+      "/assets/components/tools/pip_sidecam.css",
       "/assets/components/tools/toggles.js",
     }:
       response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -4443,6 +4519,34 @@ def setup(app):
           "updated": updated,
         }), 200
 
+      if key == "AlphaLongitudinalEnabled":
+        if not _get_alpha_longitudinal_available():
+          return jsonify({"error": "Alpha Longitudinal is not available for the detected vehicle."}), 403
+        if params.get_bool("IsOnroad"):
+          return jsonify({"error": "Cannot change Alpha Longitudinal while driving."}), 403
+
+        enabled = str_val.strip() in ("1", "true", "True")
+        params.put_bool(key, enabled)
+        params.put_bool("OnroadCycleRequested", True)
+        update_starpilot_toggles()
+        return jsonify({
+          "message": f"Parameter '{key}' updated successfully. The driving stack will restart shortly.",
+          "updated": {key: enabled},
+        }), 200
+
+      if key == "ForceOffroad":
+        if not _get_vehicle_parked():
+          return jsonify({"error": "Force Offroad is only available while the vehicle is in Park."}), 403
+
+        enabled = str_val.strip() in ("1", "true", "True")
+        params.put_bool("ForceOffroad", enabled)
+        params.put_bool("ForceOnroad", False)
+        update_starpilot_toggles()
+        return jsonify({
+          "message": f"Force Offroad {'enabled' if enabled else 'disabled'}.",
+          "updated": {"ForceOffroad": enabled, "ForceOnroad": False},
+        }), 200
+
       # 1. Prevent changing the model or reboot-required toggles while the car is actively driving
       reboot_keys = {"Model", "DrivingModel", "AlwaysOnLateral", "DisableOpenpilotLongitudinal", "ForceTorqueController", "NNFF", "NNFFLite"}
       if key in reboot_keys and params.get_bool("IsOnroad"):
@@ -4463,6 +4567,12 @@ def setup(app):
 
       if key in VASM_CONFIGURATION_KEYS and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot change V-ASM configuration while driving."}), 403
+
+      if key in PIP_PREVIEW_CONFIGURATION_KEYS:
+        if not params.get_bool("GalaxyDeveloperMode"):
+          return jsonify({"error": "PiP Side Camera is available only with Galaxy Developer Mode enabled."}), 403
+        if params.get_bool("IsOnroad"):
+          return jsonify({"error": "Cannot change PiP Side Camera configuration while driving."}), 403
 
       if key in PANDA_FIRMWARE_TOGGLE_KEYS and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot flash Panda firmware while driving."}), 403
@@ -4806,6 +4916,8 @@ def setup(app):
         result[key] = None
 
     result["HasRadar"] = _get_has_radar()
+    result["VehicleParked"] = _get_vehicle_parked()
+    result["AlphaLongitudinalAvailable"] = _get_alpha_longitudinal_available()
 
     return jsonify(_sanitize_json_value(result)), 200
 
@@ -4904,7 +5016,7 @@ def setup(app):
   def get_or_set_models_preferences():
     if request.method == "GET":
       return jsonify({
-        "sortMode": read_legacy_param_file(MODEL_SORT_MODE_PARAM, "alphabetical"),
+        "sortMode": read_legacy_param_file(MODEL_SORT_MODE_PARAM, DEFAULT_MODEL_SORT_MODE),
         "userFavorites": [entry for entry in (params.get(MODEL_USER_FAVORITES_PARAM, encoding="utf-8") or "").split(",") if entry],
       }), 200
 
@@ -4912,7 +5024,7 @@ def setup(app):
     changed = []
 
     if "sortMode" in data:
-      sort_mode = str(data.get("sortMode") or "alphabetical").strip() or "alphabetical"
+      sort_mode = str(data.get("sortMode") or DEFAULT_MODEL_SORT_MODE).strip() or DEFAULT_MODEL_SORT_MODE
       write_legacy_param_file(MODEL_SORT_MODE_PARAM, sort_mode)
       changed.append("sort mode")
 
@@ -4940,7 +5052,7 @@ def setup(app):
 
     downloading = bool(model_to_download) or download_all
     current_model = _current_model_key()
-    sort_mode = read_legacy_param_file(MODEL_SORT_MODE_PARAM, "alphabetical")
+    sort_mode = read_legacy_param_file(MODEL_SORT_MODE_PARAM, DEFAULT_MODEL_SORT_MODE)
     terminal = progress in ("Downloaded!", "All models downloaded!") or bool(re.search(r"cancelled|exists|failed|offline|invalid|error", progress, re.IGNORECASE))
     summary = {
       "installed": sum(1 for model in models if model["installed"]),
@@ -5309,14 +5421,14 @@ def setup(app):
 
   def _default_model_key():
     default_key = _param_text(params.get_default_value("Model") or params.get_default_value("DrivingModel"))
-    return canonical_model_key(default_key) or "sc2"
+    return canonical_model_key(default_key) or "rdf"
 
   def _default_model_name():
-    return _param_text(params.get_default_value("DrivingModelName")) or "South Carolina"
+    return _param_text(params.get_default_value("DrivingModelName")) or "Regret Driven Framework"
 
   def _default_model_version():
     default_version = _param_text(params.get_default_value("ModelVersion") or params.get_default_value("DrivingModelVersion"))
-    return default_version or "v11"
+    return default_version or "v15"
 
   def _current_model_key():
     current_model = _param_text(params.get("Model", encoding="utf-8") or params.get("DrivingModel", encoding="utf-8"))
@@ -7666,6 +7778,49 @@ def setup(app):
     params.put("VASMAnnotationConfig", {})
     update_starpilot_toggles()
     return jsonify({"success": True, "message": "Annotation config cleared. V-ASM disabled."})
+
+  @app.route("/api/pip_preview/snapshot", methods=["GET"])
+  def pip_preview_snapshot():
+    if not params.get_bool("GalaxyDeveloperMode"):
+      return jsonify({"error": "PiP Side Camera is available only with Galaxy Developer Mode enabled."}), 403
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Camera snapshots are unavailable while driving."}), 403
+    jpeg = _get_live_driver_jpeg()
+    if jpeg is not None:
+      return Response(jpeg, mimetype="image/jpeg")
+    return jsonify({"error": "Unable to capture live frame from driver camera."}), 503
+
+  @app.route("/api/pip_preview/config", methods=["GET"])
+  def pip_preview_get_config():
+    if not params.get_bool("GalaxyDeveloperMode"):
+      return jsonify({"error": "PiP Side Camera is available only with Galaxy Developer Mode enabled."}), 403
+    return jsonify(_decode_json_object(params.get("PIPPreviewMask")))
+
+  @app.route("/api/pip_preview/config", methods=["POST"])
+  def pip_preview_save_config():
+    if not params.get_bool("GalaxyDeveloperMode"):
+      return jsonify({"error": "PiP Side Camera is available only with Galaxy Developer Mode enabled."}), 403
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Cannot change PiP Side Camera configuration while driving."}), 403
+    try:
+      config = _normalize_pip_preview_config(request.get_json(silent=True))
+    except ValueError as exc:
+      return jsonify({"error": str(exc)}), 400
+
+    params.put("PIPPreviewMask", config)
+    update_starpilot_toggles()
+    return jsonify({"success": True, "message": "PiP Preview mask saved."})
+
+  @app.route("/api/pip_preview/config", methods=["DELETE"])
+  def pip_preview_delete_config():
+    if not params.get_bool("GalaxyDeveloperMode"):
+      return jsonify({"error": "PiP Side Camera is available only with Galaxy Developer Mode enabled."}), 403
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Cannot change PiP Side Camera configuration while driving."}), 403
+    params.put("PIPPreviewMask", {})
+    params.put_bool("PIPPreviewEnabled", False)
+    update_starpilot_toggles()
+    return jsonify({"success": True, "message": "PiP Preview mask cleared."})
 
   @app.route("/mapbox-help/<path:filename>", methods=["GET"])
   def serve_mapbox_help(filename):

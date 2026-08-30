@@ -11,11 +11,12 @@ import { MapsManager } from "/assets/components/tools/maps.js"
 import { NavDestination } from "/assets/components/navigation/navigation_destination.js?v=nav-search-context-2"
 import { NavKeys } from "/assets/components/navigation/navigation_keys.js?v=app-keys-session-1"
 import { RouteRecordings } from "/assets/components/recordings/dashcam_routes.js"
-import { SettingsView } from "/assets/components/settings.js"
+import { SettingsView } from "/assets/components/settings.js?v=router-cycle-fix-1"
 import { ScreenRecordings } from "/assets/components/recordings/screen_recordings.js"
 import { Sidebar } from "/assets/components/sidebar.js?v=lateral-tuning-1"
+import { SentryMode } from "/assets/components/tools/sentry.js"
 import { SpeedLimits } from "/assets/components/tools/speed_limits.js"
-import { ModelManager } from "/assets/components/tools/model_manager.js?v=20260303t"
+import { ModelManager } from "/assets/components/tools/model_manager.js?v=20260825a"
 import { LivePlots } from "/assets/components/tools/plots.js"
 import { ThemeMaker } from "/assets/components/tools/theme_maker.js"
 import { TestingGround } from "/assets/components/tools/testing_ground.js"
@@ -26,6 +27,7 @@ import { ToggleControl } from "/assets/components/tools/toggles.js"
 import { VASMAnnotations } from "/assets/components/tools/v_asm.js"
 import { PipSideCamera } from "/assets/components/tools/pip_sidecam.js"
 import { UpdateManager } from "/assets/components/tools/update_manager.js"
+import { startSentryNotifications } from "/assets/components/sentry_notifications.js"
 
 let router, routerState
 
@@ -54,6 +56,7 @@ function SafeHome() {
       <p>Safe mode is active while UI rendering is being repaired.</p>
       <p>
         <a href="/galaxy">Galaxy Pairing</a> |
+        <a href="/sentry">Sentry Mode</a> |
         <a href="/device_settings">Toggles</a> |
         <a href="/manage_updates">Software</a>
       </p>
@@ -71,6 +74,7 @@ function Root() {
     createRoute("root", "/", Home),
     createRoute("routes", "/dashcam_routes", RouteRecordings),
     createRoute("screen_recordings", "/screen_recordings", ScreenRecordings),
+    createRoute("sentry", "/sentry", SentryMode),
     createRoute("settings", "/settings/:section/:subsection?", SettingsView),
     createRoute("speed_limits", "/download_speed_limits", SpeedLimits),
     createRoute("model_manager", "/manage_models", ModelManager),
@@ -187,3 +191,5 @@ if (document.readyState === "loading") {
 } else {
   mountRouterWhenReady()
 }
+
+startSentryNotifications()

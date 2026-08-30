@@ -41,6 +41,7 @@
 #define MSG_SUBARU_ES_HighBeamAssist     0x121U
 #define MSG_SUBARU_ES_STATIC_1           0x22aU
 #define MSG_SUBARU_ES_STATIC_2           0x325U
+#define MSG_SUBARU_Dashlights            0x390U
 
 #define SUBARU_MAIN_BUS 0U
 #define SUBARU_ALT_BUS  1U
@@ -60,6 +61,9 @@
   {MSG_SUBARU_ES_DashStatus,   bus, 8, .check_relay = true}, \
   {MSG_SUBARU_ES_LKAS_State,   bus, 8, .check_relay = true}, \
   {MSG_SUBARU_ES_Infotainment, bus, 8, .check_relay = true}, \
+
+#define SUBARU_STOP_START_TX_MSGS(bus) \
+  {MSG_SUBARU_Dashlights, bus, 8, .check_relay = false}, \
 
 #define SUBARU_COMMON_LONG_TX_MSGS(alt_bus) \
   {MSG_SUBARU_ES_Distance,       alt_bus,         8, .check_relay = true}, \
@@ -107,7 +111,8 @@ static bool subaru_longitudinal = false;
 static bool subaru_stop_and_go = false;
 static bool subaru_lkas_angle = false;
 static bool subaru_d_platform = false;
-static bool subaru_legacy_2025_angle_limits = false;
+static bool subaru_fixed_angle_limits = false;
+static bool subaru_stop_start_button = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -192,7 +197,7 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     .frequency = 50U,
   };
 
-  const AngleSteeringLimits SUBARU_LEGACY_2025_ANGLE_STEERING_LIMITS = {
+  const AngleSteeringLimits SUBARU_FIXED_ANGLE_STEERING_LIMITS = {
     .max_angle = 545 * 100,
     .angle_deg_to_can = 100.,
     .angle_rate_up_lookup = {
@@ -241,8 +246,8 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     desired_angle = -1 * to_signed(desired_angle, 17);
     bool lkas_request = GET_BIT(msg, 12U);
 
-    if (subaru_legacy_2025_angle_limits) {
-      violation |= steer_angle_cmd_checks(desired_angle, lkas_request, SUBARU_LEGACY_2025_ANGLE_STEERING_LIMITS);
+    if (subaru_fixed_angle_limits) {
+      violation |= steer_angle_cmd_checks(desired_angle, lkas_request, SUBARU_FIXED_ANGLE_STEERING_LIMITS);
     } else {
       violation |= steer_angle_cmd_checks_vm(desired_angle, lkas_request, SUBARU_ANGLE_STEERING_LIMITS, SUBARU_ANGLE_STEERING_PARAMS);
     }
@@ -283,6 +288,13 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     bool is_button_rdbi = (GET_BYTES(msg, 0, 4) == 0x30112203U) && (GET_BYTES(msg, 4, 4) == 0x0U);
 
     violation |= !(is_tester_present || is_button_rdbi);
+  }
+
+  if (msg->addr == MSG_SUBARU_Dashlights) {
+    violation |= !subaru_stop_start_button;
+    violation |= msg->bus != (subaru_d_platform ? SUBARU_ALT_BUS : SUBARU_MAIN_BUS);
+    violation |= !GET_BIT(msg, 54U);
+    violation |= subaru_get_checksum(msg) != subaru_compute_checksum(msg);
   }
 
   if (violation){
@@ -329,9 +341,21 @@ static safety_config subaru_init(uint16_t param) {
     SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
   };
 
+  static const CanMsg SUBARU_GEN2_LKAS_ANGLE_STOP_START_TX_MSGS[] = {
+    SUBARU_BASE_TX_MSGS(SUBARU_ALT_BUS, MSG_SUBARU_ES_LKAS_ANGLE)
+    SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_STOP_START_TX_MSGS(SUBARU_MAIN_BUS)
+  };
+
   static const CanMsg SUBARU_D_PLATFORM_ANGLE_MAIN_TX_MSGS[] = {
     SUBARU_D_PLATFORM_ANGLE_TX_MSGS(SUBARU_MAIN_BUS)
     SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
+  };
+
+  static const CanMsg SUBARU_D_PLATFORM_ANGLE_STOP_START_MAIN_TX_MSGS[] = {
+    SUBARU_D_PLATFORM_ANGLE_TX_MSGS(SUBARU_MAIN_BUS)
+    SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_STOP_START_TX_MSGS(SUBARU_ALT_BUS)
   };
 
   static const CanMsg SUBARU_D_PLATFORM_ANGLE_CAMERA_TX_MSGS[] = {
@@ -375,8 +399,11 @@ static safety_config subaru_init(uint16_t param) {
   const uint16_t SUBARU_PARAM_D_PLATFORM_CAMERA = 64;
   const bool subaru_d_platform_camera = GET_FLAG(param, SUBARU_PARAM_D_PLATFORM_CAMERA);
 
-  const uint16_t SUBARU_PARAM_LEGACY_2025_ANGLE_LIMITS = 128;
-  subaru_legacy_2025_angle_limits = GET_FLAG(param, SUBARU_PARAM_LEGACY_2025_ANGLE_LIMITS);
+  const uint16_t SUBARU_PARAM_FIXED_ANGLE_LIMITS = 128;
+  subaru_fixed_angle_limits = GET_FLAG(param, SUBARU_PARAM_FIXED_ANGLE_LIMITS);
+
+  const uint16_t SUBARU_PARAM_STOP_START_BUTTON = 256;
+  subaru_stop_start_button = GET_FLAG(param, SUBARU_PARAM_STOP_START_BUTTON);
 
 #ifdef ALLOW_DEBUG
   const uint16_t SUBARU_PARAM_LONGITUDINAL = 2;
@@ -385,9 +412,11 @@ static safety_config subaru_init(uint16_t param) {
 
   safety_config ret;
   if (subaru_lkas_angle) {
-    ret = subaru_d_platform ? (subaru_d_platform_camera ? BUILD_SAFETY_CFG(subaru_d_platform_angle_rx_checks, SUBARU_D_PLATFORM_ANGLE_CAMERA_TX_MSGS) : \
-                              BUILD_SAFETY_CFG(subaru_d_platform_angle_rx_checks, SUBARU_D_PLATFORM_ANGLE_MAIN_TX_MSGS)) : \
-          subaru_gen2 ? BUILD_SAFETY_CFG(subaru_gen2_lkas_angle_rx_checks, SUBARU_GEN2_LKAS_ANGLE_TX_MSGS) : \
+    ret = subaru_d_platform ? (subaru_stop_start_button ? BUILD_SAFETY_CFG(subaru_d_platform_angle_rx_checks, SUBARU_D_PLATFORM_ANGLE_STOP_START_MAIN_TX_MSGS) : \
+                              (subaru_d_platform_camera ? BUILD_SAFETY_CFG(subaru_d_platform_angle_rx_checks, SUBARU_D_PLATFORM_ANGLE_CAMERA_TX_MSGS) : \
+                              BUILD_SAFETY_CFG(subaru_d_platform_angle_rx_checks, SUBARU_D_PLATFORM_ANGLE_MAIN_TX_MSGS))) : \
+          subaru_gen2 ? (subaru_stop_start_button ? BUILD_SAFETY_CFG(subaru_gen2_lkas_angle_rx_checks, SUBARU_GEN2_LKAS_ANGLE_STOP_START_TX_MSGS) : \
+                         BUILD_SAFETY_CFG(subaru_gen2_lkas_angle_rx_checks, SUBARU_GEN2_LKAS_ANGLE_TX_MSGS)) : \
                         BUILD_SAFETY_CFG(subaru_lkas_angle_rx_checks, SUBARU_LKAS_ANGLE_TX_MSGS);
   } else if (subaru_gen2) {
     ret = subaru_longitudinal ? BUILD_SAFETY_CFG(subaru_gen2_rx_checks, SUBARU_GEN2_LONG_TX_MSGS) : \

@@ -67,10 +67,12 @@ STARPILOT_PARAM_RENAME_MIGRATION_FLAG = Path("/data") / "starpilot_param_rename_
 STARPILOT_PARAM_CANONICALIZATION_MIGRATION_FLAG = Path("/data") / "starpilot_param_canonicalization_v1"
 STARPILOT_PC_ROOT_MIGRATION_FLAG = Path("/data") / "starpilot_pc_root_v1"
 STARPILOT_PARAMS_CACHE_MIGRATION_FLAG = Path("/data") / "starpilot_params_cache_v1"
-STARPILOT_DEFAULT_MODEL_MIGRATION_FLAG = Path("/data") / "starpilot_default_model_rdf_v1"
+STARPILOT_DEFAULT_MODEL_MIGRATION_FLAG = Path("/data") / "starpilot_default_model_rdf_v4"
 STARPILOT_CE_MODEL_STOP_TIME_MIGRATION_FLAG = Path("/data") / "starpilot_ce_model_stop_time_v2"
 STARPILOT_LEGACY_CACHE_MARKER_KEYS = ("RemapCancelToDistance",)
-STARPILOT_REMOVED_PARAM_KEYS = ("CoastUpToLeads", "HumanAcceleration", "HumanFollowing", "PrioritizeSmoothFollowing")
+STARPILOT_REMOVED_PARAM_KEYS = (
+  "CoastUpToLeads", "HumanAcceleration", "HumanFollowing", "PrioritizeSmoothFollowing", "ReverseCruise",
+)
 LEGACY_CARMODEL_MIGRATIONS = {
   "CHEVROLET_BOLT_CC_2019_2021": "CHEVROLET_BOLT_CC_2018_2021",
 }
@@ -609,7 +611,7 @@ def migrate_starpilot_default_parity(params: Params, params_cache: Params) -> No
 
 
 def migrate_starpilot_default_model(params: Params, params_cache: Params) -> None:
-  """Move the old bundled South Carolina selection to the bundled RDF model once."""
+  """Move the old bundled default to the bundled RDF V4 model once."""
   if STARPILOT_DEFAULT_MODEL_MIGRATION_FLAG.exists():
     return
 
@@ -624,19 +626,26 @@ def migrate_starpilot_default_model(params: Params, params_cache: Params) -> Non
   selected_version = persisted_text("ModelVersion") or persisted_text("DrivingModelVersion")
   selected_name = persisted_text("DrivingModelName").lower()
 
-  is_legacy_default = selected_model.lower() in {"sc", "sc2"}
-  is_legacy_metadata = (not selected_version or selected_version.lower() == "v11") and (not selected_name or selected_name.startswith("south carolina"))
+  is_legacy_default = selected_model.lower() in {"sc", "sc2", "rdf"}
+  is_legacy_metadata = (
+    not selected_version
+    or selected_version.lower() in {"v11", "v15"}
+  ) and (
+    not selected_name
+    or selected_name.startswith("south carolina")
+    or selected_name.startswith("regret driven framework")
+  )
   if is_legacy_default and is_legacy_metadata:
     for key, value in {
-      "Model": "rdf",
-      "DrivingModel": "rdf",
-      "DrivingModelName": "Regret Driven Framework",
+      "Model": "rdf43",
+      "DrivingModel": "rdf43",
+      "DrivingModelName": "Regret Driven Framework V4",
       "ModelVersion": "v15",
       "DrivingModelVersion": "v15",
     }.items():
       params.put(key, value)
       params_cache.put(key, value)
-    cloudlog.warning("Migrated the bundled default model from South Carolina to RDF")
+    cloudlog.warning("Migrated the bundled default model to RDF V4")
 
   try:
     STARPILOT_DEFAULT_MODEL_MIGRATION_FLAG.parent.mkdir(parents=True, exist_ok=True)
@@ -1086,11 +1095,6 @@ def manager_init() -> None:
                        dirty=build_metadata.openpilot.is_dirty,
                        device=HARDWARE.get_device_type())
   last_timing = _log_boot_timing("manager_init", "logging_ready", manager_init_start, last_timing)
-
-  # preimport all processes
-  for p in managed_processes.values():
-    p.prepare()
-  last_timing = _log_boot_timing("manager_init", "preimport_processes", manager_init_start, last_timing)
 
   # StarPilot variables
   install_starpilot(build_metadata, params)

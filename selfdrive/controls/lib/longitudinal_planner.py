@@ -26,6 +26,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_honda_accord_stop_go_accel_cap,
   get_honda_accord_stop_go_accel_rise_rate,
   get_toyota_rav4_tss2_lead_departure_tune,
+  get_toyota_rav4_tss2_lead_creep_tune,
   get_force_stop_distance_bias,
   get_force_stop_handoff_distance,
   get_stop_sign_low_speed_hold,
@@ -44,6 +45,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_standstill_gap_settle_max_extra_gap,
   get_standstill_stopped_lead_guard_distance_margin,
   get_standstill_stopped_lead_guard_max_lead_speed,
+  is_ford_f150_lightning_stopped_radar_follow_lead,
   get_tracked_lead_catchup_bias_gain,
   get_tracked_lead_catchup_bias_cap,
   get_tracked_lead_catchup_speed_range,
@@ -1323,11 +1325,17 @@ class LongitudinalPlanner:
     lead_gap = float(getattr(lead, "dRel", 0.0))
     lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
     lead_accel = float(getattr(lead, "aLeadK", 0.0))
+    creep_tune = get_toyota_rav4_tss2_lead_creep_tune(self.CP)
+    min_lead_speed, min_lead_accel = (
+      (STANDSTILL_LEAD_CREEP_RELEASE_MIN_LEAD_SPEED,
+       STANDSTILL_LEAD_CREEP_RELEASE_MIN_LEAD_ACCEL)
+      if creep_tune is None else creep_tune
+    )
     return bool(
       float(v_ego) <= STANDSTILL_LEAD_DEPART_MAX_EGO_SPEED and
       lead_gap >= standstill_nudge_gap + STANDSTILL_LEAD_CREEP_RELEASE_MIN_GAP_MARGIN and
-      lead_speed >= STANDSTILL_LEAD_CREEP_RELEASE_MIN_LEAD_SPEED and
-      lead_accel >= STANDSTILL_LEAD_CREEP_RELEASE_MIN_LEAD_ACCEL
+      lead_speed >= min_lead_speed and
+      lead_accel >= min_lead_accel
     )
 
   def get_safe_depart_release_hold_lead(self, v_ego):
@@ -2059,9 +2067,20 @@ class LongitudinalPlanner:
       any(is_toyota_rav4_tss2_radar_follow_lead(self.CP, lead, scene_v_ego)
           for lead in (self.lead_one, self.lead_two))
     )
+    lightning_stopped_radar_follow = (
+      experimental_mode and
+      not bool(getattr(sm['starpilotPlan'], 'forcingStop', False)) and
+      not bool(getattr(sm['starpilotPlan'], 'redLight', False)) and
+      not bool(getattr(sm['starpilotPlan'], 'stopSignConfirmed', False)) and
+      any(is_ford_f150_lightning_stopped_radar_follow_lead(self.CP, lead, scene_v_ego)
+          for lead in (self.lead_one, self.lead_two))
+    )
     # StarPilot trackingLead is debounce/model-length based. Keep a raw close-lead
     # safety path so ACC/chill does not ignore a visible lead during that debounce.
-    lead_control_active = tracking_lead or raw_close_lead_control or early_truck_follow or rav4_radar_follow
+    lead_control_active = (
+      tracking_lead or raw_close_lead_control or early_truck_follow or rav4_radar_follow or
+      lightning_stopped_radar_follow
+    )
     lead_one_active = bool(self.lead_one.status and lead_control_active)
     effective_t_follow = self.get_dynamic_t_follow(sm['starpilotPlan'].tFollow, self.lead_one if lead_one_active else None, v_ego)
 
@@ -2397,6 +2416,24 @@ class LongitudinalPlanner:
         raw_approach_lift_cap = min(approach_lift_caps)
 
       if not experimental_mode:
+        # Apply the RAV4's mild early-lead response before ordinary lead tracking
+        # is admitted. This only removes throttle while a centered, confident
+        # lead is already braking; the normal safety path remains authoritative.
+        rav4_pretracking_caps = [
+          cap for cap in (
+            get_toyota_rav4_tss2_early_lead_cap(
+              self.CP, self.lead_one, v_ego, vision_cap_accel_min,
+            ),
+            get_toyota_rav4_tss2_early_lead_cap(
+              self.CP, self.lead_two, v_ego, vision_cap_accel_min,
+            ),
+          ) if cap is not None
+        ]
+        if rav4_pretracking_caps:
+          rav4_pretracking_cap = min(rav4_pretracking_caps)
+          self.a_desired = min(self.a_desired, rav4_pretracking_cap)
+          output_a_target = min(output_a_target, rav4_pretracking_cap)
+
         early_radar_caps = [
           cap for cap in (
             get_honda_crv_5g_early_radar_follow_cap(

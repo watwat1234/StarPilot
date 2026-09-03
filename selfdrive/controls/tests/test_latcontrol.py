@@ -42,6 +42,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   get_sonata_hybrid_center_output_scale,
   get_sonata_hybrid_friction_threshold,
   get_prius_center_taper_scale,
+  PRIUS_STANDARD_FRICTION_JERK_DEADZONE_MAX,
   KIA_FORTE_BASE_LAT_ACCEL_FACTOR_MULT,
   HONDA_ACCORD_TORQUE_KI,
   HONDA_ACCORD_TORQUE_KP,
@@ -772,6 +773,9 @@ class TestLatControl:
     assert overshooting_unwind < 0.70
     assert highway_overshoot > overshooting_unwind
 
+    low_speed_exit = get_kia_carnival_unwind_ff_scale(0.31, 0.43, -0.88, 11.0)
+    assert low_speed_exit < 0.90
+
   def test_genesis_g90_ff_scale_curve(self):
     assert get_genesis_g90_ff_scale(0.0, 0.0, 20.0) == 1.0
     assert get_genesis_g90_ff_scale(0.5, 0.0, 20.0) > get_genesis_g90_ff_scale(-0.5, 0.0, 20.0)
@@ -897,6 +901,8 @@ class TestLatControl:
     assert base_scale > left_unwind_scale == right_unwind_scale
 
     assert get_prius_friction_jerk_deadzone(30.0, 0.0) > get_prius_friction_jerk_deadzone(30.0, 0.8)
+    assert get_prius_friction_jerk_deadzone(30.0, 0.0, PRIUS_STANDARD_FRICTION_JERK_DEADZONE_MAX) > \
+           get_prius_friction_jerk_deadzone(30.0, 0.0)
     assert get_prius_friction_jerk_deadzone(8.0, 0.0) < 0.05
     assert get_prius_center_taper_scale(0.0, 30.0) < get_prius_center_taper_scale(0.8, 30.0)
     assert get_prius_center_taper_scale(0.0, 8.0) > 0.99
@@ -941,6 +947,7 @@ class TestLatControl:
     assert turn_scale > center_scale
     assert highway_center_deadzone > highway_turn_deadzone
     assert highway_turn_deadzone < 0.05
+    assert latcontrol_vehicle_tunes.get_genesis_gv70_friction_jerk_deadzone(60.0 * 0.44704, 0.2) > 0.40
 
   def test_genesis_gv70_high_speed_error_damping(self):
     assert get_genesis_gv70_high_speed_error_scale(0.2, 0.2, 0.8, 20.0) == 1.0
@@ -978,6 +985,8 @@ class TestLatControl:
     assert get_genesis_g70_high_speed_error_scale(0.2, 0.2, 0.8, 20.0) == 1.0
     assert get_genesis_g70_high_speed_error_scale(0.2, 0.9, 0.8, 20.0) < 1.0
     assert get_genesis_g70_high_speed_error_scale(0.2, 0.9, 0.8, 10.0) > get_genesis_g70_high_speed_error_scale(0.2, 0.9, 0.8, 20.0)
+    assert get_genesis_g70_high_speed_error_scale(0.7, 0.95, 0.8, 30.0) < \
+      get_genesis_g70_high_speed_error_scale(0.7, 0.45, 0.8, 30.0)
 
   def test_sonata_hybrid_center_output_taper_is_mid_speed_and_center_gated(self):
     low_speed = get_sonata_hybrid_center_output_scale(0.0, 8.0)

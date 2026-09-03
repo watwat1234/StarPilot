@@ -73,7 +73,12 @@ from openpilot.starpilot.common.maps_catalog import (
   schedule_label,
   schedule_param_value,
 )
-from openpilot.starpilot.common.maps_download_progress import load_size_cache, nonnegative_int, selection_key
+from openpilot.starpilot.common.maps_download_progress import (
+  MAPS_STORAGE_CACHE_PARAM,
+  load_maps_storage_cache,
+  nonnegative_int,
+  selection_key,
+)
 from openpilot.starpilot.common.experimental_state import sync_persist_chill_state, sync_persist_experimental_state
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_SLOTS_PARAM,
@@ -102,6 +107,24 @@ from openpilot.starpilot.navigation.destination_store import normalize_destinati
 from openpilot.starpilot.system.the_galaxy.factory_reset import remove_path as _run_factory_reset_delete
 from openpilot.starpilot.system.the_galaxy import flm_workspace, utilities
 from openpilot.starpilot.system.the_galaxy.update_recovery import inspect_interrupted_update, public_recovery_status, recover_interrupted_update
+from openpilot.starpilot.system.bluetooth import BluetoothClient
+from openpilot.starpilot.system.wheel_controls import (
+  CONTROLLER_ACTION_OPTIONS,
+  CONTROLLER_ACTION_SET_SPEED,
+  CONTROLLER_ACTION_SLOT_COUNT,
+  FAVORITE_SLOT_COUNT,
+  cancel_learning as cancel_wheel_control_learning,
+  clear_mappings as clear_wheel_control_mappings,
+  controller_speed_bounds,
+  delete_mapping as delete_wheel_control_mapping,
+  load_controller_action_slots,
+  public_status as wheel_control_status,
+  set_controller_action_slot,
+  set_joystick_device,
+  start_learning as start_wheel_control_learning,
+  start_testing as start_wheel_control_testing,
+  stop_testing as stop_wheel_control_testing,
+)
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 # Keep Galaxy independent of opendbc's generated car bindings while matching RivianFlags.ANGLE_HARNESS.
@@ -681,7 +704,7 @@ def _normalize_sentry_event(payload) -> dict | None:
 
   event_id = str(payload.get("eventId") or "").strip()
   kind = str(payload.get("kind") or "").strip().lower()
-  if not event_id or kind not in {"warning", "alarm", "power_off"}:
+  if not event_id or kind not in {"warning", "alarm", "power_off", "selfie"}:
     return None
 
   event = {
@@ -786,6 +809,57 @@ def _capture_sentry_live_images() -> list[str]:
     jpeg_write(str(path), front)
     paths.append(str(path))
   return paths
+
+
+def _get_live_driver_jpeg():
+  from openpilot.system.manager.process_config import managed_processes
+  started = False
+  try:
+    try:
+      subprocess.check_call(["pgrep", "camerad"])
+    except subprocess.CalledProcessError:
+      managed_processes['camerad'].start()
+      started = True
+
+    client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_DRIVER, True)
+    if not client.connect(True):
+      return None
+
+    if started:
+      settle_deadline = time.monotonic() + 4.0
+      while time.monotonic() < settle_deadline:
+        client.recv(timeout_ms=100)
+
+    buf = client.recv(timeout_ms=5000)
+    if buf is None:
+      return None
+
+    y = np.array(buf.data[:buf.uv_offset], dtype=np.uint8).reshape((-1, buf.stride))[:buf.height, :buf.width]
+    u = np.array(buf.data[buf.uv_offset::2], dtype=np.uint8).reshape((-1, buf.stride // 2))[:buf.height // 2, :buf.width // 2]
+    v = np.array(buf.data[buf.uv_offset + 1::2], dtype=np.uint8).reshape((-1, buf.stride // 2))[:buf.height // 2, :buf.width // 2]
+
+    ul = np.repeat(np.repeat(u, 2).reshape(u.shape[0], y.shape[1]), 2, axis=0).reshape(y.shape)
+    vl = np.repeat(np.repeat(v, 2).reshape(v.shape[0], y.shape[1]), 2, axis=0).reshape(y.shape)
+
+    yuv = np.dstack((y, ul, vl)).astype(np.int16)
+    yuv[:, :, 1:] -= 128
+
+    m = np.array([
+      [1.00000, 1.00000, 1.00000],
+      [0.00000, -0.39465, 2.03211],
+      [1.13983, -0.58060, 0.00000],
+    ])
+    rgb = np.dot(yuv, m).clip(0, 255).astype(np.uint8)
+
+    img = Image.fromarray(rgb)
+    buf_io = BytesIO()
+    img.save(buf_io, format="JPEG", quality=85)
+    return buf_io.getvalue()
+  except Exception:
+    return None
+  finally:
+    if started:
+      managed_processes['camerad'].stop()
 
 
 _SENTRY_PUSH_LOCK = threading.Lock()
@@ -1442,7 +1516,7 @@ MODEL_USER_FAVORITES_PARAM = "UserFavorites"
 MAPS_DOWNLOAD_PARAM = "DownloadMaps"
 MAPS_CANCEL_DOWNLOAD_PARAM = "CancelDownloadMaps"
 MAPS_DOWNLOAD_PROGRESS_PARAM = "MapsDownloadProgress"
-MAPS_DOWNLOAD_SIZE_CACHE_PARAM = "MapsDownloadSizeCache"
+MAPS_DOWNLOAD_SIZE_CACHE_PARAM = MAPS_STORAGE_CACHE_PARAM
 
 
 def _get_galaxy_dir():
@@ -3227,6 +3301,15 @@ def _get_available_favorite_slot_options():
     {"HasRivianAngleHarness": _get_has_rivian_angle_harness()},
   )
 
+
+def _get_available_controller_action_options():
+  options = [*_get_available_favorite_slot_options(), *(dict(option) for option in CONTROLLER_ACTION_OPTIONS)]
+  return sorted(options, key=lambda option: (
+    str(option.get("section") or "").casefold(),
+    str(option.get("label") or option.get("key") or "").casefold(),
+  ))
+
+
 def _favorite_slot_values(options):
   return get_favorite_values(options, params)
 
@@ -4853,7 +4936,15 @@ def setup(app):
       "/assets/components/tools/pip_sidecam.js",
       "/assets/components/tools/pip_sidecam.css",
       "/assets/components/tools/toggles.js",
+      "/assets/components/tools/bluetooth.js",
+      "/assets/components/tools/bluetooth.css",
+      "/assets/components/tools/wheel_controls.js",
+      "/assets/components/tools/wheel_controls.css",
     }:
+      response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+      response.headers["Pragma"] = "no-cache"
+      response.headers["Expires"] = "0"
+    if request.path == "/api/bluetooth/status" or request.path.startswith("/api/bluetooth/"):
       response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
       response.headers["Pragma"] = "no-cache"
       response.headers["Expires"] = "0"
@@ -4867,6 +4958,18 @@ def setup(app):
     response.headers["Expires"] = "0"
     return response
 
+  def _no_store_response(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+  def _serve_new_ui():
+    ui_index_path = Path(app.static_folder) / "mobile" / "index.html"
+    if not ui_index_path.is_file():
+      return "Galaxy UI not found", 404
+    return _no_store_response(make_response(send_file(str(ui_index_path))))
+
   @app.route("/", methods=["GET"])
   def index():
     response = make_response(render_template("index.html"))
@@ -4874,6 +4977,212 @@ def setup(app):
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
+
+  @app.route("/classic", methods=["GET"])
+  @app.route("/classic/", methods=["GET"])
+  def classic_index():
+    return _no_store_response(make_response(render_template("index.html")))
+
+  @app.route("/mobile", methods=["GET"])
+  @app.route("/mobile/", methods=["GET"])
+  @app.route("/ui", methods=["GET"])
+  @app.route("/ui/", methods=["GET"])
+  def mobile_index():
+    return _serve_new_ui()
+
+  @app.route("/api/bluetooth/status", methods=["GET"])
+  def bluetooth_status():
+    try:
+      status = BluetoothClient(timeout=10.0).status()
+      return jsonify(BluetoothClient.serialize_status(status)), 200
+    except Exception as error:
+      return jsonify({
+        "available": False,
+        "enabled": params.get_bool("BluetoothEnabled"),
+        "offroad": params.get_bool("IsOffroad"),
+        "selected_audio": params.get("BluetoothAudioAddress", encoding="utf-8") or "",
+        "devices": [],
+        "error": str(error),
+      }), 503
+
+  @app.route("/api/bluetooth/<operation>", methods=["POST"])
+  def bluetooth_operation(operation):
+    commands = {
+      "power": "set_power",
+      "scan": "start_scan",
+      "stop_scan": "stop_scan",
+      "pair": "pair",
+      "connect": "connect",
+      "disconnect": "disconnect",
+      "forget": "forget",
+      "select_audio": "select_audio",
+      "test_audio": "test_audio",
+      "pairing_response": "pairing_response",
+    }
+    command = commands.get(operation)
+    if command is None:
+      return jsonify({"error": "Unknown Bluetooth operation."}), 404
+    offroad_only = {"power", "scan", "stop_scan", "pair", "forget", "test_audio", "pairing_response"}
+    if operation in offroad_only and not params.get_bool("IsOffroad"):
+      return jsonify({"error": "Bluetooth settings can only be changed offroad."}), 409
+
+    data = request.get_json(silent=True) or {}
+    payload = {}
+    if command == "set_power":
+      payload["enabled"] = bool(data.get("enabled", False))
+    elif command == "pairing_response":
+      payload = {
+        "prompt_id": str(data.get("prompt_id", "")),
+        "accepted": bool(data.get("accepted", False)),
+        "value": str(data.get("value", "")),
+      }
+    elif command not in {"start_scan", "stop_scan"}:
+      payload["address"] = str(data.get("address", ""))
+      if not payload["address"] and command != "select_audio":
+        return jsonify({"error": "Bluetooth device address is required."}), 400
+    try:
+      client = BluetoothClient(timeout=10.0)
+      if command == "set_power":
+        client.set_power(payload["enabled"])
+        result = {}
+      else:
+        result = client.call(command, **payload)
+      return jsonify({"message": "Bluetooth operation started.", **result}), 200
+    except Exception as error:
+      return jsonify({"error": str(error)}), 503
+
+  @app.route("/api/wheel-controls/status", methods=["GET"])
+  def wheel_controls_status():
+    status = wheel_control_status(params, params_memory)
+    favorite_options = _get_available_favorite_slot_options()
+    favorite_option_by_key = {option["key"]: option for option in favorite_options}
+    controller_options = _get_available_controller_action_options()
+    controller_option_by_key = {option["key"]: option for option in controller_options}
+    slots = normalize_favorite_slots(
+      params.get(FAVORITE_SLOTS_PARAM),
+      params=params,
+      eligible_keys=set(favorite_option_by_key),
+    )
+    for slot in slots:
+      key = slot.get("key")
+      if key in favorite_option_by_key:
+        slot["label"] = favorite_option_by_key[key]["label"]
+    controller_slots = load_controller_action_slots(params, set(controller_option_by_key))
+    for slot in controller_slots:
+      key = slot.get("key")
+      if key in controller_option_by_key:
+        slot["label"] = controller_option_by_key[key]["label"]
+    status["slots"] = slots
+    status["controller_slots"] = controller_slots
+    status["controller_options"] = controller_options
+    is_metric = params.get_bool("IsMetric")
+    speed_minimum, speed_maximum = controller_speed_bounds(is_metric)
+    status["speed_unit"] = "km/h" if is_metric else "mph"
+    status["speed_minimum"] = speed_minimum
+    status["speed_maximum"] = speed_maximum
+    return jsonify(status), 200
+
+  @app.route("/api/wheel-controls/<operation>", methods=["POST"])
+  def wheel_controls_operation(operation):
+    if operation not in {"action", "learn", "cancel", "delete", "clear", "test", "test-stop", "joystick"}:
+      return jsonify({"error": "Unknown wheel control operation."}), 404
+    if not params.get_bool("IsOffroad"):
+      return jsonify({"error": "Wheel controls can only be configured offroad."}), 409
+
+    data = request.get_json(silent=True) or {}
+    try:
+      if operation == "action":
+        slot_index = int(data.get("slot", -1))
+        key = str(data.get("key") or "").strip()
+        options = _get_available_controller_action_options()
+        option_by_key = {option["key"]: option for option in options}
+        if not 0 <= slot_index < CONTROLLER_ACTION_SLOT_COUNT:
+          return jsonify({"error": f"Controller action must be between 1 and {CONTROLLER_ACTION_SLOT_COUNT}."}), 400
+        if key and key not in option_by_key:
+          return jsonify({"error": "That controller action is not available."}), 400
+        value = None
+        if key == CONTROLLER_ACTION_SET_SPEED:
+          try:
+            value = float(data.get("value"))
+          except (TypeError, ValueError):
+            return jsonify({"error": "Enter a valid set speed."}), 400
+          speed_minimum, speed_maximum = controller_speed_bounds(params.get_bool("IsMetric"))
+          if not math.isfinite(value) or not speed_minimum <= value <= speed_maximum:
+            unit = "km/h" if params.get_bool("IsMetric") else "mph"
+            return jsonify({"error": f"Set speed must be between {speed_minimum} and {speed_maximum} {unit}."}), 400
+        cancel_wheel_control_learning(params_memory, params)
+        set_controller_action_slot(
+          slot_index,
+          key or None,
+          str(option_by_key.get(key, {}).get("label") or ""),
+          params,
+          value=value,
+          eligible_keys=set(option_by_key),
+        )
+        return jsonify({"message": f"Controller Action #{slot_index + 1} updated."}), 200
+      if operation == "joystick":
+        device_id = str(data.get("device_id") or "").strip()
+        enabled = bool(data.get("enabled", False))
+        if enabled:
+          devices = wheel_control_status(params, params_memory).get("devices", [])
+          device = next((item for item in devices if item.get("device_id") == device_id), None)
+          if device is None:
+            return jsonify({"error": "Controller is not connected."}), 404
+          if not device.get("joystick_capable"):
+            return jsonify({"error": "This device does not expose joystick axes."}), 400
+        set_joystick_device(device_id, enabled, params)
+        return jsonify({"message": "Joystick controller updated."}), 200
+      if operation == "learn":
+        stop_wheel_control_testing(params_memory)
+        slot_index = int(data.get("slot", -1))
+        favorite_options = _get_available_favorite_slot_options()
+        favorite_eligible_keys = {option["key"] for option in favorite_options}
+        controller_options = _get_available_controller_action_options()
+        controller_eligible_keys = {option["key"] for option in controller_options}
+        slots = normalize_favorite_slots(
+          params.get(FAVORITE_SLOTS_PARAM),
+          params=params,
+          eligible_keys=favorite_eligible_keys,
+        )
+        if 0 <= slot_index < FAVORITE_SLOT_COUNT:
+          target = slots[slot_index]
+          target_name = f"Favorite #{slot_index + 1}"
+        elif FAVORITE_SLOT_COUNT <= slot_index < FAVORITE_SLOT_COUNT + CONTROLLER_ACTION_SLOT_COUNT:
+          controller_index = slot_index - FAVORITE_SLOT_COUNT
+          target = load_controller_action_slots(params, controller_eligible_keys)[controller_index]
+          target_name = f"Controller Action #{controller_index + 1}"
+        else:
+          return jsonify({"error": "Unknown controller mapping target."}), 400
+        if not target.get("enabled") or not target.get("key"):
+          return jsonify({"error": f"Configure {target_name} before learning a button."}), 400
+        start_wheel_control_learning(slot_index, params_memory, params)
+        return jsonify({"message": f"Press a button for {target_name}."}), 200
+      if operation == "cancel":
+        cancel_wheel_control_learning(params_memory, params)
+        return jsonify({"message": "Button learning cancelled."}), 200
+      if operation == "test":
+        cancel_wheel_control_learning(params_memory, params)
+        start_wheel_control_testing(params_memory, params)
+        return jsonify({"message": "Button testing enabled."}), 200
+      if operation == "test-stop":
+        stop_wheel_control_testing(params_memory)
+        return jsonify({"message": "Button testing disabled."}), 200
+      if operation == "clear":
+        clear_wheel_control_mappings(params)
+        cancel_wheel_control_learning(params_memory, params)
+        stop_wheel_control_testing(params_memory)
+        return jsonify({"message": "Wheel control mappings cleared."}), 200
+
+      identifier = str(data.get("id") or "").strip()
+      if not identifier:
+        return jsonify({"error": "Mapping id is required."}), 400
+      if not delete_wheel_control_mapping(identifier, params):
+        return jsonify({"error": "Wheel control mapping was not found."}), 404
+      return jsonify({"message": "Wheel control mapping removed."}), 200
+    except (TypeError, ValueError) as error:
+      return jsonify({"error": str(error)}), 400
+    except Exception as error:
+      return jsonify({"error": str(error)}), 503
 
   @app.route("/assets/components/tools/device_settings_layout.json", methods=["GET"])
   def device_settings_layout_asset():
@@ -6052,13 +6361,10 @@ def setup(app):
 
     selected_entries = get_selected_map_entries(selected_raw)
     selected_locations = [entry["token"] for entry in selected_entries]
-    maps_present = MAPS_PATH.exists() and any(path.is_file() for path in MAPS_PATH.rglob("*"))
-    storage_bytes = 0
-    if MAPS_PATH.exists():
-      try:
-        storage_bytes = sum(path.stat().st_size for path in MAPS_PATH.rglob("*") if path.is_file())
-      except Exception:
-        storage_bytes = 0
+    size_cache = load_maps_storage_cache(params.get(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, encoding="utf-8") or "")
+    storage_known = size_cache.storage_known
+    storage_bytes = size_cache.storage_bytes if storage_known else 0
+    maps_present = bool(size_cache.maps_present)
 
     selected_key = selection_key(selected_locations)
     raw_progress = params_memory.get(MAPS_DOWNLOAD_PROGRESS_PARAM, encoding="utf-8") or ""
@@ -6069,10 +6375,13 @@ def setup(app):
     if not isinstance(download_progress, dict):
       download_progress = {}
 
+    if params_memory.get_bool(MAPS_DOWNLOAD_PARAM) and "storageBytes" in download_progress:
+      storage_known = bool(download_progress.get("storageKnown", True))
+      storage_bytes = nonnegative_int(download_progress.get("storageBytes", 0)) if storage_known else 0
+      maps_present = storage_bytes > 0 if storage_known else False
+
     if not params_memory.get_bool(MAPS_DOWNLOAD_PARAM) and selected_key and download_progress.get("selectedKey") != selected_key:
-      size_cache = load_size_cache(params.get(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, encoding="utf-8") or "")
-      cached_entry = size_cache.get(selected_key, {})
-      cached_bytes = nonnegative_int(cached_entry.get("downloadBytes", 0)) if isinstance(cached_entry, dict) else 0
+      cached_bytes = size_cache.selection_estimate_bytes(selected_key)
       if cached_bytes > 0:
         download_progress = {
           "active": False,
@@ -6081,7 +6390,7 @@ def setup(app):
           "downloadedBytes": 0,
           "downloadedFiles": 0,
           "estimatedDownloadBytes": cached_bytes,
-          "estimateSource": "previous_download",
+          "estimateSource": "previous_additional_storage",
           "etaSeconds": 0,
           "percent": 0,
           "phase": "idle",
@@ -6089,8 +6398,9 @@ def setup(app):
           "selectedKey": selected_key,
           "selectedLocations": selected_locations,
           "storageBytes": storage_bytes,
-          "totalFiles": nonnegative_int(cached_entry.get("totalFiles", 0)),
-          "updatedAt": cached_entry.get("updatedAt", ""),
+          "storageKnown": storage_known,
+          "totalFiles": size_cache.selection_total_files(selected_key),
+          "updatedAt": size_cache.selection_updated_at(selected_key),
           "bytesPerSecond": 0,
         }
       else:
@@ -6109,6 +6419,7 @@ def setup(app):
           "selectedKey": selected_key,
           "selectedLocations": selected_locations,
           "storageBytes": storage_bytes,
+          "storageKnown": storage_known,
           "totalFiles": 0,
           "updatedAt": "",
           "bytesPerSecond": 0,
@@ -6124,6 +6435,7 @@ def setup(app):
       "isOnroad": params.get_bool("IsOnroad"),
       "lastUpdate": params.get("LastMapsUpdate", encoding="utf-8") or "Never",
       "mapsPresent": maps_present,
+      "storageKnown": storage_known,
       "scheduleLabel": schedule_label(params.get("PreferredSchedule")),
       "scheduleOptions": MAP_SCHEDULE_OPTIONS,
       "scheduleValue": schedule_param_value(params.get("PreferredSchedule")),
@@ -6209,6 +6521,11 @@ def setup(app):
 
     if MAPS_PATH.exists():
       shutil.rmtree(MAPS_PATH, ignore_errors=True)
+
+    size_cache = load_maps_storage_cache(params.get(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, encoding="utf-8") or "")
+    size_cache.clear()
+    params.put(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, size_cache.to_json())
+    params_memory.remove(MAPS_DOWNLOAD_PROGRESS_PARAM)
 
     return jsonify({"message": "Maps removed.", "status": _get_maps_status_payload()}), 200
 
@@ -6919,6 +7236,15 @@ def setup(app):
     # storage scan cannot be multiplied by repeated homepage polling.
     with _STATS_RESPONSE_LOCK:
       return _get_stats_locked()
+
+  @app.route("/api/device/status", methods=["GET"])
+  def device_status():
+    return jsonify({
+      "status": "Driving" if params.get_bool("IsOnroad") else "Parked",
+      "online": True,
+      "lanIp": utilities.get_current_lan_ip(),
+      "networkName": utilities.get_current_network_name(),
+    }), 200
 
   @app.route("/api/stats/ignore_drive", methods=["POST"])
   def ignore_drive_stats():
@@ -7721,6 +8047,33 @@ def setup(app):
       "imagePaths": image_paths,
     })
     return jsonify({"capturedAt": captured_at, "imageUrls": event["imageUrls"]})
+
+  @app.route("/api/sentry/selfie", methods=["POST"])
+  def sentry_selfie():
+    if request.remote_addr not in {None, "127.0.0.1", "::1"}:
+      return jsonify({"error": "Comma Selfies must originate on the device."}), 403
+
+    with _SENTRY_LIVE_CAPTURE_LOCK:
+      jpeg = _get_live_driver_jpeg()
+    if jpeg is None:
+      return jsonify({"error": "Unable to capture the driver camera."}), 503
+
+    captured_at = datetime.now(timezone.utc).isoformat()
+    event_id = f"selfie-{int(time.time())}-{secrets.token_hex(4)}"
+    directory = _sentry_event_roots()[0] / event_id
+    directory.mkdir(parents=True, exist_ok=True)
+    image_path = directory / "driver.jpg"
+    image_path.write_bytes(jpeg)
+    event = {
+      "eventId": event_id,
+      "kind": "selfie",
+      "detectedAt": captured_at,
+      "imagePaths": [str(image_path)],
+      "message": "Comma Selfie",
+    }
+    _record_sentry_event(event)
+    params.put("SentryModeLastEvent", json.dumps(event, separators=(",", ":")))
+    return jsonify({"accepted": True, "capturedAt": captured_at, "eventId": event_id}), 201
 
   @app.route("/api/sentry/test", methods=["POST"])
   def sentry_test():
@@ -8877,56 +9230,6 @@ def setup(app):
       return Response(jpeg, mimetype="image/jpeg")
     return jsonify({"error": "Unable to capture live frame from driver camera."}), 503
 
-
-  def _get_live_driver_jpeg():
-    from openpilot.system.manager.process_config import managed_processes
-    started = False
-    try:
-      try:
-        subprocess.check_call(["pgrep", "camerad"])
-      except subprocess.CalledProcessError:
-        managed_processes['camerad'].start()
-        started = True
-
-      client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_DRIVER, True)
-      if not client.connect(True):
-        return None
-
-      if started:
-        settle_deadline = time.monotonic() + 4.0
-        while time.monotonic() < settle_deadline:
-          client.recv(timeout_ms=100)
-
-      buf = client.recv(timeout_ms=5000)
-      if buf is None:
-        return None
-
-      y = np.array(buf.data[:buf.uv_offset], dtype=np.uint8).reshape((-1, buf.stride))[:buf.height, :buf.width]
-      u = np.array(buf.data[buf.uv_offset::2], dtype=np.uint8).reshape((-1, buf.stride // 2))[:buf.height // 2, :buf.width // 2]
-      v = np.array(buf.data[buf.uv_offset + 1::2], dtype=np.uint8).reshape((-1, buf.stride // 2))[:buf.height // 2, :buf.width // 2]
-
-      ul = np.repeat(np.repeat(u, 2).reshape(u.shape[0], y.shape[1]), 2, axis=0).reshape(y.shape)
-      vl = np.repeat(np.repeat(v, 2).reshape(v.shape[0], y.shape[1]), 2, axis=0).reshape(y.shape)
-
-      yuv = np.dstack((y, ul, vl)).astype(np.int16)
-      yuv[:, :, 1:] -= 128
-
-      m = np.array([
-        [1.00000,  1.00000, 1.00000],
-        [0.00000, -0.39465, 2.03211],
-        [1.13983, -0.58060, 0.00000],
-      ])
-      rgb = np.dot(yuv, m).clip(0, 255).astype(np.uint8)
-
-      img = Image.fromarray(rgb)
-      buf_io = BytesIO()
-      img.save(buf_io, format="JPEG", quality=85)
-      return buf_io.getvalue()
-    except Exception:
-      return None
-    finally:
-      if started:
-        managed_processes['camerad'].stop()
 
   @app.route("/api/v_asm/config", methods=["GET"])
   def v_asm_get_config():

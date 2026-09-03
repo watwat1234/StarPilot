@@ -318,6 +318,33 @@ def _install_server_import_stubs():
     "openpilot.starpilot.system.the_galaxy.flm_workspace",
   )
   sys.modules["openpilot.starpilot.system.the_galaxy.utilities"] = utilities
+  sys.modules["openpilot.starpilot.system.wheel_controls"] = _simple_module(
+    "openpilot.starpilot.system.wheel_controls",
+    CONTROLLER_ACTION_OPTIONS=(
+      {"key": "__starpilot_controller_action__:set_speed", "label": "Set Speed To", "section": "Controller Actions", "value_type": "speed"},
+      {"key": "__starpilot_controller_action__:selfie", "label": "Take Comma Selfie", "section": "Controller Actions"},
+      {"key": "__starpilot_controller_action__:bookmark", "label": "Bookmark", "section": "Controller Actions"},
+      {"key": "__starpilot_controller_action__:pulse_and_glide", "label": "Pulse and Glide", "section": "Controller Actions"},
+      {"key": "__starpilot_controller_action__:force_coast", "label": "Force Coasting", "section": "Controller Actions"},
+      {"key": "__starpilot_controller_action__:toggle_aol", "label": "Toggle AOL", "section": "Controller Actions"},
+    ),
+    CONTROLLER_ACTION_SET_SPEED="__starpilot_controller_action__:set_speed",
+    CONTROLLER_ACTION_SLOT_COUNT=10,
+    FAVORITE_SLOT_COUNT=3,
+    cancel_learning=lambda *args, **kwargs: None,
+    clear_mappings=lambda *args, **kwargs: None,
+    controller_speed_bounds=lambda is_metric: (8, 145) if is_metric else (5, 90),
+    delete_mapping=lambda *args, **kwargs: True,
+    load_controller_action_slots=lambda *args, **kwargs: [
+      {"enabled": False, "key": None, "label": "", "value": None} for _ in range(10)
+    ],
+    public_status=lambda *args, **kwargs: {"mappings": [], "devices": [], "available": True},
+    set_controller_action_slot=lambda *args, **kwargs: None,
+    set_joystick_device=lambda *args, **kwargs: None,
+    start_learning=lambda *args, **kwargs: None,
+    start_testing=lambda *args, **kwargs: None,
+    stop_testing=lambda *args, **kwargs: None,
+  )
 
 
 class FakeParams:
@@ -1711,6 +1738,55 @@ def test_clear_generated_build_state_preserves_prebuilts_and_user_data(tmp_path)
   assert not (tmp_path / "cereal" / "gen").exists()
   assert prebuilt.read_text() == "test"
   assert user_model.read_text() == "test"
+
+
+def test_maps_status_uses_cache_without_scanning_legacy_storage(monkeypatch):
+  server = _load_server_module()
+  assert server._import_galaxy_web_symbols()
+
+  app = server.Flask(
+    "maps_status_test",
+    template_folder=str(MODULE_DIR / "templates"),
+    static_folder=str(MODULE_DIR / "assets"),
+  )
+  server.setup(app)
+  monkeypatch.setattr(server, "params", FakeParams({
+    "MapsDownloadSizeCache": '{"country:CA":{"downloadBytes":123}}',
+    "MapsSelected": "",
+  }))
+  monkeypatch.setattr(server, "params_memory", FakeParams())
+  monkeypatch.setattr(server, "MAPS_PATH", SimpleNamespace(rglob=lambda *_args: (_ for _ in ()).throw(AssertionError("status must not scan maps"))))
+
+  response = app.test_client().get("/api/maps/status")
+  payload = response.get_json()
+
+  assert response.status_code == 200
+  assert payload["storageKnown"] is False
+  assert payload["storageBytes"] == 0
+  assert payload["mapsPresent"] is False
+
+
+def test_maps_status_returns_known_storage_from_v2_cache(monkeypatch):
+  server = _load_server_module()
+  assert server._import_galaxy_web_symbols()
+
+  app = server.Flask(
+    "maps_status_known_test",
+    template_folder=str(MODULE_DIR / "templates"),
+    static_folder=str(MODULE_DIR / "assets"),
+  )
+  server.setup(app)
+  monkeypatch.setattr(server, "params", FakeParams({
+    "MapsDownloadSizeCache": '{"version":2,"storageBytes":4096,"selections":{}}',
+    "MapsSelected": "",
+  }))
+  monkeypatch.setattr(server, "params_memory", FakeParams())
+
+  payload = app.test_client().get("/api/maps/status").get_json()
+
+  assert payload["storageKnown"] is True
+  assert payload["storageBytes"] == 4096
+  assert payload["mapsPresent"] is True
 
 
 def test_sentry_notification_rate_limit_persists_and_expires(monkeypatch, tmp_path):

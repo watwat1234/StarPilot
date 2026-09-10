@@ -39,7 +39,10 @@ bundled with build/other work.** Step 2 below is split into 2a (build) and 2b
 (commit); do not run `git commit` for 2b (or anywhere else in this plan)
 without asking first, even though the original wording below groups them.
 
-Step 2a not yet started as of this update.
+Step 2a and 2b both DONE as of this update: build succeeded (72 files
+changed in `panda/board/obj/`, matching the expected H7-only functional
+growth + version-embed churn everywhere else), and the regenerated
+binaries were committed as `1839c9c72`. Not pushed to `origin` yet.
 
 *(This update was made directly in this WSL-side copy rather than the
 Windows-side canonical copy — per the note at the top of this file, reconcile
@@ -273,8 +276,9 @@ change is isolated to the physical GPIOC11 pulse only.
   ```
   Source edit only, no build/flash performed on this (Windows) machine.
 
-- **Step 2a — Build. NOT YET DONE — this is the handoff point to the WSL
-  machine.** See "Handoff to WSL machine" section below for exact commands.
+- **Step 2a — Build. DONE (built in the `../starpilot-wat-boot` worktree on
+  this WSL machine).** See "Handoff to WSL machine" section below for exact
+  commands used.
   Must rebuild via `scons` (not hand-pick individual variants) since
   `cuatro.h` is shared across all H7-target firmware builds and there's no
   compile-time board selection — `panda_h7`, `panda_h7_remote`,
@@ -292,11 +296,11 @@ change is isolated to the physical GPIOC11 pulse only.
   H7-family `.bin.signed` + bootstub files to differ, plus
   `gitversion.h`/`version` since those embed a git-rev string).*
 
-- **Step 2b — Commit the regenerated binaries. NOT YET DONE. Separate
-  checkpoint from 2a — requires explicit user permission before running `git
-  commit`, per updated user instruction (see WSL machine update note above).**
-  `git add panda/board/obj/` then commit, describing it as regenerated
-  firmware for the `cuatro.h` fix.
+- **Step 2b — Commit the regenerated binaries. DONE — commit `1839c9c72`
+  on `wat-boot-update` ("panda: regenerate firmware for cuatro GPIOC11 DC_IN
+  bootkick fix"), committed only after explicit user permission per the
+  updated instruction above. Not pushed to `origin` yet — push needs its own
+  explicit go-ahead too.**
 
 - **Step 3 — Reflash the panda.** Before flashing, record the currently-flashed
   firmware version/hash (and ideally keep a copy of the current `.bin.signed`)

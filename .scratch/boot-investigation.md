@@ -19,9 +19,13 @@ like firmware version/rollback point were not recorded here). Steps 4/5
 (bench + in-car validation) done via a simpler real-world test than originally
 planned: with the car off, unplugging and re-plugging the OBDII cable made the
 comma boot immediately, with no car ignition involved — confirming the
-GPIOC11/DC_IN bootkick fix works. Remaining: Step 6 (regression check on normal
-ignition-on/off flows) and Step 7 (report upstream to StarPilot) are still
-open. See "Fix — discrete steps" below for the full breakdown.
+GPIOC11/DC_IN bootkick fix works. Step 6 (regression check) also confirmed:
+onroad/offroad transitions on ignition on/off are unchanged, and StarPilot
+still honors its device shutdown-timeout setting even while OBD power stays
+active past that timeout (i.e. the fix doesn't keep the device powered-on
+indefinitely just because 12V is present). Remaining: only Step 7 (report
+upstream to StarPilot) is still open. See "Fix — discrete steps" below for
+the full breakdown.
 
 *(Older status text below, from before build/flash/test happened on the WSL
 machine — kept for history, superseded by the paragraph above.)*
@@ -330,11 +334,11 @@ change is isolated to the physical GPIOC11 pulse only.
   the OBDII-power-appearing trigger the bench test was meant to isolate, done
   directly in the car. **Fix validated.**
 
-- **Step 6 — Regression check.** Confirm true ignition-on/off flows (drive
-  start/stop, and normal offroad shutdown after `DELAY_SHUTDOWN_TIME_S`) still
-  behave normally after the firmware change — no regression to the
-  onroad/offroad state machine, reboot-deferral behavior, etc. from the
-  general boot-timing differences noted above.
+- **Step 6 — Regression check. DONE.** Confirmed: onroad/offroad transitions
+  on true ignition on/off still work normally, and StarPilot still respects
+  its device shutdown-timeout setting and powers down even while OBD power
+  remains active past that timeout — no regression to the onroad/offroad
+  state machine or shutdown-deferral behavior from the firmware change.
 
 - **Step 7 — Report upstream.** Since this looks like a missed-merge gap in
   StarPilot's FrogPilot-descended lineage rather than a deliberate change, it

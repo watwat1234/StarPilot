@@ -19,6 +19,32 @@ firmware, so Step 2 onward is meant to be picked up by a Claude instance running
 on a separate WSL machine that has the toolchain. See "Handoff to WSL machine"
 below for exactly what to do there.
 
+### WSL machine update (2026-09-09)
+Picked up here as planned. Confirmed toolchain present on this machine
+(`arm-none-eabi-gcc`, `uv`, `scons`/`SCons` all already available in the main
+clone's root `.venv`). Created a worktree at `../starpilot-wat-boot` off the
+main WSL clone for the build, rather than building in the main clone directly
+— the main clone was already being used for unrelated `Dom_wat_analyzer_tuning`
+plotjuggler/tuning work, so it was left on its own branch instead of switching
+it over.
+
+**Remote-name note:** on this WSL machine the git.waffle remote referenced
+below as `custom_waffle` is simply named `origin` (there is no separate
+comma-upstream `origin` or `custom_github` remote configured on this clone at
+all). Translate `custom_waffle` → `origin` in the commands below when running
+them here.
+
+**Per explicit user instruction, commits are their own checkpoint now — never
+bundled with build/other work.** Step 2 below is split into 2a (build) and 2b
+(commit); do not run `git commit` for 2b (or anywhere else in this plan)
+without asking first, even though the original wording below groups them.
+
+Step 2a not yet started as of this update.
+
+*(This update was made directly in this WSL-side copy rather than the
+Windows-side canonical copy — per the note at the top of this file, reconcile
+if they diverge.)*
+
 ### Work done so far
 - New git repo initialized at the root dir (`C:\Users\pancake\Documents\python\projects\starpilot`,
   no `.git` there before) specifically to track this `.scratch/` file across
@@ -247,9 +273,9 @@ change is isolated to the physical GPIOC11 pulse only.
   ```
   Source edit only, no build/flash performed on this (Windows) machine.
 
-- **Step 2 — Rebuild panda firmware. NOT YET DONE — this is the handoff point
-  to the WSL machine.** See "Handoff to WSL machine" section below for exact
-  commands. Must rebuild via `scons` (not hand-pick individual variants) since
+- **Step 2a — Build. NOT YET DONE — this is the handoff point to the WSL
+  machine.** See "Handoff to WSL machine" section below for exact commands.
+  Must rebuild via `scons` (not hand-pick individual variants) since
   `cuatro.h` is shared across all H7-target firmware builds and there's no
   compile-time board selection — `panda_h7`, `panda_h7_remote`,
   `panda_h7_hkg_remote`, and their `*_can_ignition_only` counterparts (6 H7
@@ -260,11 +286,17 @@ change is isolated to the physical GPIOC11 pulse only.
   **Critical:** StarPilot ships precompiled `.bin.signed` binaries committed
   in `panda/board/obj/` (see "Key discovery" above) — `pandad.py` flashes
   straight from there, it does not build on-device. So this step isn't done
-  until the regenerated binaries are committed back into `panda/board/obj/`,
-  not just built locally. *Checkpoint: confirm the build succeeds, review
-  `git status`/`git diff --stat` in `panda/board/obj/` (expect all H7-family
-  `.bin.signed` + bootstub files to differ, plus `gitversion.h`/`version` since
-  those embed a git-rev string), then commit before moving on.*
+  until the regenerated binaries are committed back into `panda/board/obj/`
+  (Step 2b), not just built locally. *Checkpoint: confirm the build succeeds,
+  review `git status`/`git diff --stat` in `panda/board/obj/` (expect all
+  H7-family `.bin.signed` + bootstub files to differ, plus
+  `gitversion.h`/`version` since those embed a git-rev string).*
+
+- **Step 2b — Commit the regenerated binaries. NOT YET DONE. Separate
+  checkpoint from 2a — requires explicit user permission before running `git
+  commit`, per updated user instruction (see WSL machine update note above).**
+  `git add panda/board/obj/` then commit, describing it as regenerated
+  firmware for the `cuatro.h` fix.
 
 - **Step 3 — Reflash the panda.** Before flashing, record the currently-flashed
   firmware version/hash (and ideally keep a copy of the current `.bin.signed`)

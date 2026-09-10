@@ -24,8 +24,8 @@ onroad/offroad transitions on ignition on/off are unchanged, and StarPilot
 still honors its device shutdown-timeout setting even while OBD power stays
 active past that timeout (i.e. the fix doesn't keep the device powered-on
 indefinitely just because 12V is present). Remaining: only Step 7 (report
-upstream to StarPilot) is still open. See "Fix — discrete steps" below for
-the full breakdown.
+upstream to StarPilot) is still open, and has been explicitly **deferred** by
+the user for now. See "Fix — discrete steps" below for the full breakdown.
 
 *(Older status text below, from before build/flash/test happened on the WSL
 machine — kept for history, superseded by the paragraph above.)*
@@ -340,12 +340,13 @@ change is isolated to the physical GPIOC11 pulse only.
   remains active past that timeout — no regression to the onroad/offroad
   state machine or shutdown-deferral behavior from the firmware change.
 
-- **Step 7 — Report upstream.** Since this looks like a missed-merge gap in
-  StarPilot's FrogPilot-descended lineage rather than a deliberate change, it
-  will likely get silently reintroduced on a future StarPilot update/rebase
-  unless flagged. File an issue or PR against StarPilot with this finding
-  (root cause + the 2-line fix) so it survives future updates instead of only
-  living on this local build.
+- **Step 7 — Report upstream. DEFERRED.** Since this looks like a missed-merge
+  gap in StarPilot's FrogPilot-descended lineage rather than a deliberate
+  change, it will likely get silently reintroduced on a future StarPilot
+  update/rebase unless flagged. File an issue or PR against StarPilot with
+  this finding (root cause + the 2-line fix) so it survives future updates
+  instead of only living on this local build. Explicitly deferred for now —
+  not being worked on until the user picks it back up.
 
 ## Handoff to WSL machine (for Step 2)
 

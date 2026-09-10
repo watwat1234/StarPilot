@@ -12,6 +12,20 @@ this file — that's where investigation updates should be made and then
 re-copied here if they diverge.*
 
 ## Status
+**Fix confirmed working end-to-end.** Steps 1-2b done (source fix, firmware
+rebuilt and committed as `1839c9c72`, not yet pushed to `origin`). Step 3
+(reflash) has also happened (undocumented in this file as it happened — details
+like firmware version/rollback point were not recorded here). Steps 4/5
+(bench + in-car validation) done via a simpler real-world test than originally
+planned: with the car off, unplugging and re-plugging the OBDII cable made the
+comma boot immediately, with no car ignition involved — confirming the
+GPIOC11/DC_IN bootkick fix works. Remaining: Step 6 (regression check on normal
+ignition-on/off flows) and Step 7 (report upstream to StarPilot) are still
+open. See "Fix — discrete steps" below for the full breakdown.
+
+*(Older status text below, from before build/flash/test happened on the WSL
+machine — kept for history, superseded by the paragraph above.)*
+
 Investigation complete, root cause confirmed. **Step 1 done** — the 2-line
 source fix (3 lines incl. one comment) is committed. **Steps 2+ not yet done**
 (build/flash/test). This machine (Windows, no ARM toolchain) cannot build panda
@@ -302,24 +316,19 @@ change is isolated to the physical GPIOC11 pulse only.
   updated instruction above. Not pushed to `origin` yet — push needs its own
   explicit go-ahead too.**
 
-- **Step 3 — Reflash the panda.** Before flashing, record the currently-flashed
-  firmware version/hash (and ideally keep a copy of the current `.bin.signed`)
-  as a known-good rollback point in case anything unexpected happens. Then push
-  the newly built firmware to the actual panda hardware via StarPilot's
-  existing `pandad.py` flash path. This is the first step that touches the
-  physical device. May require forcing the flash (e.g.
-  `BOARDD_SKIP_FW_CHECK=1`) since the reported firmware version alone might not
-  otherwise trigger a reflash. *Checkpoint: confirm the panda reports the new
-  firmware version before moving on.*
+- **Step 3 — Reflash the panda. DONE.** Happened outside the tracking in this
+  file — no record here of the firmware version/rollback point that was
+  captured beforehand, or exactly when/how the flash was performed. Confirmed
+  done only via the successful Step 4/5 test result below.
 
-- **Step 4 — Bench test (no car).** Power the device off, then apply 12V to
-  the OBDII tap directly (bypassing the car/ignition entirely) and confirm the
-  SOM wakes and boots. *Checkpoint: this is the core fix validation — do not
-  proceed to in-car testing until this passes.*
-
-- **Step 5 — In-car test.** Let the Ioniq 6 go to sleep, then unlock the door
-  (without starting the car) and confirm the comma 4 boots from the OBDII-fed
-  wake, matching sunnypilot's prior behavior.
+- **Steps 4/5 — Bench + in-car test. DONE, via a simpler real-world test than
+  originally planned.** Rather than a separate bench test (12V applied
+  directly to the OBDII tap, no car) and in-car test (let the car sleep, then
+  unlock the door), the actual test that confirmed the fix was: get in the
+  car, unplug the OBDII cable, then plug it back in — the comma booted
+  immediately, with no car ignition involved. This is a real-world version of
+  the OBDII-power-appearing trigger the bench test was meant to isolate, done
+  directly in the car. **Fix validated.**
 
 - **Step 6 — Regression check.** Confirm true ignition-on/off flows (drive
   start/stop, and normal offroad shutdown after `DELAY_SHUTDOWN_TIME_S`) still

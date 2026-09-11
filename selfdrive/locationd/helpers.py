@@ -68,28 +68,32 @@ class NPQueue:
 
 
 class PointBuckets:
-  def __init__(self, x_bounds: list[tuple[float, float]], min_points: list[float], min_points_total: int, points_per_bucket: int, rowsize: int) -> None:
+  def __init__(self, x_bounds: list[tuple[float, float]], min_points: list[float], min_points_total: int, points_per_bucket: int, rowsize: int,
+               allow_empty_buckets: bool = False) -> None:
     self.x_bounds = x_bounds
     self.buckets = {bounds: NPQueue(maxlen=points_per_bucket, rowsize=rowsize) for bounds in x_bounds}
     self.buckets_min_points = dict(zip(x_bounds, min_points, strict=True))
     self.min_points_total = min_points_total
+    self.allow_empty_buckets = allow_empty_buckets
 
   def __len__(self) -> int:
     return sum([len(v) for v in self.buckets.values()])
 
   def is_valid(self) -> bool:
-    individual_buckets_valid = all(len(v) >= min_pts for v, min_pts in zip(self.buckets.values(), self.buckets_min_points.values(), strict=True))
+    individual_buckets_valid = all(len(v) >= min_pts or (self.allow_empty_buckets and len(v) == 0)
+                                    for v, min_pts in zip(self.buckets.values(), self.buckets_min_points.values(), strict=True))
     total_points_valid = self.__len__() >= self.min_points_total
     return individual_buckets_valid and total_points_valid
 
   def get_valid_percent(self) -> int:
     total_points_perc = min(self.__len__() / self.min_points_total * 100, 100)
-    individual_buckets_perc = min(min(len(v) / min_pts * 100 for v, min_pts in
-                                      zip(self.buckets.values(), self.buckets_min_points.values(), strict=True)), 100)
+    bucket_percs = [len(v) / min_pts * 100 for v, min_pts in zip(self.buckets.values(), self.buckets_min_points.values(), strict=True)
+                    if not (self.allow_empty_buckets and len(v) == 0)]
+    individual_buckets_perc = min(min(bucket_percs), 100) if bucket_percs else 0
     return int((total_points_perc + individual_buckets_perc) / 2)
 
   def is_calculable(self) -> bool:
-    return all(len(v) > 0 for v in self.buckets.values())
+    return self.__len__() >= 3 and all(len(v) > 0 or self.allow_empty_buckets for v in self.buckets.values())
 
   def add_point(self, x: float, y: float) -> None:
     raise NotImplementedError

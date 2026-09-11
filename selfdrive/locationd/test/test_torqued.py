@@ -72,8 +72,12 @@ def test_allow_empty_buckets_valid_percent_and_validity():
   for _ in range(int(min_pts[partial_key]) - half_partial):
     est.filtered_points.add_point((partial_key[0] + partial_key[1]) / 2.0, 0.0)
 
-  # top up total points via a non-excused bucket; the excused bucket stays empty throughout
-  topup_key = full_keys[0]
+  # Top up total points via the partial bucket -- it has the smallest min_pts among the non-excused
+  # buckets, so it has the most headroom below POINTS_PER_BUCKET (NPQueue's maxlen). A bucket already
+  # sitting at a larger min_pts (e.g. full_keys[0], min_pts=300) doesn't have enough headroom to absorb
+  # the full topup: NPQueue silently caps at maxlen instead of growing past it, which would leave total
+  # points short of min_points_total and liveValid permanently False.
+  topup_key = partial_key
   for _ in range(int(est.min_points_total - len(est.filtered_points))):
     est.filtered_points.add_point((topup_key[0] + topup_key[1]) / 2.0, 0.0)
 

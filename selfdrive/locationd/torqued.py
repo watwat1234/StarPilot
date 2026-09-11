@@ -53,10 +53,11 @@ class TorqueBuckets(PointBuckets):
 
 
 class TorqueEstimator(ParameterEstimator):
-  def __init__(self, CP, decimated=False, track_all_points=False):
+  def __init__(self, CP, decimated=False, track_all_points=False, allow_empty_buckets: bool = False):
     self.hist_len = int(HISTORY / DT_MDL)
     self.lag = 0.0
     self.track_all_points = track_all_points  # for offline analysis, without max lateral accel or max steer torque filters
+    self.allow_empty_buckets = allow_empty_buckets
     if decimated:
       self.min_bucket_points = MIN_BUCKET_POINTS / 10
       self.min_points_total = MIN_POINTS_TOTAL_QLOG
@@ -141,7 +142,8 @@ class TorqueEstimator(ParameterEstimator):
                                          min_points=self.min_bucket_points,
                                          min_points_total=self.min_points_total,
                                          points_per_bucket=POINTS_PER_BUCKET,
-                                         rowsize=3)
+                                         rowsize=3,
+                                         allow_empty_buckets=self.allow_empty_buckets)
     self.all_torque_points = []
 
   def estimate_params(self):
@@ -243,6 +245,8 @@ class TorqueEstimator(ParameterEstimator):
 
 
 def main(demo=False):
+  from opendbc.car.hyundai.values import CAR
+
   config_realtime_process([0, 1, 2, 3], 5)
 
   DEBUG = bool(int(os.getenv("DEBUG", "0")))
@@ -251,14 +255,16 @@ def main(demo=False):
   sm = messaging.SubMaster(['carControl', 'carOutput', 'carState', 'liveCalibration', 'livePose', 'liveDelay'], poll='livePose')
 
   params = Params()
-  estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams))
+  car_params = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
+  allow_empty_buckets = car_params.carFingerprint == CAR.HYUNDAI_IONIQ_6
+  estimator = TorqueEstimator(car_params, allow_empty_buckets=allow_empty_buckets)
 
   sm = sm.extend(['starpilotPlan'])
 
   starpilot_toggles = get_starpilot_toggles()
 
   if not starpilot_toggles.liveValid:
-    estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams), decimated=True)
+    estimator = TorqueEstimator(car_params, decimated=True, allow_empty_buckets=allow_empty_buckets)
 
   estimator.starpilot_toggles = starpilot_toggles
 

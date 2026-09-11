@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import os
+import re
 import sys
 from collections import defaultdict, deque
 import numpy as np
 
+from openpilot.tools.lib.helpers import RE
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 from openpilot.selfdrive.locationd.torqued import (
   TorqueEstimator,
@@ -53,14 +56,85 @@ def fit_torque_params(points_list: list[list[float]]) -> tuple[float, float, flo
     return None
 
 
+LOCAL_ROUTE_RE = re.compile(
+  fr'^{RE.LOG_ID}(?:(--|/)(?P<slice>{RE.SLICE}))?$'
+)
+
+
+def resolve_local_paths(route: str, data_dir: str, mode: str) -> list[str]:
+  """Resolve a bare route id (no dongle_id) + slice against a local realdata
+  directory laid out as <data_dir>/<route_id>--<segment_num>/, bypassing the
+  network sources LogReader normally tries first (internal/comma_api/etc)."""
+  m = LOCAL_ROUTE_RE.fullmatch(route)
+  if m is None:
+    print(f"Error: '{route}' is not a valid local route id (expected e.g. "
+          f"'2bce7d1c--71a2b3c4d5' or '2bce7d1c--71a2b3c4d5/44:50')", file=sys.stderr)
+    sys.exit(1)
+  route_id = m.group("log_id")
+
+  available = {}
+  prefix = route_id + "--"
+  for name in os.listdir(data_dir):
+    if name.startswith(prefix) and name[len(prefix):].isdigit():
+      available[int(name[len(prefix):])] = os.path.join(data_dir, name)
+  if not available:
+    print(f"Error: no segments found for route '{route_id}' under '{data_dir}'", file=sys.stderr)
+    sys.exit(1)
+
+  sm = re.fullmatch(RE.SLICE, m.group("slice") or "")
+  start, end, step = (None if s is None else int(s) for s in sm.groups())
+  max_seg = max(available)
+  if start is not None and end is None and ':' not in (m.group("slice") or ""):
+    seg_idxs = [start if start >= 0 else start + max_seg + 1]
+  else:
+    seg_idxs = list(range(max_seg + 1))[slice(start, end, step)]
+
+  fn_candidates = {
+    "qlog": FN_QLOG,
+    "rlog": FN_RLOG,
+    "auto": FN_RLOG + FN_QLOG,
+  }[mode]
+
+  paths = []
+  missing = []
+  for seg in seg_idxs:
+    seg_dir = available.get(seg)
+    if seg_dir is None:
+      missing.append(seg)
+      continue
+    for fn in fn_candidates:
+      candidate = os.path.join(seg_dir, fn)
+      if os.path.exists(candidate):
+        paths.append(candidate)
+        break
+    else:
+      missing.append(seg)
+
+  if missing:
+    print(f"Warning: no log file found locally for segment(s) {missing}", file=sys.stderr)
+  if not paths:
+    print("Error: no local log files resolved for the requested segment range.", file=sys.stderr)
+    sys.exit(1)
+  return paths
+
+
+FN_RLOG = ("rlog.zst", "rlog.bz2")
+FN_QLOG = ("qlog.zst", "qlog.bz2")
+
+
 def main():
   parser = argparse.ArgumentParser(
     description="Inspect openpilot torque buckets and run offline post-processing parameter estimation."
   )
-  parser.add_argument("route", help="Route name (dongle/route), segment (dongle/route--0), or path to rlog/qlog file")
+  parser.add_argument("route", help="Route name (dongle/route), segment (dongle/route--0), path to rlog/qlog file, "
+                                     "or (with --data-dir) a bare local route id/slice, e.g. '2bce7d1c--71a2b3c4d5/44:50'")
   parser.add_argument("--mode", choices=("auto", "qlog", "rlog"), default="auto", help="Log reading mode")
   parser.add_argument("--decimated", action="store_true", help="Evaluate bucket requirements using decimated limits")
   parser.add_argument("--max-lat-accel", type=float, default=1.0, help="Lateral acceleration cutoff threshold (default: 1.0 m/s^2)")
+  parser.add_argument("--data-dir", default=None,
+                       help="Read segments directly from this local realdata directory instead of hitting the "
+                            "network (e.g. /data/media/0/realdata on-device). 'route' is then just the bare "
+                            "route id, no dongle_id needed.")
   args = parser.parse_args()
 
   mode_map = {
@@ -69,9 +143,15 @@ def main():
     "rlog": ReadMode.RLOG,
   }
 
-  print(f"Loading route: {args.route} (mode={args.mode})...")
+  if args.data_dir:
+    identifier = resolve_local_paths(args.route, args.data_dir, args.mode)
+    print(f"Loading {len(identifier)} local log file(s) from {args.data_dir} for route {args.route}...")
+  else:
+    identifier = args.route
+    print(f"Loading route: {args.route} (mode={args.mode})...")
+
   try:
-    log_reader = LogReader(args.route, default_mode=mode_map[args.mode], sort_by_time=True)
+    log_reader = LogReader(identifier, default_mode=mode_map[args.mode], sort_by_time=True)
   except Exception as e:
     print(f"Error opening route '{args.route}': {e}", file=sys.stderr)
     sys.exit(1)

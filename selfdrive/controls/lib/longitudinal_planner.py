@@ -25,6 +25,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_honda_accord_lead_departure_tune,
   get_honda_accord_stop_go_accel_cap,
   get_honda_accord_stop_go_accel_rise_rate,
+  get_vision_low_speed_stop_buffer_lead_speed_limits,
   get_toyota_rav4_tss2_lead_departure_tune,
   get_toyota_rav4_tss2_lead_creep_tune,
   get_force_stop_distance_bias,
@@ -44,6 +45,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_honda_crv_5g_early_radar_follow_cap,
   get_standstill_gap_settle_max_extra_gap,
   get_standstill_stopped_lead_guard_distance_margin,
+  get_standstill_stopped_lead_guard_max_ego_speed,
   get_standstill_stopped_lead_guard_max_lead_speed,
   is_ford_f150_lightning_stopped_radar_follow_lead,
   get_tracked_lead_catchup_bias_gain,
@@ -289,6 +291,8 @@ EXPERIMENTAL_RELEASE_ACCEL_MAX_LATERAL_OFFSET = 1.5
 EXPERIMENTAL_RELEASE_ACCEL_MIN_HEADWAY_MARGIN = 0.0
 EXPERIMENTAL_RELEASE_ACCEL_MIN_DELTA_A = 0.12
 EXPERIMENTAL_RELEASE_ACCEL_STEP = 0.06
+EXPERIMENTAL_SPEED_HANDOFF_BAND = 5.0 * CV.MPH_TO_MS
+EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE = -0.15
 MATCHED_FOLLOW_TRANSITION_MIN_SPEED = 20.0
 TRACKED_VISION_MODEL_FLOOR_MIN_SPEED = 10.0
 TRACKED_VISION_MODEL_FLOOR_MIN_MODEL_PROB = 0.95
@@ -393,6 +397,27 @@ def get_vehicle_min_accel(CP, v_ego):
   return float(ACCEL_MIN)
 
 
+def get_far_lead_coast_cap(lead, v_ego, desired_gap, output_a_target):
+  if lead is None or not bool(getattr(lead, "status", False)):
+    return float(output_a_target)
+
+  v_ego = float(v_ego)
+  lead_distance = float(getattr(lead, "dRel", float("inf")))
+  lead_speed = float(getattr(lead, "vLead", v_ego))
+  closing_speed = v_ego - lead_speed
+  if (
+    v_ego <= 10.0 or
+    closing_speed <= 0.5 or
+    lead_distance < FAR_LEAD_COAST_MIN_DISTANCE or
+    lead_distance <= float(desired_gap) + FAR_LEAD_COAST_MIN_GAP_MARGIN or
+    lead_distance / max(closing_speed, 0.1) < FAR_LEAD_COAST_MIN_TTC or
+    max(0.0, -float(getattr(lead, "aLeadK", 0.0))) > FAR_LEAD_COAST_MAX_LEAD_BRAKE
+  ):
+    return float(output_a_target)
+
+  return max(float(output_a_target), -FAR_LEAD_COAST_MAX_DECEL)
+
+
 # Restored planner constants retained by CEM, stop, and departure paths.
 A_CRUISE_MIN = -1.0
 # The stop distance runs ~9 m long through the mid-approach, which leaves the obstacle slack
@@ -429,6 +454,11 @@ VEHICLE_FAR_FOLLOW_SLEW_MIN_DISTANCE_TIME = 1.35
 VEHICLE_FAR_FOLLOW_SLEW_MIN_HEADWAY = 1.35
 VEHICLE_FAR_FOLLOW_SLEW_MIN_TTC = 8.0
 VEHICLE_FAR_FOLLOW_SLEW_MAX_LATERAL_OFFSET = 1.5
+FAR_LEAD_COAST_MIN_DISTANCE = 45.0
+FAR_LEAD_COAST_MIN_TTC = 8.0
+FAR_LEAD_COAST_MIN_GAP_MARGIN = 6.0
+FAR_LEAD_COAST_MAX_LEAD_BRAKE = 0.35
+FAR_LEAD_COAST_MAX_DECEL = 0.20
 RADAR_DEPART_CONFLICT_MAX_EGO_SPEED = 1.6
 RADAR_DEPART_CONFLICT_MIN_RADAR_LATERAL = 1.5
 RADAR_DEPART_CONFLICT_MAX_RADAR_DISTANCE = 18.0
@@ -1106,15 +1136,20 @@ class LongitudinalPlanner:
 
     lead_speed = max(float(lead.vLead), 0.0)
     relative_speed = float(v_ego) - lead_speed
+    max_lead_speed, hold_max_lead_speed = get_vision_low_speed_stop_buffer_lead_speed_limits(
+      self.CP,
+      VISION_LOW_SPEED_STOP_BUFFER_MAX_LEAD_SPEED,
+      VISION_LOW_SPEED_STOP_BUFFER_HOLD_MAX_LEAD_SPEED,
+    )
     closing_speed = max(0.0, v_ego - lead_speed)
     entry_context = (
       v_ego <= VISION_LOW_SPEED_STOP_BUFFER_MAX_EGO_SPEED and
-      lead_speed <= VISION_LOW_SPEED_STOP_BUFFER_MAX_LEAD_SPEED and
+      lead_speed <= max_lead_speed and
       closing_speed >= VISION_LOW_SPEED_STOP_BUFFER_MIN_CLOSING_SPEED
     )
     hold_context = (
       v_ego <= VISION_LOW_SPEED_STOP_BUFFER_MAX_EGO_SPEED and
-      lead_speed <= VISION_LOW_SPEED_STOP_BUFFER_HOLD_MAX_LEAD_SPEED and
+      lead_speed <= hold_max_lead_speed and
       relative_speed >= VISION_LOW_SPEED_STOP_BUFFER_MIN_HOLD_REL_SPEED
     )
 
@@ -1669,7 +1704,10 @@ class LongitudinalPlanner:
                                             release_ready, confident_depart_ready):
     if lead is None or not lead.status or release_ready or confident_depart_ready:
       return None
-    if float(v_ego) > STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED:
+    max_ego_speed = get_standstill_stopped_lead_guard_max_ego_speed(
+      self.CP, STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED,
+    )
+    if float(v_ego) > max_ego_speed:
       return None
 
     lead_radar = bool(getattr(lead, "radar", False))
@@ -1765,6 +1803,34 @@ class LongitudinalPlanner:
     elif experimental_mode:
       self.experimental_release_accel_until = 0.0
     self.prev_experimental_mode = bool(experimental_mode)
+
+  def get_experimental_speed_handoff_weight(self, v_ego, experimental_mode, following_lead,
+                                            starpilot_toggles, hold_experimental):
+    if not experimental_mode or hold_experimental:
+      return 0.0
+
+    limit_key = "conditional_limit_lead" if following_lead else "conditional_limit"
+    limit = float(getattr(starpilot_toggles, limit_key, 0.0) or 0.0)
+    if limit <= 1.0:
+      return 0.0
+
+    return float(np.clip(
+      (float(v_ego) - (limit - EXPERIMENTAL_SPEED_HANDOFF_BAND)) / EXPERIMENTAL_SPEED_HANDOFF_BAND,
+      0.0,
+      1.0,
+    ))
+
+  @staticmethod
+  def is_cem_following_lead(tracking_lead, d_rel, t_follow, v_ego):
+    return bool(tracking_lead and float(d_rel) < (float(t_follow) * 2.0) * float(v_ego))
+
+  @staticmethod
+  def apply_experimental_speed_handoff(output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff):
+    if speed_handoff <= 0.0:
+      return output_a_target
+    if output_a_target_e2e < min(output_a_target_mpc, EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE):
+      return output_a_target
+    return (1.0 - speed_handoff) * output_a_target + speed_handoff * output_a_target_mpc
 
   def get_experimental_release_accel_target(self, lead, v_ego, base_t_follow,
                                             prev_output_a_target, output_a_target,
@@ -2394,6 +2460,26 @@ class LongitudinalPlanner:
       else:
         output_a_target = min(output_a_target_mpc, output_a_target_e2e)
         output_should_stop = output_should_stop_e2e or output_should_stop_mpc
+        cem_following_lead = self.is_cem_following_lead(
+          tracking_lead,
+          self.lead_one.dRel,
+          sm['starpilotPlan'].tFollow,
+          scene_v_ego,
+        )
+        speed_handoff = self.get_experimental_speed_handoff_weight(
+          scene_v_ego,
+          experimental_mode,
+          cem_following_lead,
+          starpilot_toggles,
+          bool(
+            output_should_stop_e2e or
+            getattr(sm['starpilotPlan'], 'forcingStop', False) or
+            getattr(sm['starpilotPlan'], 'redLight', False)
+          ),
+        )
+        output_a_target = self.apply_experimental_speed_handoff(
+          output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff,
+        )
     else:
       output_a_target, output_should_stop = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
@@ -3008,6 +3094,28 @@ class LongitudinalPlanner:
       bool(output_should_stop or vision_low_speed_stop_active),
       panic_bypass,
     )
+
+    far_lead_coast_allowed = (
+      not experimental_mode and
+      comfort_lead is not None and
+      desired_gap is not None and
+      not output_should_stop and
+      not vision_low_speed_stop_active and
+      not close_lead_caps and
+      not panic_bypass and
+      not depart_safety_veto and
+      inside_gap_closing_cap is None and
+      not bool(getattr(sm['starpilotPlan'], 'forcingStop', False)) and
+      not bool(getattr(sm['starpilotPlan'], 'redLight', False)) and
+      not bool(getattr(sm['starpilotPlan'], 'stopSignConfirmed', False))
+    )
+    if far_lead_coast_allowed:
+      output_a_target = get_far_lead_coast_cap(
+        comfort_lead,
+        scene_v_ego,
+        desired_gap,
+        output_a_target,
+      )
 
     if radar_gap_settle_active:
       output_a_target = RADAR_STANDSTILL_GAP_SETTLE_ACCEL

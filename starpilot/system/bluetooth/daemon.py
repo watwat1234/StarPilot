@@ -17,6 +17,11 @@ OFFROAD_COMMANDS = {"set_power", "start_scan", "stop_scan", "pair", "forget", "t
 SCAN_DURATION = 20.0
 AUDIO_TEST_START_DELAY = 3.0
 AUDIO_TEST_HOLD_TIME = 3.0
+RECONNECT_INTERVAL_SECONDS = 15.0
+CONTROLLER_RECONNECT_INTERVAL_SECONDS = 5.0
+RECONNECT_MAX_BACKOFF_SECONDS = 300.0
+MANUAL_DISCONNECT_SUPPRESSION_SECONDS = 300.0
+CONTROLLER_OFFROAD_DISCONNECT_DELAY_SECONDS = 120.0
 
 
 class BluetoothController:
@@ -31,6 +36,11 @@ class BluetoothController:
     self._pairing_address = ""
     self._pairing_error = ""
     self._last_reconnect = 0.0
+    self._reconnect_backoff: dict[str, tuple[int, float]] = {}
+    self._manual_disconnect_until: dict[str, float] = {}
+    self._offroad_since: float | None = None
+    self._policy_disconnected: set[str] = set()
+    self._policy_disconnect_retry_after: dict[str, float] = {}
     self._scan_deadline = 0.0
     self._audio_test_deadline = 0.0
     self._sleep = sleep
@@ -201,15 +211,38 @@ class BluetoothController:
         raise RuntimeError("Another Bluetooth device is already pairing")
       self._client().device_for_address(address)
       self._scan_deadline = 0.0
+      self._reconnect_backoff.pop(address.upper(), None)
+      self._manual_disconnect_until.pop(address.upper(), None)
       self._pairing_address = address
       self._pairing_error = ""
       threading.Thread(target=self._pair_worker, args=(address,), daemon=True).start()
     elif command == "connect":
-      self._client().connect(address)
+      normalized_address = address.upper()
+      self._reconnect_backoff.pop(normalized_address, None)
+      self._manual_disconnect_until.pop(normalized_address, None)
+      with self._lock:
+        self._client().connect(normalized_address)
     elif command == "disconnect":
-      self._client().disconnect(address)
+      normalized_address = address.upper()
+      # Mark this before issuing the D-Bus call. A disconnected device can
+      # report NotConnected, and it must not immediately be auto-reconnected.
+      self._manual_disconnect_until[normalized_address] = time.monotonic() + MANUAL_DISCONNECT_SUPPRESSION_SECONDS
+      self._reconnect_backoff.pop(normalized_address, None)
+      self._policy_disconnected.discard(normalized_address)
+      self._policy_disconnect_retry_after.pop(normalized_address, None)
+      try:
+        with self._lock:
+          self._client().disconnect(normalized_address)
+      except RuntimeError as error:
+        if "notconnected" not in str(error).replace(" ", "").lower():
+          self._manual_disconnect_until.pop(normalized_address, None)
+          raise
     elif command == "forget":
       self._client().remove(address)
+      self._reconnect_backoff.pop(address.upper(), None)
+      self._manual_disconnect_until.pop(address.upper(), None)
+      self._policy_disconnected.discard(address.upper())
+      self._policy_disconnect_retry_after.pop(address.upper(), None)
       if (self.params.get("BluetoothAudioAddress", encoding="utf-8") or "").upper() == address.upper():
         self.params.remove("BluetoothAudioAddress")
     elif command == "select_audio":
@@ -248,29 +281,122 @@ class BluetoothController:
       self._client().stop_discovery()
       self._scan_deadline = 0.0
 
+  def _maintain_controller_offroad_policy(self, status: dict[str, Any], now: float) -> bool:
+    if not status["offroad"]:
+      self._offroad_since = None
+      if self._policy_disconnected:
+        for address in self._policy_disconnected:
+          self._reconnect_backoff.pop(address, None)
+        self._policy_disconnect_retry_after.clear()
+        self._last_reconnect = 0.0
+      return False
+
+    if self._offroad_since is None:
+      self._offroad_since = now
+
+    if not self.params.get_bool("BluetoothDisconnectControllersOffroad"):
+      if self._policy_disconnected:
+        self._policy_disconnect_retry_after.clear()
+        self._last_reconnect = 0.0
+      return False
+
+    if now - self._offroad_since < CONTROLLER_OFFROAD_DISCONNECT_DELAY_SECONDS:
+      return False
+
+    for device in status["devices"]:
+      if not device.get("paired") or not device.get("controller") or not device.get("connected"):
+        continue
+      address = str(device["address"]).upper()
+      if now < self._policy_disconnect_retry_after.get(address, 0.0):
+        continue
+      self._policy_disconnected.add(address)
+      self._policy_disconnect_retry_after[address] = now + RECONNECT_INTERVAL_SECONDS
+      try:
+        with self._lock:
+          self._client().disconnect(address)
+      except RuntimeError as error:
+        if "notconnected" not in str(error).replace(" ", "").lower():
+          self._policy_disconnected.discard(address)
+          self._policy_disconnect_retry_after.pop(address, None)
+          cloudlog.warning(f"Bluetooth offroad controller disconnect failed for {address}: {error}")
+      except Exception as error:
+        self._policy_disconnected.discard(address)
+        self._policy_disconnect_retry_after.pop(address, None)
+        cloudlog.warning(f"Bluetooth offroad controller disconnect failed for {address}: {error}")
+    return True
+
+  def _maintain_reconnects(self, status: dict[str, Any], now: float, suspend_controller_reconnect: bool) -> None:
+    devices = status["devices"]
+    devices_by_address = {device["address"].upper(): device for device in devices}
+    for address in list(self._policy_disconnected):
+      device = devices_by_address.get(address)
+      if device is None or not device["paired"] or not device["trusted"]:
+        self._policy_disconnected.discard(address)
+        self._reconnect_backoff.pop(address, None)
+      elif device["connected"]:
+        self._policy_disconnected.discard(address)
+        self._reconnect_backoff.pop(address, None)
+
+    if self._pairing_address:
+      return
+
+    selected = str(status["selected_audio"])
+    candidates = [device for device in devices if device["paired"] and device["trusted"] and not device["connected"]]
+    candidates.sort(key=lambda device: device["address"].upper() != selected.upper())
+    controller_candidates = {
+      device["address"].upper() for device in candidates
+      if device["controller"] or device["address"].upper() in self._policy_disconnected
+    }
+    reconnect_interval = CONTROLLER_RECONNECT_INTERVAL_SECONDS if controller_candidates else RECONNECT_INTERVAL_SECONDS
+    if now - self._last_reconnect < reconnect_interval:
+      return
+    self._last_reconnect = now
+
+    candidate_addresses = {device["address"].upper() for device in candidates}
+    for address in list(self._manual_disconnect_until):
+      if address not in candidate_addresses or now >= self._manual_disconnect_until[address]:
+        self._manual_disconnect_until.pop(address, None)
+    for address in list(self._reconnect_backoff):
+      if address not in candidate_addresses:
+        self._reconnect_backoff.pop(address, None)
+
+    for device in candidates:
+      address = device["address"].upper()
+      controller = device["controller"] or address in self._policy_disconnected
+      if not device["audio"] and not controller:
+        continue
+      if suspend_controller_reconnect and controller:
+        continue
+      if now < self._manual_disconnect_until.get(address, 0.0):
+        continue
+      attempts, retry_after = self._reconnect_backoff.get(address, (0, 0.0))
+      if now < retry_after:
+        continue
+      try:
+        with self._lock:
+          self._client().connect(address, timeout=CONTROLLER_RECONNECT_INTERVAL_SECONDS if controller else 30.0)
+        self._reconnect_backoff.pop(address, None)
+      except Exception:
+        attempts += 1
+        delay = (CONTROLLER_RECONNECT_INTERVAL_SECONDS if controller else
+                 min(RECONNECT_INTERVAL_SECONDS * (2 ** (attempts - 1)), RECONNECT_MAX_BACKOFF_SECONDS))
+        self._reconnect_backoff[address] = (attempts, now + delay)
+        cloudlog.warning(f"Bluetooth reconnect failed for {address}; retrying in {delay:.0f}s")
+
   def maintain_connections(self) -> None:
     while True:
       time.sleep(2)
+      now = time.monotonic()
       if not self.params.get_bool("BluetoothEnabled"):
+        self._maintain_controller_offroad_policy({"offroad": self._offroad(), "devices": []}, now)
         continue
       try:
         status = self.status()
         if not status["available"] or not status["powered"]:
           continue
-        now = time.monotonic()
         self._maintain_scan(status, now)
-        if self._pairing_address or now - self._last_reconnect < 15:
-          continue
-        self._last_reconnect = now
-        selected = str(status["selected_audio"])
-        candidates = [device for device in status["devices"] if device["paired"] and device["trusted"] and not device["connected"]]
-        candidates.sort(key=lambda device: device["address"].upper() != selected.upper())
-        for device in candidates:
-          if device["audio"] or device["controller"]:
-            try:
-              self._client().connect(device["address"])
-            except Exception:
-              cloudlog.warning(f"Bluetooth reconnect failed for {device['address']}")
+        suspend_controller_reconnect = self._maintain_controller_offroad_policy(status, now)
+        self._maintain_reconnects(status, now, suspend_controller_reconnect)
       except Exception:
         cloudlog.exception("Bluetooth connection maintenance failed")
 

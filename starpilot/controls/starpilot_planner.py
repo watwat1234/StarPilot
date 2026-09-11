@@ -20,7 +20,7 @@ from openpilot.selfdrive.controls.lib.lead_behavior import (
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import A_CHANGE_COST, DANGER_ZONE_COST, J_EGO_COST, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_lead_follow_jerk_scale
 
-from openpilot.starpilot.common.starpilot_utilities import calculate_lane_width, calculate_road_curvature
+from openpilot.starpilot.common.starpilot_utilities import calculate_lane_width, calculate_road_curvature, extract_curve_profile
 from openpilot.starpilot.common.starpilot_variables import CRUISING_SPEED, MINIMUM_LATERAL_ACCELERATION, PLANNER_TIME, THRESHOLD
 from openpilot.starpilot.controls.lib.conditional_chill_mode import ConditionalChillMode
 from openpilot.starpilot.controls.lib.conditional_experimental_mode import ConditionalExperimentalMode
@@ -214,6 +214,7 @@ class StarPilotPlanner:
     self.model_stopped = self.raw_model_stopped or self.starpilot_vcruise.forcing_stop
 
     self.road_curvature, self.time_to_curve = calculate_road_curvature(sm["modelV2"], v_ego)
+    self.curve_profile = extract_curve_profile(sm["modelV2"])
 
     self.road_curvature_detected = (1 / abs(self.road_curvature))**0.5 < v_ego > CRUISING_SPEED and not (sm["carState"].leftBlinker or sm["carState"].rightBlinker)
 
@@ -226,13 +227,13 @@ class StarPilotPlanner:
     if conditional_tracking_active and bool(getattr(starpilot_toggles, "conditional_experimental_mode", False)):
       # Keep CEM's filters warm in AOL so engagement can inherit the current scene.
       self.starpilot_cem.update(v_ego, sm, starpilot_toggles, v_cruise)
-      self.starpilot_ccm.experimental_mode = True
+      self.starpilot_ccm.deactivate()
     elif conditional_tracking_active and bool(getattr(starpilot_toggles, "conditional_chill_mode", False)):
       self.starpilot_ccm.update(v_ego, v_cruise, sm, starpilot_toggles)
-      self.starpilot_cem.experimental_mode = False
+      self.starpilot_cem.deactivate()
     else:
-      self.starpilot_ccm.experimental_mode = True
-      self.starpilot_cem.experimental_mode = False
+      self.starpilot_ccm.deactivate()
+      self.starpilot_cem.deactivate()
       self.starpilot_cem.curve_detected = False
       self.starpilot_cem.stop_sign_and_light(v_ego, sm, PLANNER_TIME - 2)
 
@@ -328,6 +329,9 @@ class StarPilotPlanner:
     starpilotPlan.cscControllingSpeed = self.starpilot_vcruise.csc_controlling_speed
     starpilotPlan.cscSpeed = float(self.starpilot_vcruise.csc_target)
     starpilotPlan.cscTraining = self.starpilot_vcruise.csc.enable_training
+    starpilotPlan.cscOverridden = self.starpilot_vcruise.csc_override
+    starpilotPlan.cscLearnedLatAccel = float(self.starpilot_vcruise.csc.learned_lat_accel(self.road_curvature))
+    starpilotPlan.cscBindingDistance = float(self.starpilot_vcruise.csc.binding_distance)
 
     starpilotPlan.desiredFollowDistance = int(self.starpilot_following.desired_follow_distance)
     starpilotPlan.disableThrottle = (
@@ -337,7 +341,7 @@ class StarPilotPlanner:
     starpilotPlan.pulseGlideCoasting = self.starpilot_acceleration.pulse_glide_coasting
     starpilotPlan.trackingLead = self.tracking_lead
 
-    conditional_experimental_mode = False
+    conditional_experimental_mode = bool(getattr(starpilot_toggles, "experimental_mode", False))
     if starpilot_toggles.conditional_experimental_mode:
       conditional_experimental_mode = self.starpilot_cem.experimental_mode
     elif starpilot_toggles.conditional_chill_mode:

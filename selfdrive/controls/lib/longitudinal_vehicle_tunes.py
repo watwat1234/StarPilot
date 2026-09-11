@@ -19,8 +19,12 @@ HONDA_ACCORD_STOP_GO_MAX_LEAD_BRAKE = 0.25
 HONDA_ACCORD_STOP_GO_MAX_LATERAL_OFFSET = 1.25
 HONDA_ACCORD_STOP_GO_MIN_MODEL_PROB = 0.95
 HONDA_ACCORD_STOP_GO_ACCEL_RISE_RATE = 4.0
+HONDA_ACCORD_LOW_SPEED_STOP_MAX_LEAD_SPEED = 1.0
+HONDA_ACCORD_STANDSTILL_GUARD_MAX_EGO_SPEED = 0.25
 HYUNDAI_ELANTRA_LEAD_FOLLOW_JERK_SCALE = 1.25
 GENESIS_GV70_ELECTRIFIED_LEAD_FOLLOW_JERK_SCALE = 1.75
+GENESIS_GV70_ELECTRIFIED_SCC_JERK_UPPER = 1.5
+GENESIS_GV70_ELECTRIFIED_SCC_JERK_LOWER = 2.0
 FORD_LIGHTNING_LEAD_FOLLOW_JERK_SCALE = 1.35
 HONDA_CRV_5G_LEAD_FOLLOW_JERK_SCALE = 1.35
 GM_SILVERADO_EARLY_FOLLOW_MIN_EGO_SPEED = 18.0
@@ -292,6 +296,12 @@ def get_standstill_stopped_lead_guard_max_lead_speed(CP, default):
   return float(default)
 
 
+def get_standstill_stopped_lead_guard_max_ego_speed(CP, default):
+  if CP.brand == "honda" and str(CP.carFingerprint) == "HONDA_ACCORD":
+    return HONDA_ACCORD_STANDSTILL_GUARD_MAX_EGO_SPEED
+  return float(default)
+
+
 def get_tracked_lead_catchup_headway_margins(CP):
   if is_honda_crv_5g(CP):
     return (
@@ -516,6 +526,12 @@ def get_lead_follow_jerk_scale(CP):
   return 1.0
 
 
+def get_hyundai_canfd_scc_jerk_limits(CP):
+  if str(getattr(CP, "carFingerprint", "")) == "GENESIS_GV70_ELECTRIFIED_1ST_GEN":
+    return GENESIS_GV70_ELECTRIFIED_SCC_JERK_UPPER, GENESIS_GV70_ELECTRIFIED_SCC_JERK_LOWER
+  return None
+
+
 def get_honda_accord_lead_departure_tune(CP):
   if CP.brand == "honda" and str(CP.carFingerprint) == "HONDA_ACCORD":
     return (
@@ -562,6 +578,13 @@ def get_honda_accord_stop_go_accel_rise_rate(CP):
   if CP.brand == "honda" and str(CP.carFingerprint) == "HONDA_ACCORD":
     return HONDA_ACCORD_STOP_GO_ACCEL_RISE_RATE
   return 0.0
+
+
+def get_vision_low_speed_stop_buffer_lead_speed_limits(CP, max_lead_speed, hold_max_lead_speed):
+  """Keep the Accord's low-speed stop guard from treating a moving lead as stopped."""
+  if CP.brand == "honda" and str(CP.carFingerprint) == "HONDA_ACCORD":
+    return HONDA_ACCORD_LOW_SPEED_STOP_MAX_LEAD_SPEED, HONDA_ACCORD_LOW_SPEED_STOP_MAX_LEAD_SPEED
+  return max_lead_speed, hold_max_lead_speed
 
 
 def is_gm_silverado_early_follow_lead(CP, lead, v_ego):

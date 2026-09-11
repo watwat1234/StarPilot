@@ -10,11 +10,12 @@ from openpilot.selfdrive.controls.lib.lane_centering import get_lane_centering_v
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.lib.starpilot_theme import get_param_color, get_theme_color, get_visual_color, is_stock_color_scheme, with_alpha
 from openpilot.selfdrive.ui.onroad.starpilot.rainbow_path import RainbowPath
-from openpilot.selfdrive.ui.lib.starpilot_visuals import blend_colors, lead_indicator_enabled
+from openpilot.selfdrive.ui.lib.starpilot_visuals import LeadInfoMode, blend_colors, lead_indicator_enabled, lead_info_mode
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad.starpilot_status import get_border_color
-from openpilot.system.ui.lib.application import gui_app
+from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
@@ -66,6 +67,7 @@ class ModelRenderer(Widget):
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._lead_info_mode = LeadInfoMode.OFF
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Initialize ModelPoints objects
@@ -136,6 +138,7 @@ class ModelRenderer(Widget):
     model = sm['modelV2']
     radar_state = sm['radarState'] if sm.valid['radarState'] else None
     lead_one = radar_state.leadOne if radar_state else None
+    self._lead_info_mode = lead_info_mode(self._params)
     render_lead_indicator = self._should_render_lead_indicator(radar_state)
 
     # Update model data when needed
@@ -159,7 +162,7 @@ class ModelRenderer(Widget):
     self._draw_path(sm)
 
     if render_lead_indicator and radar_state:
-      self._draw_lead_indicator()
+      self._draw_lead_indicator(radar_state)
 
   def _should_render_lead_indicator(self, radar_state) -> bool:
     return radar_state is not None and lead_indicator_enabled(self._params, hide_by_default=True)
@@ -498,7 +501,7 @@ class ModelRenderer(Widget):
       ]
       draw_polygon(self._rect, self._path.projected_points, gradient=self._path_gradient)
 
-  def _draw_lead_indicator(self):
+  def _draw_lead_indicator(self, radar_state):
     # Draw lead vehicles if available
     lead_color = get_theme_color("LeadMarker", rl.Color(201, 34, 49, 255))
     for lead in self._lead_vehicles:
@@ -507,6 +510,44 @@ class ModelRenderer(Widget):
 
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(lead_color, lead.fill_alpha))
+
+    lead_one = radar_state.leadOne
+    if self._lead_info_mode != LeadInfoMode.OFF and lead_one and lead_one.status:
+      self._draw_lead_info(lead_one)
+
+  @staticmethod
+  def _format_lead_distance(lead_distance: float, is_metric: bool, use_si_metrics: bool) -> str:
+    lead_distance = max(float(lead_distance), 0.0)
+    if is_metric or use_si_metrics:
+      return f"{round(lead_distance)} m"
+    return f"{round(lead_distance * CV.METER_TO_FOOT)} ft"
+
+  @staticmethod
+  def _format_lead_speed(lead_speed: float, is_metric: bool, use_si_metrics: bool) -> str:
+    lead_speed = max(float(lead_speed), 0.0)
+    if use_si_metrics:
+      return f"{round(lead_speed)} m/s"
+    if is_metric:
+      return f"{round(lead_speed * CV.MS_TO_KPH)} km/h"
+    return f"{round(lead_speed * CV.MS_TO_MPH)} mph"
+
+  def _format_lead_info(self, lead_data, is_metric: bool, use_si_metrics: bool) -> str:
+    if self._lead_info_mode == LeadInfoMode.DISTANCE:
+      return self._format_lead_distance(getattr(lead_data, "dRel", 0.0), is_metric, use_si_metrics)
+    return self._format_lead_speed(getattr(lead_data, "vLead", 0.0), is_metric, use_si_metrics)
+
+  def _draw_lead_info(self, lead_data) -> None:
+    from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
+
+    use_si_metrics = ui_state.starpilot_toggles.get("UseSiMetrics", False)
+    text = self._format_lead_info(lead_data, ui_state.is_metric, use_si_metrics)
+    font = gui_app.font(FontWeight.SEMI_BOLD)
+    font_size = 40
+    text_size = measure_text_cached(font, text, font_size)
+    center_x = self._rect.x + self._rect.width / 2
+    x = center_x - text_size.x / 2
+    y = self._rect.y + 22
+    _draw_text_with_outline(text, float(x), float(y), font, font_size)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_distance: float) -> int:

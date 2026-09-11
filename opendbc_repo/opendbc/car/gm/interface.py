@@ -15,6 +15,7 @@ from opendbc.car.gm.values import (
   CC_ONLY_CAR,
   CC_REGEN_PADDLE_CAR,
   EV_CAR,
+  GM_AUTO_HOLD_CARS,
   SDGM_CAR,
   CarControllerParams,
   CanBus,
@@ -408,7 +409,7 @@ class CarInterface(CarInterfaceBase):
     ret.steerActuatorDelay = 0.1  # Default delay, not measured yet
 
     ret.steerLimitTimer = 0.4
-    ret.radarTimeStepDEPRECATED = 0.0667  # GM radar runs at 15Hz instead of the standard 20Hz
+    ret.radarTimeStepDEPRECATED = 0.15 if candidate == CAR.BUICK_LACROSSE else 0.0667
     ret.longitudinalActuatorDelay = 0.5  # large delay to initially start braking
 
     if candidate in (
@@ -440,7 +441,7 @@ class CarInterface(CarInterfaceBase):
     elif candidate in (CAR.BUICK_LACROSSE, CAR.BUICK_LACROSSE_ASCM, CAR.BUICK_LACROSSE_ASCM_19US):
       CarInterfaceBase.configure_torque_tune(CAR.BUICK_LACROSSE, ret.lateralTuning)
       if candidate == CAR.BUICK_LACROSSE_ASCM_19US:
-        ret.minSteerSpeed = 27 * CV.MPH_TO_MS
+        ret.minSteerSpeed = 28 * CV.MPH_TO_MS
 
     elif candidate == CAR.CADILLAC_ESCALADE:
       ret.minEnableSpeed = -1.  # engage speed is decided by pcm
@@ -500,9 +501,7 @@ class CarInterface(CarInterfaceBase):
         ret.flags |= GMFlags.PEDAL_LONG.value
 
     elif candidate in (CAR.CHEVROLET_SILVERADO, CAR.CHEVROLET_SILVERADO_CC):
-      # On the Bolt, the ECM and camera independently check that you are either above 5 kph or at a stop
-      # with foot on brake to allow engagement, but this platform only has that check in the camera.
-      # TODO: check if this is split by EV/ICE with more platforms in the future
+      ret.minEnableSpeed = 0.
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
 
     elif candidate in (CAR.CHEVROLET_EQUINOX, CAR.CHEVROLET_EQUINOX_CC):
@@ -666,7 +665,8 @@ class CarInterface(CarInterfaceBase):
       ret.alphaLongitudinalAvailable = False
       ret.openpilotLongitudinalControl = not disable_openpilot_long
       ret.pcmCruise = False
-      ret.minEnableSpeed = 24 * CV.MPH_TO_MS
+      if candidate not in (CAR.CHEVROLET_SILVERADO, CAR.CHEVROLET_SILVERADO_CC):
+        ret.minEnableSpeed = 24 * CV.MPH_TO_MS
       ret.radarUnavailable = True
       ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.FLAG_GM_CC_LONG.value
 
@@ -711,18 +711,19 @@ class CarInterface(CarInterfaceBase):
     if remote_start_boots_comma:
       ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.FLAG_GM_REMOTE_START_BOOTS_COMMA.value
 
-    volt_stock_friction_brake_safety = (
+    gm_stock_friction_brake_safety = (
       ret.openpilotLongitudinalControl and
-      (gm_auto_hold or volt_one_pedal_mode) and
-      candidate in {
-        CAR.CHEVROLET_VOLT,
-        CAR.CHEVROLET_VOLT_2019,
-        CAR.CHEVROLET_VOLT_ASCM,
-        CAR.CHEVROLET_VOLT_CAMERA,
-      }
+      (
+        (gm_auto_hold and candidate in GM_AUTO_HOLD_CARS) or
+        (volt_one_pedal_mode and candidate in {
+          CAR.CHEVROLET_VOLT,
+          CAR.CHEVROLET_VOLT_2019,
+          CAR.CHEVROLET_VOLT_ASCM,
+          CAR.CHEVROLET_VOLT_CAMERA,
+        })
+      )
     )
-    if volt_stock_friction_brake_safety:
-      # Reuse the paddle-scheduler safety bit as a Volt stock friction-brake
+    if gm_stock_friction_brake_safety:
       # marker on non-pedal paths. Auto hold and one-pedal can run while OP
       # longitudinal is configured but not currently active, so the bit must
       # be present regardless of the current long-control mode. Do not expose

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from opendbc.can import CANPacker, CANParser
-from opendbc.car import Bus, fw_versions, structs
+from opendbc.car import Bus, fw_versions, gen_empty_fingerprint, structs
 from opendbc.car.fw_query_definitions import StdQueries
 from opendbc.car.subaru import subarucan
 from opendbc.car.subaru.carcontroller import CarController
@@ -65,6 +65,56 @@ def test_preglobal_sng_does_not_send_standstill_keepalive_without_manual_toggle(
 
   assert throttle_cmd is False
   assert speed_cmd is False
+
+
+def test_redneck_cruise_buttons_use_resume_for_increase_and_set_for_decrease():
+  dbc = DBC[CAR.SUBARU_IMPREZA_2020][Bus.pt]
+  packer = CANPacker(dbc)
+  parser = CANParser(dbc, [("Cruise_Buttons", 0)], CanBus.main)
+  stock_buttons = defaultdict(int)
+
+  resume_msg = subarucan.create_cruise_buttons(
+    packer, 1, stock_buttons, subarucan.CRUISE_BUTTON_RESUME, CanBus.main,
+  )
+  parser.update([(1, [resume_msg])])
+  assert parser.vl["Cruise_Buttons"]["Resume"] == 1
+  assert parser.vl["Cruise_Buttons"]["Set"] == 0
+
+  set_msg = subarucan.create_cruise_buttons(
+    packer, 2, stock_buttons, subarucan.CRUISE_BUTTON_SET, CanBus.main,
+  )
+  parser.update([(2, [set_msg])])
+  assert parser.vl["Cruise_Buttons"]["Resume"] == 0
+  assert parser.vl["Cruise_Buttons"]["Set"] == 1
+
+
+def test_redneck_cruise_is_only_available_on_the_experimental_impreza(monkeypatch):
+  class FakeParams:
+    def __init__(self, **_kwargs):
+      pass
+
+    def get_bool(self, key):
+      return key == "SubaruRedneckCruise"
+
+  monkeypatch.setattr("opendbc.car.interfaces.Params", FakeParams)
+  toggles = SimpleNamespace(subaru_sng=False)
+
+  impreza_cp = CarInterface.get_non_essential_params(CAR.SUBARU_IMPREZA_2020)
+  impreza_fpcp = CarInterface.get_starpilot_params(
+    CAR.SUBARU_IMPREZA_2020, gen_empty_fingerprint(), [], impreza_cp, toggles,
+  )
+  assert impreza_fpcp.redneckCruiseAvailable
+  assert not impreza_fpcp.pcmCruiseSpeed
+  assert impreza_cp.openpilotLongitudinalControl
+  assert impreza_cp.safetyConfigs[0].safetyParam & SubaruSafetyFlags.REDNECK_CRUISE
+
+  old_impreza_cp = CarInterface.get_non_essential_params(CAR.SUBARU_IMPREZA)
+  old_impreza_fpcp = CarInterface.get_starpilot_params(
+    CAR.SUBARU_IMPREZA, gen_empty_fingerprint(), [], old_impreza_cp, toggles,
+  )
+  assert not old_impreza_fpcp.redneckCruiseAvailable
+  assert old_impreza_fpcp.pcmCruiseSpeed
+  assert not old_impreza_cp.openpilotLongitudinalControl
 
 
 class TestSubaruFingerprint:
@@ -194,8 +244,7 @@ def test_outback_2023_uses_d_platform_bus_layout():
   assert CP.flags & SubaruFlags.D_PLATFORM
   assert CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.D_PLATFORM
   assert CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.STOP_START_BUTTON
-  assert not (CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.AVH_BUTTON)
-  assert not (CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.LEGACY_2025_ANGLE_LIMITS)
+  assert CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.FIXED_ANGLE_LIMITS
   assert CanBus.main_for_cp(CP) == CanBus.alt
   assert CanBus.angle_for_cp(CP) == CanBus.main
   assert parsers[Bus.pt].bus == CanBus.alt
@@ -223,21 +272,6 @@ def test_stop_start_inputs_are_captured_for_supported_models(platform):
   assert car_state.dashlights_msg["COUNTER"] == 6
   assert car_state.dashlights_dat == raw_dashlights
   assert car_state.stop_start_state == 3
-
-
-def test_avh_inputs_are_captured_for_legacy_2025():
-  CP = CarInterface.get_non_essential_params(CAR.SUBARU_LEGACY_2025)
-  car_state = CarState(CP, None)
-  parsers = car_state.get_can_parsers(CP)
-  raw_avh = bytes.fromhex("230f1c4208800000")
-  parsers[Bus.alt].vl["AVH"]["COUNTER"] = 15
-  parsers[Bus.alt].vl["AVH"]["AVH"] = 0
-  parsers[Bus.alt].vl_raw["AVH"] = raw_avh
-
-  car_state.update(parsers, SimpleNamespace(subaru_sng=False))
-
-  assert car_state.avh_msg["COUNTER"] == 15
-  assert car_state.avh_dat == raw_avh
 
 
 @pytest.mark.parametrize("platform, expected_bus, start_frame", [
@@ -292,61 +326,6 @@ def test_stop_start_request_is_bounded_and_uses_live_dashlights(platform, expect
   assert controller.stop_start_acknowledged
 
 
-def test_avh_request_sets_observed_bit_and_is_bounded():
-  CP = CarInterface.get_non_essential_params(CAR.SUBARU_LEGACY_2025)
-  controller = CarController({}, CP)
-  controller.frame = 101
-
-  class TestActuators:
-    steeringAngleDeg = 0.0
-
-    def as_builder(self):
-      return SimpleNamespace(steeringAngleDeg=self.steeringAngleDeg)
-
-  CC = SimpleNamespace(
-    enabled=False,
-    latActive=False,
-    longActive=False,
-    actuators=TestActuators(),
-    hudControl=SimpleNamespace(leadVisible=False),
-    cruiseControl=SimpleNamespace(cancel=False),
-  )
-  CS = SimpleNamespace(
-    canValid=True,
-    avh_msg={"COUNTER": 15, "AVH": 0},
-    avh_dat=bytes.fromhex("230f1c4208800000"),
-    out=SimpleNamespace(
-      standstill=True,
-      gearShifter=structs.CarState.GearShifter.park,
-    ),
-  )
-  toggles = SimpleNamespace(subaru_stop_start_off=False, subaru_avh_on=True, subaru_sng=False)
-
-  # Start the request from the current live counter. AVH is a native 10 Hz
-  # frame, so the controller waits for each next live counter before sending
-  # its matching button frame.
-  _, can_sends = controller.update(CC, CS, 0, toggles)
-  avh_msgs = [msg for msg in can_sends if msg[0] == 0x32b]
-  assert not avh_msgs
-
-  CS.avh_msg["COUNTER"] = 0
-  CS.avh_dat = bytes.fromhex("14001c4208800000")
-  controller.frame = 103
-  _, can_sends = controller.update(CC, CS, 0, toggles)
-  avh_msgs = [msg for msg in can_sends if msg[0] == 0x32b]
-  assert avh_msgs == [(0x32b, bytes.fromhex("34001c4208a00000"), CanBus.alt)]
-
-  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("AVH", 0)], CanBus.alt)
-  parser.update([(CanBus.alt, avh_msgs)])
-  assert parser.vl["AVH"]["AVH"] == 1
-  assert parser.vl["AVH"]["COUNTER"] == 0
-
-  controller.frame = 131
-  _, can_sends = controller.update(CC, CS, 0, toggles)
-  assert not any(msg[0] == 0x32b for msg in can_sends)
-  assert controller.avh_attempted
-
-
 def test_legacy_2025_uses_gen2_angle_bus_layout():
   CP = CarInterface.get_non_essential_params(CAR.SUBARU_LEGACY_2025)
   parsers = CarState.get_can_parsers(CP)
@@ -358,7 +337,6 @@ def test_legacy_2025_uses_gen2_angle_bus_layout():
   assert not (CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.D_PLATFORM_CAMERA)
   assert CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.FIXED_ANGLE_LIMITS
   assert CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.STOP_START_BUTTON
-  assert CP.safetyConfigs[0].safetyParam & SubaruSafetyFlags.AVH_BUTTON
   assert CanBus.main_for_cp(CP) == CanBus.main
   assert CanBus.angle_for_cp(CP) == CanBus.main
   assert parsers[Bus.pt].bus == CanBus.main
@@ -568,6 +546,25 @@ def test_ascent_2023_uses_gen2_angle_bus_layout():
   assert controller.status_bus == CanBus.main
 
 
+def test_ascent_steering_rate_retains_last_can_sample():
+  CP = CarInterface.get_non_essential_params(CAR.SUBARU_ASCENT_2023)
+  car_state = CarState(CP, None)
+  parsers = car_state.get_can_parsers(CP)
+  toggles = SimpleNamespace(subaru_sng=False)
+
+  parsers[Bus.pt].vl["Steering_2"]["Steering_Angle"] = 1.0
+  parsers[Bus.pt].vl["Steering_2"]["COUNTER"] = 1
+  car_state.update(parsers, toggles)
+
+  parsers[Bus.pt].vl["Steering_2"]["Steering_Angle"] = 2.0
+  parsers[Bus.pt].vl["Steering_2"]["COUNTER"] = 2
+  state, _ = car_state.update(parsers, toggles)
+  assert state.steeringRateDeg == pytest.approx(50.0)
+
+  state, _ = car_state.update(parsers, toggles)
+  assert state.steeringRateDeg == pytest.approx(50.0)
+
+
 def test_other_angle_platforms_keep_existing_bus_layout():
   CP = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
   parsers = CarState.get_can_parsers(CP)
@@ -644,8 +641,9 @@ def test_angle_controller_blocks_low_speed_mads_engagement():
   assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Request"] == 1
 
 
-def test_ascent_angle_controller_uses_fixed_angle_rate_limits():
-  CP = CarInterface.get_non_essential_params(CAR.SUBARU_ASCENT_2023)
+@pytest.mark.parametrize("platform", (CAR.SUBARU_ASCENT_2023, CAR.SUBARU_OUTBACK_2023))
+def test_angle_controller_uses_fixed_angle_rate_limits(platform):
+  CP = CarInterface.get_non_essential_params(platform)
   controller = CarController({}, CP)
   CC = SimpleNamespace(enabled=True, latActive=True, actuators=SimpleNamespace(steeringAngleDeg=-14.88))
   CS = SimpleNamespace(out=SimpleNamespace(
@@ -728,19 +726,28 @@ def test_ascent_angle_controller_blocks_parking_lot_aol_engagement():
   CS.out.steeringRateDeg = 0.0
   msg = controller.lateral_angle(CC, CS)
   parser.update([(2, [msg])])
+  assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Request"] == 0
+
+  for i in range(8):
+    msg = controller.lateral_angle(CC, CS)
+    parser.update([(3 + i, [msg])])
+    assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Request"] == 0
+
+  msg = controller.lateral_angle(CC, CS)
+  parser.update([(11, [msg])])
   assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Request"] == 1
 
   CS.out.gearShifter = structs.CarState.GearShifter.reverse
   msg = controller.lateral_angle(CC, CS)
-  parser.update([(3, [msg])])
+  parser.update([(12, [msg])])
   assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Request"] == 0
   assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Output"] == pytest.approx(CS.out.steeringAngleDeg)
 
 
-def test_lkas_hud_state_uses_lateral_active():
+def test_lkas_hud_state_uses_outback_angle_request_state():
   update_source = inspect.getsource(CarController.update)
 
-  assert "create_es_lkas_state(self.packer, self.frame // 10, CS.es_lkas_state_msg, CC.latActive" in update_source
+  assert "create_es_lkas_state(self.packer, self.frame // 10, CS.es_lkas_state_msg, self._lkas_status_active(CC)" in update_source
   assert "create_es_lkas_state(self.packer, self.frame // 10, CS.es_lkas_state_msg, CC.enabled" not in update_source
 
 
@@ -758,3 +765,38 @@ def test_lkas_hud_active_bit_follows_lateral_state(enabled, expected):
 
   assert parser.can_valid
   assert parser.vl["ES_LKAS_State"]["LKAS_ACTIVE"] == expected
+
+
+def test_outback_manual_steering_releases_angle_request_before_lkas_fault():
+  CP = CarInterface.get_non_essential_params(CAR.SUBARU_OUTBACK_2023)
+  controller = CarController({}, CP)
+  CC = SimpleNamespace(
+    enabled=False,
+    latActive=True,
+    actuators=SimpleNamespace(steeringAngleDeg=-225.0),
+  )
+  CS = SimpleNamespace(out=SimpleNamespace(
+    vEgoRaw=0.9,
+    steeringAngleDeg=-57.0,
+    steeringRateDeg=-45.0,
+    steeringTorque=-127.0,
+    steeringPressed=True,
+    gearShifter=structs.CarState.GearShifter.drive,
+    standstill=False,
+  ))
+  parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("ES_LKAS_ANGLE", 0)], CanBus.main)
+
+  msg = controller.lateral_angle(CC, CS)
+  parser.update([(1, [msg])])
+
+  assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Request"] == 0
+  assert parser.vl["ES_LKAS_ANGLE"]["LKAS_Output"] == pytest.approx(CS.out.steeringAngleDeg)
+  assert not controller._lkas_status_active(CC)
+
+
+def test_other_angle_cars_keep_lateral_status_behavior():
+  CP = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+  controller = CarController({}, CP)
+  controller.angle_lkas_active = False
+
+  assert controller._lkas_status_active(SimpleNamespace(latActive=True))

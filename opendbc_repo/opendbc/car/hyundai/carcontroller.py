@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+# Provenance: portions of HKG angle control are adapted from sunnypilot/opendbc's
+# hkg-angle-steering-2025 branch at cc4b08625. See CREDITS.md and THIRD_PARTY_NOTICES.md.
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, make_tester_present_msg, rate_limit, structs
@@ -8,12 +10,13 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_an
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.hyundaicanfd import CanBus
-from opendbc.car.hyundai.values import HyundaiFlags, HyundaiStarPilotFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
-                                        CANFD_RADAR_LIVE_LONGITUDINAL_CAR, CANFD_ALT_BUTTONS_RESUME_CAR, kia_ev6_gt_line_longitudinal_tuning, \
+from opendbc.car.hyundai.values import HyundaiFlags, HyundaiSafetyFlags, HyundaiStarPilotFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
+                                        CANFD_RADAR_ECU_KEEPALIVE_CAR, CANFD_ALT_BUTTONS_RESUME_CAR, kia_ev6_gt_line_longitudinal_tuning, \
                                         KIA_EV6_GT_LINE_LONG_TUNING_TESTING_GROUND_ID
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.params import Params
+from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_hyundai_canfd_scc_jerk_limits
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -24,6 +27,9 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 MAX_ANGLE = 85
 MAX_ANGLE_FRAMES = 89
 MAX_ANGLE_CONSECUTIVE_FRAMES = 2
+
+CANCEL_BUTTON_DELAY_FRAMES = 10
+
 CANFD_BLINDSPOT_STATUS_STALE_NS = 200_000_000
 CANFD_CAMERA_LEAD_STALE_NS = 300_000_000
 CANFD_LEAD_MIN_DISTANCE = 0.1
@@ -454,6 +460,7 @@ class CarController(CarControllerBase):
     self.apply_angle_last = 0.0
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
+    self.cancel_counter = 0
     self.redneck_button_frame = 0
     self.ecu_disable_failed = False
     self._ecu_disable_checked = False
@@ -471,6 +478,11 @@ class CarController(CarControllerBase):
     self._dash_lat_disengage_init = False
     self._dash_prev_lat_active = False
     self._ray_lkas11_active = False
+    self._ray_lfa_8byte = CP.carFingerprint == CAR.KIA_RAY_EV and bool(
+      getattr(CP, "safetyConfigs", None) and
+      CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CAN_REFRESH_MSGS
+    )
+    self._ray_lfa_packer = CANPacker("hyundai_kia_ray_lfa") if self._ray_lfa_8byte else None
 
   def _update_dash_icon_state(self, CC):
     if CC.latActive:
@@ -717,6 +729,8 @@ class CarController(CarControllerBase):
       if self.CP.flags & HyundaiFlags.ENABLE_BLINKERS:
         can_sends.append(make_tester_present_msg(0x7b1, self.CAN.ECAN, suppress_response=True))
 
+    self.cancel_counter = self.cancel_counter + 1 if CC.cruiseControl.cancel else 0
+
     # *** CAN/CAN FD specific ***
     if self.CP.flags & HyundaiFlags.CANFD:
       can_sends.extend(self.create_canfd_msgs(now_nanos, apply_steer_req, apply_torque, apply_angle, set_speed_in_units, accel,
@@ -742,6 +756,7 @@ class CarController(CarControllerBase):
     can_sends = []
     can_canfd_blended = bool(self.CP.flags & HyundaiFlags.CAN_CANFD_BLENDED)
     blended_hda2 = can_canfd_blended and bool(self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING)
+    longitudinal_active = bool(self.long_active_ecu and getattr(CC, "longActive", False))
 
     # HUD messages
     sys_warning, sys_state, left_lane_warning, right_lane_warning = process_hud_alert(CC.enabled, self.car_fingerprint,
@@ -750,6 +765,7 @@ class CarController(CarControllerBase):
     if blended_hda2:
       can_sends.extend(hyundaicanfd.create_steering_messages(
         self.packer, self.CP, self.CAN, CC.enabled, apply_steer_req, apply_torque, 0.0,
+        longitudinal_active=longitudinal_active,
       ))
       if self.long_active_ecu:
         can_sends.extend(hyundaican.create_lkas11_can_canfd_blended(
@@ -782,7 +798,7 @@ class CarController(CarControllerBase):
 
     # Button messages
     if not self.long_active_ecu:
-      if CC.cruiseControl.cancel:
+      if self.cancel_counter > CANCEL_BUTTON_DELAY_FRAMES:
         can_sends.append(hyundaican.create_clu11(self.packer, self.frame, CS.clu11, Buttons.CANCEL, self.CP))
       elif CC.cruiseControl.resume:
         # send resume at a max freq of 10Hz
@@ -824,7 +840,10 @@ class CarController(CarControllerBase):
 
     # 20 Hz LFA MFA message
     if self.frame % 5 == 0 and (self.CP.flags & HyundaiFlags.SEND_LFA.value or (self.long_active_ecu and blended_hda2)):
-      can_sends.append(hyundaican.create_lfahda_mfc(self.packer, CC.enabled, self.frame, self.CP, lfa_icon))
+      if self._ray_lfa_8byte:
+        can_sends.append(hyundaican.create_ray_lfahda_mfc(self._ray_lfa_packer, CC.latActive, lfa_icon))
+      else:
+        can_sends.append(hyundaican.create_lfahda_mfc(self.packer, CC.enabled, self.frame, self.CP, lfa_icon))
 
     # 5 Hz ACC options
     if self.frame % 20 == 0 and self.long_active_ecu and not can_canfd_blended:
@@ -841,7 +860,14 @@ class CarController(CarControllerBase):
     can_sends = []
 
     lka_steering = self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING
-    lka_steering_long = lka_steering and self.long_active_ecu
+    longitudinal_active = bool(self.long_active_ecu and getattr(CC, "longActive", False))
+    lfa_status_cars = (
+      CAR.HYUNDAI_IONIQ_6,
+      CAR.KIA_EV6,
+    )
+    lfa_longitudinal_active = self.CP.openpilotLongitudinalControl \
+      if self.CP.carFingerprint in lfa_status_cars else longitudinal_active
+    lka_steering_long = lka_steering and lfa_longitudinal_active
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not lka_steering
     use_egmp_dynamic_long_tuning = egmp_dynamic_longitudinal_tuning(self.CP) and self.long_active_ecu and \
                                    CC.actuators.longControlState in (LongCtrlState.starting, LongCtrlState.pid, LongCtrlState.stopping)
@@ -867,10 +893,10 @@ class CarController(CarControllerBase):
 
     gear = getattr(getattr(CS, "out", None), "gearShifter", None)
     drive_gear = gear == structs.CarState.GearShifter.drive
-    if angle_lkas_alt:
+    if angle_lkas_alt and self.CP.carFingerprint != CAR.KIA_SPORTAGE_HEV_2026:
       steering_msg_active = bool(steering_msg_active and drive_gear)
     angle_lkas_alt_standstill_handoff = bool(getattr(CS.out, "standstill", False) and not CC.latActive)
-    forward_stock_lkas = angle_lkas_alt and (
+    forward_stock_lkas = self.CP.carFingerprint in CANFD_ANGLE_LONGITUDINAL_CAR and angle_lkas_alt and (
       angle_lkas_alt_standstill_handoff or not (drive_gear and (CC.latActive or CC.enabled))
     )
     preserve_stock_lfa_status = preserve_stock_canfd_lfa_status(self.CP.carFingerprint)
@@ -879,7 +905,8 @@ class CarController(CarControllerBase):
                                                              steering_msg_active, apply_torque, apply_angle,
                                                              CS.stock_lfa_msg if preserve_stock_lfa_status else None,
                                                              CS.stock_lkas_msg if preserve_stock_lkas else None,
-                                                             lka_icon=lka_icon))
+                                                             lka_icon=lka_icon,
+                                                             longitudinal_active=lfa_longitudinal_active))
     direct_steering_active = ccnc_angle_long and drive_gear and CC.latActive and self.direct_angle_request_allowed and not CS.angle_steering_fault
     inactive_steering_angle = float(np.clip(CS.angle_steering_angle,
                                             -self.params.ANGLE_LIMITS.STEER_ANGLE_MAX,
@@ -896,7 +923,7 @@ class CarController(CarControllerBase):
 
     # prevent LFA from activating on LKA steering cars by sending "no lane lines detected" to ADAS ECU
     suppress_lfa = bool(lka_steering)
-    if angle_lkas_alt:
+    if angle_lkas_alt and self.CP.carFingerprint != CAR.KIA_SPORTAGE_HEV_2026:
       suppress_lfa = bool(lka_steering and drive_gear and (CC.latActive or (ccnc_angle_long and CC.enabled)))
     if self.frame % 5 == 0 and suppress_lfa:
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
@@ -971,7 +998,7 @@ class CarController(CarControllerBase):
         # The front radar treats ADAS_DRV's 0x100 broadcast as its host heartbeat
         # and stops publishing object tracks when it disappears.
         radar_heartbeat_step = 1 if ccnc_angle_long else 4
-        if self.CP.carFingerprint in CANFD_RADAR_LIVE_LONGITUDINAL_CAR and self.frame % radar_heartbeat_step == 0:
+        if self.CP.carFingerprint in CANFD_RADAR_ECU_KEEPALIVE_CAR and self.frame % radar_heartbeat_step == 0:
           can_sends.append(hyundaicanfd.create_accelerator_brake_alt_spoof(0, self.frame // radar_heartbeat_step,
                                                                             CS.out.brakePressed, CS.out.gasPressed,
                                                                             self.CP.carFingerprint))
@@ -996,7 +1023,11 @@ class CarController(CarControllerBase):
                                                                                  CC.rightBlinker))
       if self.frame % 2 == 0:
         if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN:
-          acc_kwargs = {}
+          scc_jerk_limits = get_hyundai_canfd_scc_jerk_limits(self.CP)
+          acc_kwargs = {
+            "jerk_upper": scc_jerk_limits[0],
+            "jerk_lower": scc_jerk_limits[1],
+          }
         else:
           lead_visible, lead_distance, lead_rel_speed = self._get_canfd_scc_lead_state(CC, CS, now_nanos)
           acc_kwargs = {
@@ -1046,7 +1077,7 @@ class CarController(CarControllerBase):
           if self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS:
             can_sends.append(hyundaicanfd.create_acc_cancel(self.packer, self.CP, self.CAN, CS.cruise_info))
             self.last_button_frame = self.frame
-          else:
+          elif self.cancel_counter > CANCEL_BUTTON_DELAY_FRAMES:
             for _ in range(20):
               can_sends.append(hyundaicanfd.create_buttons(self.packer, self.CP, self.CAN, CS.buttons_counter + 1, Buttons.CANCEL))
             self.last_button_frame = self.frame

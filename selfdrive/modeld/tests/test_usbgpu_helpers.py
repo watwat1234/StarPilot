@@ -1,4 +1,5 @@
 import io
+import struct
 from types import MethodType
 from types import SimpleNamespace
 
@@ -69,8 +70,34 @@ def test_external_gpu_power_must_remain_stable():
   assert ready
 
   ready, stable_since = modeld._external_gpu_power_ready(11900, 15.0, stable_since)
-  assert not ready
-  assert stable_since is None
+  assert ready
+  assert stable_since == 11.0
+
+
+def test_external_gpu_power_wait_times_out(monkeypatch):
+  panda_type = modeld.log.PandaState.PandaType
+
+  class FakeSubMaster:
+    def __init__(self, _services):
+      self.updated = {}
+      self.data = {
+        "pandaStates": [SimpleNamespace(pandaType=panda_type.cuatro, voltage=9000)],
+        "peripheralState": SimpleNamespace(pandaType=panda_type.cuatro, voltage=9000),
+      }
+
+    def update(self, _timeout):
+      pass
+
+    def __getitem__(self, key):
+      return self.data[key]
+
+  times = iter((10.0, 70.0))
+  monkeypatch.setattr(modeld.HARDWARE, "get_device_type", lambda: "mici")
+  monkeypatch.setattr(modeld, "SubMaster", FakeSubMaster)
+  monkeypatch.setattr(modeld, "time", SimpleNamespace(monotonic=lambda: next(times)))
+
+  with pytest.raises(TimeoutError, match="after 60s"):
+    modeld.wait_for_external_gpu_power_ready()
 
 
 def test_egmp_ready_uses_accelerator_ready_bit():
@@ -152,6 +179,42 @@ def test_chestnut_telemetry_is_bounded_when_amd_is_unavailable(monkeypatch):
   assert not message.valid
 
 
+def test_chestnut_power_telemetry_works_before_amd_initializes(monkeypatch):
+  class FakePubMaster:
+    def __init__(self):
+      self.sent = []
+
+    def send(self, service, message):
+      self.sent.append((service, message))
+
+  class FakeHandle:
+    def controlRead(self, *_args, **_kwargs):
+      return struct.pack("<Hh?", 12100, 850, True)
+
+    def close(self):
+      pass
+
+  class FakeContext:
+    def openByVendorIDAndProductID(self, *_args, **_kwargs):
+      return FakeHandle()
+
+    def close(self):
+      pass
+
+  publisher = FakePubMaster()
+  monkeypatch.setattr(modeld, "Device", SimpleNamespace(_opened_devices=set()))
+  monkeypatch.setattr(modeld.usb1, "USBContext", FakeContext)
+
+  telemetry = modeld.ChestnutState(publisher, big=False)
+  telemetry.send()
+
+  _, message = publisher.sent[0]
+  assert message.valid
+  assert message.chestnutState.supplyVoltage == 12100
+  assert message.chestnutState.supplyCurrent == 850
+  assert message.chestnutState.supplyFault
+
+
 def test_tinygrad_disk_cache_connection_is_closed_between_models(monkeypatch):
   import tinygrad.helpers as tinygrad_helpers
 
@@ -171,14 +234,51 @@ def test_tinygrad_disk_cache_connection_is_closed_between_models(monkeypatch):
   assert tinygrad_helpers._db_connection is None
 
 
+def test_tinygrad_thread_local_cache_holder_survives_cleanup(monkeypatch):
+  import threading
+  import tinygrad.helpers as tinygrad_helpers
+
+  class FakeConnection:
+    def __init__(self):
+      self.closed = False
+
+    def close(self):
+      self.closed = True
+
+  holder = threading.local()
+  connection = FakeConnection()
+  holder.conn = connection
+  monkeypatch.setattr(tinygrad_helpers, "_db_connection", holder)
+
+  modeld._close_tinygrad_disk_cache_connection()
+
+  assert connection.closed
+  assert tinygrad_helpers._db_connection is holder
+  assert not hasattr(holder, "conn")
+
+
+def test_tinygrad_empty_thread_local_cache_holder_is_safe(monkeypatch):
+  import threading
+  import tinygrad.helpers as tinygrad_helpers
+
+  holder = threading.local()
+  monkeypatch.setattr(tinygrad_helpers, "_db_connection", holder)
+
+  modeld._close_tinygrad_disk_cache_connection()
+
+  assert tinygrad_helpers._db_connection is holder
+
+
 def test_external_gpu_load_finishes_before_native_model_can_start(monkeypatch):
   calls = []
 
   class FakeModelState:
     uses_external_gpu = True
 
-    def __init__(self, cam_w, cam_h, external_gpu_active, model_id_override, write_model_version):
-      calls.append(("model", cam_w, cam_h, external_gpu_active, model_id_override, write_model_version))
+    def __init__(self, cam_w, cam_h, external_gpu_active, model_id_override, write_model_version,
+                 model_version_override):
+      calls.append(("model", cam_w, cam_h, external_gpu_active, model_id_override,
+                    write_model_version, model_version_override))
 
     def warmup(self):
       calls.append("warmup")
@@ -194,14 +294,14 @@ def test_external_gpu_load_finishes_before_native_model_can_start(monkeypatch):
     lambda *_args: (_ for _ in ()).throw(AssertionError("runtime must not change tinygrad's process-global DEV")),
   )
 
-  loaded = modeld._load_external_gpu_model(1928, 1208, "big-model", "car-params")
+  loaded = modeld._load_external_gpu_model(1928, 1208, "big-model", "v15", "car-params")
 
   assert isinstance(loaded, FakeModelState)
   assert calls == [
     ("power", "car-params"),
     ("timeout", modeld.BIG_MODEL_LOAD_WAIT_TIMEOUT_MS),
     "link",
-    ("model", 1928, 1208, True, "big-model", False),
+    ("model", 1928, 1208, True, "big-model", False, "v15"),
     "warmup",
     "close_cache",
     ("timeout", modeld.BIG_MODEL_RUN_WAIT_TIMEOUT_MS),

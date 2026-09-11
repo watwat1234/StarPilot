@@ -1,7 +1,5 @@
 import { api, showSnackbar } from "../api.js"
 import { navigate, toolHref } from "../store.js"
-import { WheelControls } from "../components/WheelControls.js"
-import { BluetoothPanel } from "../components/BluetoothPanel.js"
 import { GalaxySection } from "../components/GalaxySection.js"
 
 const FEATURES = [
@@ -11,13 +9,16 @@ const FEATURES = [
 
 export const Vehicle = {
   name: "Vehicle",
-  components: { WheelControls, BluetoothPanel, GalaxySection },
+  components: { GalaxySection },
   data() {
     return {
       features: FEATURES,
       featureStatus: {},
       busy: "",
     }
+  },
+  computed: {
+    featureList() { return this.features },
   },
   methods: {
     statusOf(key) { return this.featureStatus[key] || "untested" },
@@ -47,20 +48,12 @@ export const Vehicle = {
     },
   },
   template: `
-    <div>
+    <div class="gx-view">
       <h2 style="margin-top:0;">Vehicle Controls</h2>
-
-      <GalaxySection title="Controllers" icon="bi-controller">
-        <WheelControls />
-      </GalaxySection>
-
-      <GalaxySection title="Bluetooth" icon="bi-bluetooth">
-        <BluetoothPanel />
-      </GalaxySection>
 
       <GalaxySection title="Vehicle Features" icon="bi-check2-square">
         <div style="padding: var(--sp-3); display:grid; gap:8px;">
-          <button v-for="f in features" :key="f.key" type="button"
+          <button v-for="f in featureList" :key="f.key" type="button"
             class="gx-row" style="width:100%; border:none; background:transparent; color:inherit; cursor:pointer; text-align:left;"
             @click="openFeature(f)">
             <div class="gx-row__info">

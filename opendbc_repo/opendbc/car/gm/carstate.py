@@ -1,4 +1,5 @@
 import copy
+import math
 from cereal import custom
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
@@ -17,6 +18,7 @@ from opendbc.car.gm.values import (
   AccState,
   CanBus,
   CruiseButtons,
+  GM_AUTO_HOLD_CARS,
   GMFlags,
   SDGM_CAR,
   STEER_THRESHOLD,
@@ -31,6 +33,7 @@ STANDSTILL_THRESHOLD = 10 * 0.0311
 VOLT_EBCM_BRAKE_PRESSED_THRESHOLD = 6 / 0xd0
 AUTO_HOLD_MIN_DRIVE_TIME_S = 3.0
 AUTO_HOLD_REGEN_RELEASE_COOLDOWN_S = 1.0
+ACC_STARTUP_FAULT_GRACE_PERIOD_S = 5.0
 
 BUTTONS_DICT = {CruiseButtons.RES_ACCEL: ButtonType.accelCruise, CruiseButtons.DECEL_SET: ButtonType.decelCruise,
                 CruiseButtons.MAIN: ButtonType.mainCruise, CruiseButtons.CANCEL: ButtonType.cancel}
@@ -64,6 +67,36 @@ def update_auto_hold_drive_timers(in_drive_for_hold: bool, moving_for_hold: bool
     one_pedal_drive_time = 0.0
 
   return auto_hold_drive_time, one_pedal_drive_time
+
+
+def is_gm_auto_hold_active(car_fingerprint: str, auto_hold_engaged: bool, in_drive_for_hold: bool,
+                           cruise_available: bool, standstill: bool, gas_pressed: bool) -> bool:
+  return (
+    auto_hold_engaged and
+    car_fingerprint in GM_AUTO_HOLD_CARS and
+    in_drive_for_hold and
+    cruise_available and
+    standstill and
+    not gas_pressed
+  )
+
+
+def update_startup_acc_fault_suppression(car_fingerprint: str, system_power_mode: int,
+                                          previous_system_power_mode: int, timer: float,
+                                          acc_state: int, friction_brake_unavailable: bool) -> tuple[float, bool]:
+  if car_fingerprint != CAR.BUICK_LACROSSE:
+    return 0.0, False
+
+  if system_power_mode == 2 and previous_system_power_mode != 2:
+    timer = ACC_STARTUP_FAULT_GRACE_PERIOD_S
+  elif system_power_mode != 2:
+    timer = 0.0
+
+  if timer <= 0.0 or acc_state != AccState.FAULTED:
+    return 0.0, False
+
+  timer = max(timer - DT_CTRL, 0.0)
+  return timer, timer > 0.0 and not friction_brake_unavailable
 
 
 class CarState(CarStateBase):
@@ -104,13 +137,18 @@ class CarState(CarStateBase):
     self.lkas_previously_enabled = 0
     self.lkas_enabled = 0
     self.pcm_acc_status = AccState.OFF
+    self.system_power_mode = 0
+    self.startup_acc_fault_suppression_timer = 0.0
     self.stock_fcw_alert = 0
     self.car_gps_config = get_car_gps_config(CP)
     self.car_gps_supported = self.car_gps_config is not None
     self.car_gps = None
     self._car_gps_timestamp_nanos = 0
+    self._prev_gps_lat = None
+    self._prev_gps_lon = None
+    self._last_gps_bearing = None
 
-  def _update_car_gps(self, cp) -> None:
+  def _update_car_gps(self, cp, v_ego: float = 0.0) -> None:
     if self.car_gps_config is None:
       return
 
@@ -125,6 +163,25 @@ class CarState(CarStateBase):
     gps = self.car_gps_config.decoder(*(cp.vl[name] for name in self.car_gps_config.messages))
     if gps is not None:
       gps["timestamp_nanos"] = timestamp_nanos
+      if gps["hasFix"]:
+        lat, lon = gps["latitude"], gps["longitude"]
+        if self._prev_gps_lat is not None and (lat, lon) != (self._prev_gps_lat, self._prev_gps_lon):
+          d_lat = (lat - self._prev_gps_lat) * 111139.0
+          d_lon = (lon - self._prev_gps_lon) * 111139.0 * math.cos(math.radians(lat))
+          if math.hypot(d_lat, d_lon) > 1.5 and v_ego > 1.0 and not self.moving_backward:
+            self._last_gps_bearing = math.degrees(math.atan2(d_lon, d_lat)) % 360.0
+
+        self._prev_gps_lat, self._prev_gps_lon = lat, lon
+
+        bearing = self._last_gps_bearing if self._last_gps_bearing is not None else 0.0
+        gps["speed"] = max(0.0, v_ego)
+        gps["bearingDeg"] = bearing
+        gps["bearingAccuracyDeg"] = 5.0 if (v_ego > 1.0 and self._last_gps_bearing is not None) else 180.0
+        heading_rad = math.radians(bearing)
+        gps["vNED"] = [v_ego * math.cos(heading_rad), v_ego * math.sin(heading_rad), 0.0]
+      else:
+        self._prev_gps_lat = self._prev_gps_lon = None
+
       self.car_gps = gps
       self._car_gps_timestamp_nanos = timestamp_nanos
 
@@ -144,8 +201,6 @@ class CarState(CarStateBase):
     pt_cp = can_parsers[Bus.pt]
     cam_cp = can_parsers[Bus.cam]
     loopback_cp = can_parsers[Bus.loopback]
-
-    self._update_car_gps(pt_cp)
 
     ret = structs.CarState()
 
@@ -216,6 +271,8 @@ class CarState(CarStateBase):
     # standstill=True if ECM allows engagement with brake.
     ret.standstill = abs(pt_cp.vl["EBCMWheelSpdRear"]["RLWheelSpd"]) <= STANDSTILL_THRESHOLD and \
                      abs(pt_cp.vl["EBCMWheelSpdRear"]["RRWheelSpd"]) <= STANDSTILL_THRESHOLD
+
+    self._update_car_gps(pt_cp, ret.vEgo)
 
     if pt_cp.vl["ECMPRDNL2"]["ManualMode"] == 1:
       ret.gearShifter = self.parse_gear_shifter("T")
@@ -327,8 +384,18 @@ class CarState(CarStateBase):
 
     ret.cruiseState.available = pt_cp.vl["ECMEngineStatus"]["CruiseMainOn"] != 0
     ret.espDisabled = pt_cp.vl["ESPStatus"]["TractionControlOn"] != 1
-    ret.accFaulted = (pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.FAULTED or
-                      pt_cp.vl["EBCMFrictionBrakeStatus"]["FrictionBrakeUnavailable"] == 1)
+    acc_state = pt_cp.vl["AcceleratorPedal2"]["CruiseState"]
+    friction_brake_unavailable = pt_cp.vl["EBCMFrictionBrakeStatus"]["FrictionBrakeUnavailable"] == 1
+    self.startup_acc_fault_suppression_timer, suppress_startup_acc_fault = update_startup_acc_fault_suppression(
+      self.CP.carFingerprint,
+      int(pt_cp.vl["BCMGeneralPlatformStatus"]["SystemPowerMode"]),
+      self.system_power_mode,
+      self.startup_acc_fault_suppression_timer,
+      acc_state,
+      friction_brake_unavailable,
+    )
+    self.system_power_mode = int(pt_cp.vl["BCMGeneralPlatformStatus"]["SystemPowerMode"])
+    ret.accFaulted = (acc_state == AccState.FAULTED and not suppress_startup_acc_fault) or friction_brake_unavailable
 
     ret.cruiseState.enabled = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] != AccState.OFF
     ret.cruiseState.standstill = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.STANDSTILL
@@ -376,6 +443,11 @@ class CarState(CarStateBase):
     if self.auto_hold_fault_suppression_timer > 0.0:
       self.auto_hold_fault_suppression_timer = max(self.auto_hold_fault_suppression_timer - DT_CTRL, 0.0)
       ret.accFaulted = False
+
+    ret.brakeHoldActive = is_gm_auto_hold_active(
+      self.CP.carFingerprint, self.auto_hold_engaged, in_drive_for_hold,
+      ret.cruiseState.available, ret.standstill, ret.gasPressed,
+    )
 
     if self.CP.enableBsm and not sdgm_non_volt:
       ret.leftBlindspot = pt_cp.vl["BCMBlindSpotMonitor"]["LeftBSM"] == 1

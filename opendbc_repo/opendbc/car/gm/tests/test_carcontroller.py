@@ -53,6 +53,7 @@ from opendbc.car.gm.carcontroller import (
   get_testing_ground_1_brake_switch_bias,
   get_acc_dashboard_status_active,
   get_stock_cc_active_for_cancel,
+  limit_grade_feedforward,
   shape_bolt_acc_pedal_low_speed_friction,
   shape_truck_friction_brake,
   shape_truck_pitch_accel,
@@ -426,6 +427,15 @@ def test_volt_auto_hold_requires_toggle_supported_non_cc_only_volt_and_stock_saf
       carFingerprint=CAR.CHEVROLET_VOLT_CAMERA,
       openpilotLongitudinalControl=True,
       networkLocation=CarParams.NetworkLocation.fwdCamera,
+      safetyConfigs=stock_safety,
+    ),
+    True,
+  )
+  assert supports_volt_auto_hold(
+    SimpleNamespace(
+      carFingerprint=CAR.BUICK_LACROSSE,
+      openpilotLongitudinalControl=True,
+      networkLocation=CarParams.NetworkLocation.gateway,
       safetyConfigs=stock_safety,
     ),
     True,
@@ -893,6 +903,20 @@ def test_shape_truck_pitch_accel_attenuates_highway_grade_feedforward():
 
 def test_shape_truck_pitch_accel_is_inactive_without_truck_tuning():
   assert shape_truck_pitch_accel(-0.30, 30.0, False) == pytest.approx(-0.30)
+
+
+def test_limit_grade_feedforward_does_not_stack_on_positive_planner():
+  assert limit_grade_feedforward(0.40, 0.50) == 0.0
+
+
+def test_limit_grade_feedforward_caps_uphill_hold():
+  assert limit_grade_feedforward(0.0, 0.50) == pytest.approx(0.20)
+  assert limit_grade_feedforward(-0.10, 0.50) == pytest.approx(0.20)
+
+
+def test_limit_grade_feedforward_keeps_downhill_help():
+  assert limit_grade_feedforward(0.40, -0.30) == pytest.approx(-0.30)
+  assert limit_grade_feedforward(-0.20, -0.30) == pytest.approx(-0.30)
 
 
 def test_shape_truck_friction_brake_suppresses_boundary_chatter():

@@ -400,6 +400,13 @@ int main(void) {
         }
       #endif
     } else {
+      #ifdef STM32H7
+      if ((hw_type == HW_TYPE_CUATRO) && !current_board->read_som_gpio()) {
+        assert_fatal(current_safety_mode == SAFETY_SILENT, "Error: Entering low power mode while not in SAFETY_SILENT. Hanging\n");
+        enter_stop_mode(); // deep sleep, wakes on CAN or SBU activity
+        assert_fatal(false, "Error: enter_stop_mode returned after system reset. Hanging\n");
+      }
+      #endif
       __WFI();
       SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
     }

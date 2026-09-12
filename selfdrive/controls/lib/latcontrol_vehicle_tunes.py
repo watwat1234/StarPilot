@@ -959,7 +959,7 @@ IONIQ_6_LOW_SPEED_PID_RESET_SPEED = 0.1 * CV.MPH_TO_MS
 # extra P/D gain right where there is no breakaway torque to overcome. Deadzone the jerk
 # feed below straight-line noise levels and fade friction near center at highway speed.
 IONIQ_6_FRICTION_JERK_DEADZONE = 0.30
-IONIQ_6_FRICTION_CENTER_FADE_MAX = 0.50
+IONIQ_6_FRICTION_CENTER_FADE_MAX = 0.80
 IONIQ_6_FRICTION_CENTER_FADE_LAT = 0.15
 IONIQ_6_FRICTION_CENTER_FADE_LAT_WIDTH = 0.06
 IONIQ_6_FRICTION_CENTER_FADE_SPEED = 18.0

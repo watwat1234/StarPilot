@@ -79,21 +79,28 @@ class PointBuckets:
   def __len__(self) -> int:
     return sum([len(v) for v in self.buckets.values()])
 
+  def _is_excusable(self, bound: tuple[float, float]) -> bool:
+    # Only the two extreme buckets (Hard Left/Hard Right) are excusable -- a normal driving pattern
+    # may rarely exercise them. Excuse regardless of fill level (0 or partial): a bucket that picks up
+    # a few points below its own min_pts must not become a NEW blocker relative to being empty.
+    return self.allow_empty_buckets and bound in (self.x_bounds[0], self.x_bounds[-1])
+
   def is_valid(self) -> bool:
-    individual_buckets_valid = all(len(v) >= min_pts or (self.allow_empty_buckets and len(v) == 0)
-                                    for v, min_pts in zip(self.buckets.values(), self.buckets_min_points.values(), strict=True))
+    individual_buckets_valid = all(self._is_excusable(bound) or len(v) >= self.buckets_min_points[bound]
+                                    for bound, v in self.buckets.items())
     total_points_valid = self.__len__() >= self.min_points_total
     return individual_buckets_valid and total_points_valid
 
   def get_valid_percent(self) -> int:
     total_points_perc = min(self.__len__() / self.min_points_total * 100, 100)
-    bucket_percs = [len(v) / min_pts * 100 for v, min_pts in zip(self.buckets.values(), self.buckets_min_points.values(), strict=True)
-                    if not (self.allow_empty_buckets and len(v) == 0)]
+    bucket_percs = [len(v) / self.buckets_min_points[bound] * 100 for bound, v in self.buckets.items()
+                    if not self._is_excusable(bound)]
     individual_buckets_perc = min(min(bucket_percs), 100) if bucket_percs else 0
     return int((total_points_perc + individual_buckets_perc) / 2)
 
   def is_calculable(self) -> bool:
-    return self.__len__() >= 3 and all(len(v) > 0 or self.allow_empty_buckets for v in self.buckets.values())
+    return self.__len__() >= 3 and all(self._is_excusable(bound) or len(v) > 0
+                                        for bound, v in self.buckets.items())
 
   def add_point(self, x: float, y: float) -> None:
     raise NotImplementedError

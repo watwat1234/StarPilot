@@ -6,11 +6,12 @@ this file top to bottom — no need to also find the `/plan` mode plan file.*
 *This file now covers **two** separate fixes for related "StarPilot doesn't
 wake like sunnypilot does" symptoms on the same hardware. Fix 1 (GPIOC11/
 DC_IN bootkick) is built, flashed, and partially validated but has an open
-question (see below). Fix 2 (CAN/SBU stop-mode wake) is fully planned and
-independently reviewed but **no source has been touched yet** — it's the
-next thing to actually implement. Each has its own "Fix — discrete steps"
-section further down, each restarting its own Step 1/2/3/etc. — don't
-confuse the two when a step number is mentioned out of context.*
+question (see below). Fix 2 (CAN/SBU stop-mode wake) has its source edit,
+build, and regenerated-firmware commit done and pushed — it's the one
+actively being worked, next up is reflashing and the real hardware test.
+Each has its own "Fix — discrete steps" section further down, each
+restarting its own Step 1/2/3/etc. — don't confuse the two when a step
+number is mentioned out of context.*
 
 ## Status (read this first)
 
@@ -28,14 +29,21 @@ one independent-review pass completed and its corrections folded in
 (F4-build-break fix, safety-comment reframing, two added regression checks,
 HKG-remote-start mechanism fully understood — no code risk, but confirmed
 relevant to the user's actual usage so it stays in as a live Step 5 check).
-**Status: Step 1 DONE.** All blocking open questions were answered (see
-"Open questions / decisions needed" below), branch `wat-can-sbu-wake`
+**Status: Steps 1-2b DONE.** All blocking open questions were answered
+(see "Open questions / decisions needed" below), branch `wat-can-sbu-wake`
 was created off `wat-boot-update`, and the source edit (STM32H7-guarded
 `enter_stop_mode()` ported into `power_saving.h`, gated call site added
-in `main.c`'s power-save loop) is committed as `9a6fbe937`. Not pushed
-(only `custom_waffle` is pre-authorized, and that still needs its own
-go-ahead). **Next: Step 2a (build on WSL machine) — needs the WSL
-machine re-check from item 4 below first.**
+in `main.c`'s power-save loop) is committed as `9a6fbe937`. WSL machine
+re-check (item 4) confirmed the toolchain works (root-level `.venv` in
+this worktree already had `scons`/`arm-none-eabi-gcc`, no `setup.sh`
+needed). Build (Step 2a) succeeded on 2026-09-11: 72 files changed in
+`panda/board/obj/`, H7 variants grew as expected, F4 variants came out
+byte-identical apart from `gitversion.h`/`version` metadata — confirming
+the `#ifdef STM32H7` guard works. Regenerated binaries committed (Step
+2b) as `0d4605485` and **pushed to `origin`** (this WSL clone's remote
+name for `git.waffle`) on 2026-09-11. **Next: Step 3 — reflash the panda
+and record a rollback point**, then Step 4 (the real door-unlock
+validation test) — both need the actual comma-four hardware.
 
 ## Open questions / decisions needed from the user before Fix 2 can start (2026-09-11)
 
@@ -67,11 +75,14 @@ progress, instead of having to infer it from scattered notes below.
    shortening the shutdown timeout for faster iteration — will accept the
    ~1hr wait per real-world test attempt rather than temporarily changing
    the setting.
-4. **WSL machine: needs re-checking**, not assumed still available/set up
-   as it was for Fix 1's build. Must be verified before Fix 2 reaches its
-   own Step 2a (the build step) — but this does **not** block Step 1 (the
-   source edit), which happens on this Windows machine with no WSL
-   dependency.
+4. **WSL machine: re-checked and confirmed working (2026-09-11).** Built
+   directly in the `starpilot-wat-boot` worktree (this is that worktree) —
+   its root-level `.venv` already had `scons`/`arm-none-eabi-gcc`/`uv`
+   available, so `panda/setup.sh` wasn't needed (its `sudo apt-get` step
+   would have failed non-interactively anyway; turned out to be
+   unnecessary since the deps were already present at the root-venv
+   level). `panda/.venv` itself doesn't exist and isn't needed — build
+   uses the root `.venv`.
 
 **Still open (not yet asked / no explicit answer):**
 
@@ -709,16 +720,26 @@ is the plan that's next up — see Status at the top of this file.**
   `enter_stop_mode()`'s blanket transceiver-disable gets validated in Step 4,
   not designed around speculatively here).
 
-- **Step 2a/2b — Build + commit regenerated firmware (WSL machine).** Same
-  flow as the GPIOC11 fix's "Handoff to WSL machine" section: worktree off
-  the existing `git.waffle` clone, `scons` rebuild of **all** variants —
-  H7 *and* F4 this time, unlike the GPIOC11 fix where F4 was untouched.
-  **Explicitly verify the F4 targets (`panda`, `panda_remote`,
-  `panda_hkg_remote`, `panda_can_ignition_only`, and the rest) still compile
-  cleanly** before trusting `git diff --stat panda/board/obj/` — the
-  `#ifdef STM32H7` guard from Step 1 is what should keep them building, but
-  confirm it actually did, don't assume. Commit `panda/board/obj/` changes
-  only after explicit go-ahead.
+- **Step 2a/2b — Build + commit regenerated firmware (WSL machine). DONE
+  (2026-09-11).** Built in this `starpilot-wat-boot` worktree using its
+  existing root-level `.venv` (`scons`/`arm-none-eabi-gcc` already present
+  — no `setup.sh` run needed). `scons -j$(nproc)` rebuilt all variants —
+  72 files changed in `panda/board/obj/` (same count as the GPIOC11 fix).
+  **F4 targets verified**: `panda`, `panda_remote`, `panda_hkg_remote`,
+  `panda_can_ignition_only`, `panda_remote_can_ignition_only`,
+  `panda_hkg_remote_can_ignition_only` all compiled and came out
+  byte-identical to their pre-build versions (aside from
+  `gitversion.h`/`version` metadata) — confirms the `#ifdef STM32H7` guard
+  from Step 1 actually kept them unaffected, not just assumed. H7 variants
+  (`panda_h7`, `panda_h7_remote`, `panda_h7_hkg_remote`, and their
+  `*_can_ignition_only` counterparts) all grew in size as expected from the
+  new `enter_stop_mode()` code. `panda_jungle_h7`/`body_h7` also rebuilt
+  clean (not in the original variant list, included incidentally by the
+  full `scons` build, unaffected since their board files don't touch
+  `cuatro_set_bootkick`). Committed as `0d4605485`
+  ("panda: regenerate firmware for cuatro CAN/SBU stop-mode wake port")
+  after explicit go-ahead, and **pushed to `origin`** (`git.waffle` on this
+  WSL clone) after a separate explicit go-ahead.
 
 - **Step 3 — Reflash.** Record firmware version/rollback point this time
   (unlike the GPIOC11 fix, where this wasn't captured) — worth being able to

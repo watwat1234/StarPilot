@@ -13,6 +13,40 @@ Each has its own "Fix — discrete steps" section further down, each
 restarting its own Step 1/2/3/etc. — don't confuse the two when a step
 number is mentioned out of context.*
 
+## Merge into `wat-ioniq-tuning` — DONE, pushed everywhere (2026-09-11)
+
+**`wat-ioniq-tuning` is the branch actually deployed to the comma device, so
+this is what makes Fix 2 deployable — not just present on the throwaway
+`wat-can-sbu-wake` branch.**
+
+- Merge performed on the WSL machine (per Windows-session handoff): fetched
+  both branches, worktree off `wat-ioniq-tuning`,
+  `git merge --no-commit --no-ff wat-can-sbu-wake`. Conflicts confined
+  entirely to the 72 `panda/board/obj/` files (both branches had
+  independently rebuilt firmware from diverged source); `main.c` and
+  `power_saving.h` merged clean with zero conflicts against
+  `wat-ioniq-tuning`'s unrelated Tesla `wake_on_can` feature (`24b8789c7`) —
+  the two wake mechanisms sit in different parts of `main.c` and coexist
+  fine.
+- Resolved the binary conflicts by rebuilding from the merged source via
+  `scons -j$(nproc)` (92 files touched once Tesla-wake/jungle/body variants'
+  incidental `gitversion.h` churn is included) — confirmed both the
+  stop-mode H7/F4 variants and the `panda_tesla_wake`/`panda_h7_tesla_wake`
+  variants compiled and linked cleanly, not just assumed.
+- Committed as `fb59c07ca` ("Merge branch 'wat-can-sbu-wake' into
+  wat-ioniq-tuning") after explicit go-ahead — verified on the Windows
+  session afterward: F4 binary sizes unchanged (guard confirmed working),
+  H7 binaries grew as expected, no leftover conflict markers anywhere under
+  `panda/` or `wat_plan/`.
+- **Pushed to `custom_waffle` (2026-09-11) and `custom_github`
+  (`watwat1234/StarPilot`, 2026-09-11)** — both fast-forwards
+  (`a29879993..fb59c07ca`), no divergence on either remote. Not pushed to
+  `origin` (comma's upstream) — never authorized for this branch.
+
+**Next up: Step 3 (reflash the panda from `wat-ioniq-tuning`'s new tip,
+record a rollback point) and Step 4 (the real door-unlock hardware test)** —
+both need the actual comma-four hardware, not a further git/build step.
+
 ## Status (read this first)
 
 **Fix 1 — GPIOC11/DC_IN bootkick (unplug/replug-OBDII wake).** Steps 1-3

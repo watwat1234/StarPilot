@@ -14,7 +14,7 @@ def _make_indicators(monkeypatch):
     valid = {"carState": True}
 
   monkeypatch.setattr(blind_spot_indicators.gui_app, "texture", lambda *args, **kwargs: object())
-  monkeypatch.setattr(blind_spot_indicators.gui_app, "target_fps", 60)
+  monkeypatch.setattr(blind_spot_indicators.gui_app, "_target_fps", 60)
   indicators = BlindSpotIndicators()
   monkeypatch.setattr(ui_state, "sm", FakeSM(carState=_car_state()))
   return indicators

@@ -815,7 +815,7 @@ IONIQ_EV_OLD_CENTER_TAPER_SPEED_WIDTH = 2.2
 IONIQ_6_FF_GAIN_LEFT = 0.045
 IONIQ_6_FF_GAIN_RIGHT = 0.015
 IONIQ_6_BASE_LAT_ACCEL_FACTOR_MULT = 1.22
-IONIQ_6_BASE_FRICTION_THRESHOLD = HKG_CANFD_BASE_FRICTION_THRESHOLD
+IONIQ_6_FRICTION_THRESHOLD_CURVE = [0.4044, 0.414, 0.414, 0.414, 0.42]
 IONIQ_6_FF_ONSET = 0.10
 IONIQ_6_FF_ONSET_WIDTH = 0.04
 IONIQ_6_FF_CUTOFF = 0.48
@@ -3720,7 +3720,10 @@ def get_ioniq_6_2023_unwind_ff_scale(setpoint: float, measured_lateral_accel: fl
 
 
 def get_ioniq_6_friction_threshold(v_ego: float, desired_lateral_accel: float = 0.0, desired_lateral_jerk: float = 0.0) -> float:
-  base_threshold = max(get_hkg_canfd_base_friction_threshold(v_ego), IONIQ_6_BASE_FRICTION_THRESHOLD)
+  base_threshold = max(
+    get_hkg_canfd_base_friction_threshold(v_ego),
+    float(np.interp(v_ego, FLM_FRICTION_SPEED_KNOTS, IONIQ_6_FRICTION_THRESHOLD_CURVE)),
+  )
   transition_envelope = _ioniq_6_transition_envelope(v_ego, desired_lateral_accel, desired_lateral_jerk)
   phase = _ioniq_6_transition_phase(desired_lateral_accel, desired_lateral_jerk)
   turn_in_weight = max(phase, 0.0)

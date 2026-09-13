@@ -35,13 +35,17 @@ User confirmed: branch `wat-blindspot` off `wat-ioniq-tuning` (current). Done.
 - [x] Unit test added: `selfdrive/ui/tests/test_blind_spot_indicators.py` — covers alpha
       filter following `leftBlindspot`/`rightBlindspot`, `detected` property, and that
       `render()` no-ops when both filters are at 0.
-- [ ] **Could not run the unit test in this session.** This Windows environment can't run
-      the UI test suite: `pyray`/raylib isn't installed, and `uv sync` fails building
-      `xattr` (a Linux-only native dependency of openpilot). Verified only via
-      `python -m py_compile` (all changed/new files compile) and manual tracing against
-      `test_traffic_border.py`'s established mocking pattern. **Run
-      `pytest selfdrive/ui/tests/test_blind_spot_indicators.py -v` on the WSL machine or
-      on-device before merging.**
+- [x] **Ran the unit test on WSL** (new worktree `starpilot-wat-blindspot`, `uv sync` +
+      `scons -j$(nproc)` to build native extensions incl. `msgq`/`cereal`). Initial run
+      failed: all 3 tests in `test_blind_spot_indicators.py` errored in the shared
+      `_make_indicators()` helper — `monkeypatch.setattr(gui_app, "target_fps", 60)`
+      raised `AttributeError` because `GuiApplication.target_fps` is a read-only property
+      (getter only, backed by `_target_fps`; that property predates this branch, added
+      2026-04-11 in `d43b7d0d3`). Fixed by monkeypatching the backing `_target_fps` field
+      instead. `selfdrive/selfdrived/tests/test_blindspot_alerts.py` (10 tests) passed
+      untouched. All 13 tests green after the fix. Fix committed (`a0af28ea8`,
+      test-file-only change) and pushed to `custom_waffle`/`wat-blindspot`.
+      `selfdrive/ui/tests/test_blind_spot_indicators.py:17` is the changed line.
 - [x] Code review (low effort) — run. One real finding, fixed: `.update()` was called
       unconditionally every frame in `_update_state()` while `.render()` was properly
       gated on `BlindSpotIcon`, so a disabled-then-re-enabled icon would pop in at full
@@ -57,9 +61,25 @@ User confirmed: branch `wat-blindspot` off `wat-ioniq-tuning` (current). Done.
       `custom_github` (GitHub), per user instruction. Branch tracks
       `custom_waffle/wat-blindspot`.
 
-**What's actually left**: run the unit test on WSL/on-device, and do the on-device
-visual check. Both are just verification — no more code changes expected unless one of
-those turns something up.
+**What's actually left**: on-device visual check only (needs comma 4 hardware). Unit test
+now verified on WSL and green.
+
+## Aside: broader UI test suite is flaky on WSL (unrelated to this change)
+
+While verifying, also tried running the wider `selfdrive/ui/tests/`+`system/ui/` suite in
+the new WSL worktree, out of caution. Not clean, but unrelated to blind-spot code:
+- `selfdrive/ui/mici/tests/test_widget_leaks.py` reliably hangs — it opens a real
+  `GuiApplication`/raylib window (`init_window`) and never returns, even with
+  `OFFSCREEN=1` (that env var only disables FPS limiting, it doesn't skip window
+  creation). WSLg provides a real `DISPLAY`/`WAYLAND_DISPLAY` so a window does open; the
+  hang is something else. Killing the process tree shows the window flash briefly.
+- With that file excluded, `selfdrive/ui/tests/test_aethergrid.py::TestAethergridContracts::test_custom_icon_uses_completed_cache_without_redrawing_geometry`
+  is flaky under the repo's default `pytest-xdist --dist=loadgroup` config: segfaulted in
+  `pyray` once (xdist auto-restarted the worker and the suite finished), then hung with
+  zero output on a rerun. Likely a shared-GL-context race between xdist workers,
+  exacerbated by real-display + CPU contention in this environment.
+Left untouched — pre-existing test-infra issue, not introduced by this branch. Worth a
+separate investigation if the broader UI suite needs to run reliably on WSL.
 
 ## Unrelated pre-existing dirty state — do not commit as part of this change
 

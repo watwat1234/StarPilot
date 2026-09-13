@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.starpilot.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.onroad.starpilot.rivian_lateral_mode import rivian_lateral_mode
+from openpilot.selfdrive.ui.onroad.starpilot.blind_spot_indicators import BlindSpotIndicators
 from openpilot.selfdrive.ui.mici.onroad.speed_limit_utils import resolve_display_speed_limit_ms
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import NavigationCardRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -152,6 +153,7 @@ class HudRenderer(Widget):
 
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
+    self._blind_spot_indicators = BlindSpotIndicators()
     self._navigation_card = NavigationCardRenderer("mici")
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
@@ -210,6 +212,8 @@ class HudRenderer(Widget):
       getattr(actuators, "accel", 0.0) if long_active else 0.0,
       getattr(actuators, "gas", 0.0) if long_active else 0.0,
     )
+    if ui_state.ui_params.get_bool("BlindSpotIcon"):
+      self._blind_spot_indicators.update()
 
     v_cruise_cluster = car_state.vCruiseCluster
     set_speed = (
@@ -314,6 +318,9 @@ class HudRenderer(Widget):
 
     self._draw_steering_wheel(self._rect)
     self._draw_speed_limit_prompt(self._rect)
+
+    if ui_state.ui_params.get_bool("BlindSpotIcon"):
+      self._blind_spot_indicators.render(self._rect)
 
   def user_interacting(self) -> bool:
     return self._navigation_card.is_pressed

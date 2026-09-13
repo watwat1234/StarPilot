@@ -50,6 +50,16 @@ User confirmed: branch `wat-blindspot` off `wat-ioniq-tuning` (current). Done.
       pre-existing deleted `frpc_darwin_amd64`/`arm64` binaries (see note below) — not
       part of this change, left alone.
 - [ ] On-device visual check — not done (needs comma 4 hardware, per plan).
+- [x] Committed (`fab1f5060`, files listed below only — the pre-existing frpc deletions
+      were deliberately left unstaged/uncommitted, see note below) and pushed to
+      **`custom_waffle` only** (`http://git.waffle/waffle/StarPilot.git`, branch
+      `wat-blindspot`) — explicitly NOT to `origin` (`git.waffle/comma`) or
+      `custom_github` (GitHub), per user instruction. Branch tracks
+      `custom_waffle/wat-blindspot`.
+
+**What's actually left**: run the unit test on WSL/on-device, and do the on-device
+visual check. Both are just verification — no more code changes expected unless one of
+those turns something up.
 
 ## Unrelated pre-existing dirty state — do not commit as part of this change
 

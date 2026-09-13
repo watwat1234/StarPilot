@@ -211,6 +211,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BlacklistedModels", {PERSISTENT, STRING, "", "", 2}},
     {"BootLogo", {PERSISTENT, STRING, "starpilot", "stock", 0}},
     {"BuildMetadata", {PERSISTENT, STRING, "", "", 0}},
+    {"BlindSpotIcon", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
     {"BlindSpotMetrics", {PERSISTENT, BOOL, "1", "0", 3}},
     {"BlindSpotPath", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
     {"BelowSteerSpeedVolume", {PERSISTENT, INT, "101", "101", 2, SETTINGS_SIMPLE}},

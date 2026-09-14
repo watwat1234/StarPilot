@@ -9,6 +9,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.blind_spot_indicators import BlindS
 from openpilot.selfdrive.ui.mici.onroad.speed_limit_utils import resolve_display_speed_limit_ms
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import NavigationCardRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
+from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_tint
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.utils import draw_circle_gradient_compat
 from openpilot.system.ui.lib.multilang import tr
@@ -196,7 +197,11 @@ class HudRenderer(Widget):
     controls_state = sm['controlsState']
     car_state = sm['carState']
     rivian_lateral_mode.update()
-    self._wheel_tint = rivian_lateral_mode.wheel_tint
+    self._wheel_tint = get_wheel_tint(
+      getattr(car_state, "brakePressed", False),
+      rivian_lateral_mode.wheel_tint,
+      ui_state.ui_params.get_bool("ShowBrakeStatus"),
+    )
     if ui_state.ui_params.get_bool("BlindSpotIcon"):
       self._blind_spot_indicators.update()
 

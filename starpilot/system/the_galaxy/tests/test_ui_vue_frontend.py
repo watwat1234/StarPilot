@@ -136,7 +136,7 @@ def test_ui_ports_all_tool_views():
     "js/views/Logs.js": ["getErrorLogs", "tmuxSnapshot"],
     "js/components/TroubleshootPanel.js": ["getTroubleshoot", "resetTroubleshootSection", "GalaxyConfirm"],
     "js/views/Tuning.js": ["LateralTuningPanel"],
-    "js/views/Navigation.js": ["getNavigation", "setNavigation", "MapsPanel", "NavigationKeysPanel"],
+    "js/views/Navigation.js": ["NavigationDestinationPanel", "MapsPanel", "NavigationKeysPanel"],
     "js/views/ToolEmbed.js": ["/manage_maps", "/manage_navigation_keys"],
     "js/views/SystemTools.js": [
       "backupToggles", "restoreToggles", "getToggleProfiles", "saveToggleProfile", "loadToggleProfile", "getUpdateBranches", "factoryReset",
@@ -476,6 +476,11 @@ def test_ui_all_remaining_classic_tools_native_no_embed():
   tuning = _read("js/views/Tuning.js")
   assert "GalaxyEmbed" not in tuning and "LateralTuningPanel" in tuning
   assert _read("js/components/MapsPanel.js") and _read("js/components/NavigationKeysPanel.js")
+  destination = _read("js/components/NavigationDestinationPanel.js")
+  assert "mapboxSuggest" in destination and "mapboxRetrieve" in destination
+  assert "mapboxGeocode" in destination and "mapboxDirections" in destination
+  assert "ref=\"map\"" in destination and "setNavigation(this.destination)" in destination
+  assert "methods: {" in destination and "secondaryLabel," in destination
   assert _read("js/components/LateralTuningPanel.js")
 
   # Shared API surface added for the second batch of ported pages.
@@ -493,6 +498,20 @@ def test_ui_all_remaining_classic_tools_native_no_embed():
   for rel in ["js/components/MapsPanel.js", "js/components/NavigationKeysPanel.js",
               "js/components/LateralTuningPanel.js"]:
     assert "fetch(" not in _read(rel), f"{rel} should not use raw fetch()"
+
+  lateral = _read("js/components/LateralTuningPanel.js")
+  modal = _read("js/components/GalaxyModal.js")
+  assert "MAX_SEGMENTS = 5" in lateral
+  assert "segmentRanges" in lateral and "selectedSegmentRanges" in lateral
+  assert "flmAnalyze(this.selectedRoutes, this.selectedSegmentRanges())" in lateral
+  assert "routeSelectedSegmentCount" in lateral
+  assert "GalaxyPrompt" in lateral
+  assert "renameSavedTune(tune)" in lateral
+  assert "initialValue: tune.name" in lateral
+  assert "export function GalaxyPrompt" in modal
+  assert "inputRequired" in modal
+  assert lateral.index('>Workspace status</span>') < lateral.index('>Saved Tunes</span>')
+  assert lateral.index('>Saved Tunes</span>') < lateral.index('>Local Routes</span>')
 
 
 def test_ui_cameras_hub_vasm_and_pip_native_no_embed():

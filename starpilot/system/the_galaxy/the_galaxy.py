@@ -1957,22 +1957,22 @@ _RUNTIME_DEFAULT_ZERO_OK_KEYS = {
 _TROUBLESHOOT_SECTION_DEFINITIONS = [
   {
     "id": "personality_settings",
-    "title": "Personality Profile Settings",
+    "title": "Longitudinal (Speed & Following) › Driving Personalities",
     "keys": _TROUBLESHOOT_PERSONALITY_KEYS,
   },
   {
     "id": "cem_settings",
-    "title": "CEM Settings",
+    "title": "Longitudinal (Speed & Following) › Longitudinal control mode",
     "keys": _TROUBLESHOOT_CEM_KEYS,
   },
   {
     "id": "advanced_lateral_tuning",
-    "title": "Advanced Lateral Tuning",
+    "title": "Lateral (Steering) › Advanced Lateral Tuning",
     "keys": _TROUBLESHOOT_ADVANCED_LATERAL_KEYS,
   },
   {
     "id": "advanced_longitudinal_tuning",
-    "title": "Advanced Longitudinal Tuning",
+    "title": "Longitudinal (Speed & Following) › Advanced Longitudinal Tuning",
     "keys": _TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS,
   },
 ]
@@ -3371,11 +3371,7 @@ def _get_available_favorite_slot_options():
 
 
 def _get_available_controller_action_options():
-  options = [*_get_available_favorite_slot_options(), *(dict(option) for option in CONTROLLER_ACTION_OPTIONS)]
-  return sorted(options, key=lambda option: (
-    str(option.get("section") or "").casefold(),
-    str(option.get("label") or option.get("key") or "").casefold(),
-  ))
+  return _get_available_favorite_slot_options()
 
 
 def _favorite_slot_values(options):
@@ -4518,6 +4514,45 @@ def _build_troubleshoot_payload():
     for section_definition in _TROUBLESHOOT_SECTION_DEFINITIONS
   ]
 
+  shown = {item['key'] for section in sections for item in section['items']}
+  registered = {key for key, *_ in starpilot_default_params}
+  for category in load_settings_catalog() or []:
+    groups = {}
+    for entry in category.get('params', []):
+      key = entry.get('key')
+      if key in shown or key not in registered or key.startswith('LaneCentering') or key == 'LaneCenterOffset':
+        continue
+      if (entry.get("requires_capability") == "HasRivianAngleHarness" and not _get_has_rivian_angle_harness()):
+        continue
+      if key == "TeslaWakeOnCAN" and not supports_tesla_can_wake(params):
+        continue
+      if _params_raw.get_key_flag(key) & ParamKeyFlag.DONT_LOG:
+        continue
+      parent = entry.get('parent_key')
+      title = category['name']
+      if parent:
+        title += ' › ' + str(layout_metadata.get(parent, {}).get('label', parent))
+      groups.setdefault(title, []).append(key)
+      shown.add(key)
+    for title, keys in groups.items():
+      section = _build_troubleshoot_section_payload({'id': 'catalog_' + keys[0], 'title': title, 'keys': keys},
+                                                    value_types, default_values, layout_metadata, learned_values)
+      section['resettable'] = False
+      sections.append(section)
+  for title, keys in [
+      ('Bluetooth Controllers', ['BluetoothEnabled', 'BluetoothDisconnectControllersOffroad', 'WheelControlsEnabled', 'ControllerActionSlots', 'WheelControlMappings']),
+      ('Longitudinal (Speed & Following) › Longitudinal control mode', ['ExperimentalMode', 'ConditionalExperimental', 'ConditionalChill', 'LongitudinalPersonality']),
+      ('Model Manager', ['Model', 'ActiveBigModel', 'ActiveSmallModel', 'ModelSortMode', 'UserFavorites'])]:
+    keys = [key for key in keys if key in registered and key not in shown
+            and not (_params_raw.get_key_flag(key) & ParamKeyFlag.DONT_LOG)]
+    if keys:
+      section = _build_troubleshoot_section_payload({'id': 'extra_' + keys[0], 'title': title, 'keys': keys},
+                                                    value_types, default_values, layout_metadata, learned_values)
+      section['resettable'] = False
+      sections.append(section)
+      shown.update(keys)
+  sections.sort(key=lambda section: section["title"])
+
   return _sanitize_json_value({
     "vehicleStatus": _build_vehicle_fault_status(),
     "snapshot": snapshot_items,
@@ -5171,6 +5206,8 @@ class GalaxySlugMiddleware:
 
 
 def setup(app):
+  from openpilot.starpilot.assets.model_sizes import ModelSizes
+  model_sizes = ModelSizes()
   if not isinstance(app.wsgi_app, GalaxySlugMiddleware):
     app.wsgi_app = GalaxySlugMiddleware(app.wsgi_app)
 
@@ -5795,6 +5832,12 @@ def setup(app):
         if not isinstance(raw_slot, dict):
           continue
         key = str(raw_slot.get("key") or "").strip()
+        if key == CONTROLLER_ACTION_SET_SPEED:
+          from openpilot.starpilot.common.controller_actions import controller_speed_bounds
+          minimum, maximum = controller_speed_bounds(params.get_bool("IsMetric"))
+          value = raw_slot.get("value")
+          if type(value) not in (int, float) or not minimum <= value <= maximum:
+            return jsonify(error=f"Favorite #{idx + 1} speed must be between {minimum} and {maximum}."), 400
         if key and key not in eligible_keys:
           return jsonify(error=f"Favorite #{idx + 1} must use a Galaxy-exposed toggle or action."), 400
 
@@ -5813,6 +5856,7 @@ def setup(app):
         "slots": slots,
         "options": options,
         "values": _favorite_slot_values(options),
+        "is_metric": params.get_bool("IsMetric"),
       }), 200
 
     slots = normalize_favorite_slots(params.get(FAVORITE_SLOTS_PARAM), params=params, eligible_keys=eligible_keys)
@@ -5825,6 +5869,7 @@ def setup(app):
       "slots": slots,
       "options": options,
       "values": _favorite_slot_values(options),
+        "is_metric": params.get_bool("IsMetric"),
     }), 200
 
   @app.route("/api/favorites/values", methods=["GET"])
@@ -5840,7 +5885,7 @@ def setup(app):
     key = str(data.get("key") or "").strip()
     if not is_favorite_action_key(key):
       return jsonify({"error": "Unknown favorite action."}), 400
-    if not trigger_favorite_action(key, params_memory):
+    if not trigger_favorite_action(key, params_memory, params=params, value=data.get("value")):
       return jsonify({"error": "Favorite action failed."}), 400
     return jsonify({"message": "Favorite action sent."}), 200
 
@@ -6185,10 +6230,10 @@ def setup(app):
         }), 200
 
       if key == "ForceOffroad":
-        if not _get_vehicle_parked():
+        enabled = str_val.strip() in ("1", "true", "True")
+        if enabled and not _get_vehicle_parked():
           return jsonify({"error": "Force Offroad is only available while the vehicle is in Park."}), 403
 
-        enabled = str_val.strip() in ("1", "true", "True")
         params.put_bool("ForceOffroad", enabled)
         params.put_bool("ForceOnroad", False)
         update_starpilot_toggles()
@@ -6627,6 +6672,23 @@ def setup(app):
 
     return jsonify(_sanitize_json_value(result)), 200
 
+  @app.route("/api/system/monitor", methods=["GET"])
+  def system_monitor_snapshot():
+    from openpilot.starpilot.system.the_galaxy.system_monitor import monitor
+    try:
+      # Telemetry is an optional companion; process monitoring works on its own.
+      try:
+        from openpilot.starpilot.system.the_galaxy.external_gpu_vitals import external_gpu_vitals
+      except ImportError:
+        vitals = {}
+      else:
+        vitals = external_gpu_vitals(include_onboard=True)
+      response = jsonify({**monitor.sample(), 'vitals': vitals})
+      response.headers['Cache-Control'] = 'no-store'
+      return response
+    except (OSError, ValueError, IndexError):
+      return jsonify({'error': 'System activity is temporarily unavailable.'}), 503
+
   @app.route("/api/troubleshoot", methods=["GET"])
   def get_troubleshoot_data():
     try:
@@ -6887,7 +6949,9 @@ def setup(app):
     if params.get_bool("IsOnroad"):
       return jsonify({"error": "Cannot change active models while driving."}), 403
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("model"), str):
+      return jsonify({"error": "An explicit model string is required."}), 400
     profile = str(data.get("profile") or "").strip().lower()
     if profile not in ("small", "big"):
       return jsonify({"error": "Model profile must be 'small' or 'big'."}), 400
@@ -7529,7 +7593,9 @@ def setup(app):
       })
 
     models.sort(key=lambda model: (model["series"].lower(), model["label"].lower()))
-    return models
+    return model_sizes.annotate(models, MODELS_PATH,
+                                Path(__file__).resolve().parents[3] / "selfdrive/modeld/models/driving_tinygrad.pkl",
+                                artifact_metadata, model_accelerator_artifact_filename)
 
   @app.route("/api/routes", methods=["GET"])
   def list_routes():
@@ -8296,7 +8362,10 @@ def setup(app):
     except (TypeError, ValueError) as error:
       return jsonify({"error": str(error)}), 400
 
-    started = flm_workspace.start_flm_background_analysis(route_names, FOOTAGE_PATHS, segment_ranges)
+    try:
+      started = flm_workspace.start_flm_background_analysis(route_names, FOOTAGE_PATHS, segment_ranges)
+    except (TypeError, ValueError) as error:
+      return jsonify({"error": str(error)}), 400
     if not started:
       return jsonify({"error": "Failed to start FLM analysis."}), 500
 

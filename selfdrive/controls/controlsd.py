@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import math
 from numbers import Number
+import os
+import time
 
 from cereal import car, custom, log
 import cereal.messaging as messaging
@@ -26,7 +28,8 @@ from openpilot.selfdrive.controls.lib.drive_helpers import (
 from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
-from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
+from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
+from openpilot.selfdrive.controls.lib.steering_saturation import is_angle_steering_limited
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   BOLT_2018_2021_STEER_RATIO_TEST_SCALE,
@@ -48,6 +51,7 @@ LaneChangeDirection = log.LaneChangeDirection
 LateralControlMode = car.CarControl.Actuators.LateralControlMode
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+REPLAY = "REPLAY" in os.environ
 
 # After a smoothed lane change ends, ramp the curvature limits back to stock over this
 # time so the final recenter correction is shaped instead of stepping through unclamped.
@@ -386,6 +390,7 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
+                                   'starpilotCarControl',
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'radarState'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState', 'starpilotLateralState'])
 
@@ -404,7 +409,6 @@ class Controls:
     self.turn_blinker_swept = 0.0
     self.twitch_guard_remaining = 0.0
     self.kona_non_scc_lateral_active = False
-    self.kona_non_scc_lateral_faulted = False
     self.elantra_hev_2024_lateral_faulted = False
     self.elantra_hev_2024_previous_cruise_enabled = False
 
@@ -504,11 +508,6 @@ class Controls:
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
     if self.CP.carFingerprint == HYUNDAI_CAR.HYUNDAI_KONA_NON_SCC:
       always_on_lateral_enabled = self.sm['starpilotCarState'].alwaysOnLateralEnabled
-      lateral_requested = (CC.enabled and self.sm['selfdriveState'].active) or always_on_lateral_enabled
-      if not lateral_requested:
-        self.kona_non_scc_lateral_faulted = False
-      elif CS.steerFaultTemporary:
-        self.kona_non_scc_lateral_faulted = True
       CC.latActive = get_kona_non_scc_lateral_active(
         CC.enabled, self.sm['selfdriveState'].active,
         always_on_lateral_enabled,
@@ -516,7 +515,6 @@ class Controls:
         standstill, self.CP.steerAtStandstill,
         self.sm['starpilotPlan'].lateralCheck,
         CS.steeringPressed, self.kona_non_scc_lateral_active,
-        self.kona_non_scc_lateral_faulted,
       )
       self.kona_non_scc_lateral_active = CC.latActive
     elif self.CP.carFingerprint == HYUNDAI_CAR.HYUNDAI_ELANTRA_HEV_2024:
@@ -880,8 +878,15 @@ class Controls:
     if self.sm['selfdriveState'].active:
       CO = self.sm['carOutput']
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
-        self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
-                                              STEER_ANGLE_SATURATION_THRESHOLD
+        output_healthy = (
+          self.sm.valid['carOutput'] and
+          self.sm.alive['carOutput'] and
+          self.sm.freq_ok['carOutput']
+        )
+        now_nanos = self.sm.logMonoTime['selfdriveState'] if REPLAY else time.monotonic_ns()
+        self.steer_limited_by_safety = is_angle_steering_limited(
+          self.CP, CC.actuators.steeringAngleDeg, CO, self.sm['starpilotCarControl'], output_healthy, now_nanos,
+        )
       else:
         self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
 

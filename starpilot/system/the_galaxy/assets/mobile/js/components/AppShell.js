@@ -118,7 +118,7 @@ export const AppShell = {
           </button>
           <span class="gx-appbar__home" role="button" tabindex="0"
             :aria-label="tr('Galaxy home')" @click="goHome" @keydown.enter="goHome" @keydown.space.prevent="goHome">
-            <span class="gx-appbar__title">{{ tr("Galaxy") }}</span>
+            <span class="gx-appbar__title">Galaxy</span>
           </span>
           <div class="gx-searchwrap">
             <input ref="searchInput" class="gx-search gx-appbar__search" type="search" :placeholder="tr('Search toggles...')"

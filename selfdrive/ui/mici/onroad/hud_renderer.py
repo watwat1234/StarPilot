@@ -317,6 +317,7 @@ class HudRenderer(Widget):
     self.prepare(rect)
     self.render_background()
     self.render_foreground()
+    self.render_blind_spot_icons()
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     """Show which driving model is supplying on-road predictions."""

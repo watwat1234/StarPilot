@@ -319,6 +319,8 @@ class HudRenderer(Widget):
     self._draw_steering_wheel(self._rect)
     self._draw_speed_limit_prompt(self._rect)
 
+  def render_blind_spot_icons(self) -> None:
+    """Draw blind-spot icons above the PIP camera preview."""
     if ui_state.ui_params.get_bool("BlindSpotIcon"):
       self._blind_spot_indicators.render(self._rect)
 

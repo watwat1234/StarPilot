@@ -1,4 +1,5 @@
 from openpilot.common.params import Params
+from openpilot.selfdrive.ui.lib.starpilot_state import starpilot_state
 from openpilot.selfdrive.ui.lib.starpilot_visuals import LeadInfoMode, lead_indicator_enabled, lead_info_mode
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, BigToggle
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigMultiOptionDialog
@@ -98,6 +99,7 @@ class VisualsLayoutMici(NavScroller):
     self._stock_confidence_ball_btn = BigParamControl("stock confidence ball", "StockConfidenceBallWidget")
     self._torque_bar_btn = BigParamControl("torque bar", "EnableTorqueBarWidget")
     self._rainbow_path_btn = BigParamControl("rainbow road", "RainbowPath")
+    self._blind_spot_icon_btn = BigParamControl("blind spot icon", "BlindSpotIcon")
     self._lead_indicator_btn = LeadIndicatorBigButton()
     self._lead_info_btn = LeadInfoBigButton()
     self._speed_limit_signs_btn = BigParamControl("show speed limits", "ShowSpeedLimits")
@@ -112,6 +114,7 @@ class VisualsLayoutMici(NavScroller):
       self._stock_confidence_ball_btn,
       self._torque_bar_btn,
       self._rainbow_path_btn,
+      self._blind_spot_icon_btn,
       self._lead_indicator_btn,
       self._lead_info_btn,
       self._speed_limit_signs_btn,
@@ -130,6 +133,8 @@ class VisualsLayoutMici(NavScroller):
 
   def _refresh(self):
     self._camera_view_btn.refresh()
+    self._blind_spot_icon_btn.refresh()
+    self._blind_spot_icon_btn.set_enabled(starpilot_state.car_state.hasBSM)
     self._lead_indicator_btn.refresh()
     self._lead_info_btn.refresh()
     self._lead_info_btn.set_enabled(lead_indicator_enabled(self._lead_info_btn.params, hide_by_default=True))

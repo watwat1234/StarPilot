@@ -2770,6 +2770,16 @@
         "settings_tier": "simple"
       },
       {
+        "key": "BlindSpotMetrics",
+        "label": "Blind Spot Borders",
+        "description": "Show a colored border along the edge of the driving screen when a vehicle is in that lane's blind spot.",
+        "picker_description": "Shows a screen-edge border when a blind spot is detected.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "CustomUI",
+        "settings_tier": "simple"
+      },
+      {
         "key": "PIPPreviewEnabled",
         "label": "Enable PiP Side Preview",
         "description": "Show a temporary Picture-in-Picture bubble of the side window while the turn signal is on or a blind spot is detected.",

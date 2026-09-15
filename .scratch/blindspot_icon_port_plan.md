@@ -64,6 +64,51 @@ User confirmed: branch `wat-blindspot` off `wat-ioniq-tuning` (current). Done.
 **What's actually left**: on-device visual check only (needs comma 4 hardware). Unit test
 now verified on WSL and green.
 
+## Follow-up: settings toggle was unreachable on comma 4 (found 2026-09-14)
+
+User checked the device and couldn't find the `BlindSpotIcon` toggle anywhere. Root cause:
+the settings row from the "implementation done" section above was only added to the
+**legacy (non-mici) settings screen** (`selfdrive/ui/layouts/settings/starpilot/appearance.py`,
+used by `selfdrive/ui/layouts/main.py`). Comma 4 runs the separate `selfdrive/ui/mici/`
+tree (`selfdrive/ui/mici/layouts/main.py` → `selfdrive/ui/mici/layouts/settings/settings.py`),
+which never got a `BlindSpotIcon` control — its pre-existing sibling `BlindSpotMetrics`
+("Blind Spot Borders") wasn't there either, so this gap predates this branch.
+
+- [x] Added `self._blind_spot_icon_btn = BigParamControl("blind spot icon", "BlindSpotIcon")`
+      to `selfdrive/ui/mici/layouts/settings/visuals.py`, same pattern as the other
+      `BigParamControl` HUD toggles in that file, gated via
+      `set_enabled(starpilot_state.car_state.hasBSM)` in `_refresh()` (mirrors the legacy
+      UI's `enabled=bsm`). Committed `f8de7a6fc`.
+- [x] Also checked and added to galaxy (the web/phone settings app, `system/the_galaxy`):
+      added a `BlindSpotIcon` entry to `starpilot/common/assets/device_settings_layout.json`
+      (the single JSON catalog that drives galaxy's settings page — no JS/HTML changes
+      needed, it's fully data-driven). First pass added a `requires_capability: "HasBSM"`
+      gate plus a new `_get_has_bsm()` helper/endpoint wiring in `the_galaxy.py`, but that
+      was inconsistent with the pre-existing sibling `BlindSpotPath` entry in the same
+      catalog, which has no such gating (its BSM gating lives only in
+      `starpilot/common/starpilot_variables.py:985`'s `has_bsm and ...` check, not the
+      catalog). Backed out the capability/helper addition per user instruction so
+      `BlindSpotIcon`'s galaxy entry now matches `BlindSpotPath` exactly. Committed
+      `f8de7a6fc` (mici + galaxy icon toggle together).
+- [x] User also asked to add the pre-existing `BlindSpotMetrics` ("Blind Spot Borders")
+      toggle to galaxy (mici still doesn't have it — left alone, out of scope for this
+      ask). Added a matching entry to the same JSON catalog. Committed `f63e56fd7`.
+- [x] Verified after each JSON/mici change: JSON parses (`python3 -c "import json; ..."`),
+      `the_galaxy.py` compiles (`py_compile`), and
+      `starpilot/system/the_galaxy/tests/test_device_settings_layout.py` +
+      `test_device_settings_frontend.py` (32 tests total) pass. Needed `uv sync --extra
+      testing` plus an ad hoc `uv pip install python-dateutil` to get pytest running in
+      this worktree's venv (pre-existing gap, not committed/tracked). Two other galaxy
+      test files (`test_navigation_params.py`, `test_tesla_can_wake.py`) still fail to
+      even import here — missing `PIL`/full Flask app deps not in the `testing` extras
+      group; pre-existing environment gap, unrelated to these changes, not investigated
+      further.
+- [ ] Not pushed yet — `f8de7a6fc` and `f63e56fd7` are local to this worktree on
+      `wat-blindspot`, need to push to `custom_waffle` (same target as `fab1f5060`) when
+      ready.
+- [ ] mici still lacks a `BlindSpotMetrics` ("Blind Spot Borders") settings row — same
+      class of gap as the icon toggle had, not fixed (out of scope, not asked for yet).
+
 ## Aside: broader UI test suite is flaky on WSL (unrelated to this change)
 
 While verifying, also tried running the wider `selfdrive/ui/tests/`+`system/ui/` suite in
@@ -97,3 +142,5 @@ listed below; do not `git add -A`.
 - `selfdrive/ui/layouts/settings/starpilot/appearance.py`
 - `selfdrive/ui/mici/onroad/hud_renderer.py`
 - `selfdrive/ui/tests/test_blind_spot_indicators.py` (new)
+- `selfdrive/ui/mici/layouts/settings/visuals.py` (follow-up, `f8de7a6fc`)
+- `starpilot/common/assets/device_settings_layout.json` (follow-up, `f8de7a6fc` + `f63e56fd7`)

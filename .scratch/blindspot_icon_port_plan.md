@@ -268,6 +268,17 @@ with `Parameter 'BlindSpotIcon' is not editable.`
   `release/build_release.sh`'s normal flow — not a daily-driver on-device rebuild, which
   turned up unrelated venv drift (`future-fstrings` missing, likely more given the
   site-packages count mismatch) beyond just `eigen3`.
+- **Known side effect of the `default=True` workaround: Galaxy's toggle display is now
+  stale/misleading, not just non-functional.** Galaxy reads the param's displayed state
+  through the same stale compiled extension whose key map doesn't include
+  `BlindSpotIcon`, so it shows a fallback ("disabled") with no relation to actual
+  behavior — meanwhile the icons render anyway via the `hud_renderer.py` fallback
+  regardless of what Galaxy shows or what a user tries to toggle there (writes still
+  403). This mismatch persists until the binaries get a real rebuild that registers
+  `BlindSpotIcon`, at which point Galaxy's read/write and actual rendered behavior sync
+  back up (and its registered default is also true, per `params_keys.h`). Worth
+  remembering for anyone testing this branch in the meantime — Galaxy is not a source of
+  truth for this one param right now.
 
 ## Files changed
 - `selfdrive/ui/onroad/starpilot/blind_spot_indicators.py` (new)

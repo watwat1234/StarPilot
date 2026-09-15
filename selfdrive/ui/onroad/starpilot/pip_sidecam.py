@@ -10,6 +10,8 @@ import pyray as rl
 from msgq.visionipc import VisionIpcClient, VisionStreamType
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.starpilot.common.vision_bsm import get_fresh_vasm_state
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.text_measure import draw_text_with_shadow, measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 PIP_SHADER_VERSION = """
@@ -175,6 +177,10 @@ BUBBLE_RADIUS_MIN = 180
 BUBBLE_RADIUS_MAX = 420
 BUBBLE_MARGIN = 24
 
+# Side-label badge (curved shape only)
+SIDE_LABEL_MARGIN = 16
+SIDE_LABEL_FONT_SIZE = 32
+
 class PipSideCamera(Widget):
   """Overlays the adjacent side window from the dcamera.
 
@@ -186,6 +192,7 @@ class PipSideCamera(Widget):
     if shape not in ("bubble", "curved"):
       raise ValueError(f"Unknown PipSideCamera shape: {shape!r}")
     self._shape = shape
+    self._font = gui_app.font(FontWeight.BOLD) if shape == "curved" else None
 
     self._params = ui_state.params
     self._params_memory = ui_state.params_memory
@@ -373,6 +380,7 @@ class PipSideCamera(Widget):
         crop = self._crop_rect(side)
         if crop is not None:
           self._draw_curved(content_rect, crop)
+          self._draw_side_label(content_rect, side)
     else:
       # Raybig: one circular bubble per active side.
       for side in sides:
@@ -432,6 +440,14 @@ class PipSideCamera(Widget):
     rl.set_shader_value_texture(self.curved_shader, self._curved_texture1_loc, self.texture_uv)
     rl.draw_texture_pro(self.texture_y, src_rect, dst_rect, rl.Vector2(0, 0), 0.0, rl.WHITE)
     rl.end_shader_mode()
+
+  def _draw_side_label(self, content_rect: rl.Rectangle, side: str) -> None:
+    """Draw an L/R badge in the top corner matching the side currently shown."""
+    text = "L" if side == "left" else "R"
+    size = measure_text_cached(self._font, text, SIDE_LABEL_FONT_SIZE)
+    x = content_rect.x + SIDE_LABEL_MARGIN if side == "left" else content_rect.x + content_rect.width - SIDE_LABEL_MARGIN - size.x
+    y = content_rect.y + SIDE_LABEL_MARGIN
+    draw_text_with_shadow(self._font, text, rl.Vector2(x, y), SIDE_LABEL_FONT_SIZE, rl.WHITE)
 
   def _ensure_connection(self) -> bool:
     if not self.client.is_connected():

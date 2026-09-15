@@ -811,6 +811,8 @@ class AugmentedRoadView(CameraView):
       max(1, self._content_rect.height - 2 * border),
     )
     self._pip_sidecam.render(preview_rect)
+    if draw_hud_controls:
+      self._hud_renderer.render_blind_spot_icons()
 
     if camera_view_none or is_driver_stream or not in_reverse:
       self._draw_border()

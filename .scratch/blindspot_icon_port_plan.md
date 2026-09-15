@@ -3,6 +3,38 @@
 Working log for this task. Canonical plan (with full context/upstream source) is at
 `C:\Users\pancake\.claude\plans\see-blind-spot-plan-drifting-deer.md` (outside the repo).
 
+## Handoff / current sync state (as of 2026-09-14, end of session)
+
+Branch head commits and push state:
+- `wat-blindspot` (this worktree) — HEAD `77cb36cf2`. Pushed through `b3196d7a9`
+  (the `default=True` fix) to both `origin` and `github`. The two scratch-plan-only
+  commits after that (`90ac1100c`, `77cb36cf2`) are **local only, not pushed** — user
+  said "no" when asked whether to push+merge-forward the first plan-doc commit.
+- `wat-ioniq-tuning` (worktree `/home/kirin/starpilot/starpilot-wat-ioniq-merge`) — HEAD
+  `7efe91a96`, pushed to `origin`+`github`. Includes everything through the code-level
+  `default=True` fix, but NOT the two scratch-plan-only commits above.
+- `wat-bolt-tuning` (worktree `/home/kirin/starpilot/starpilot-wat-bolt-merge`, created
+  this session, kept per user request) — HEAD `2038c9af9`, pushed to `origin`+`github`.
+  Same as above: has the code fix, not the plan-doc-only commits. Bolt-specific CAN/SBU-
+  wake revert commits are preserved/untouched by the merges.
+- If the plan-doc-only commits should propagate later, same merge chain as before:
+  `wat-blindspot` → (push) → merge into `wat-ioniq-tuning` worktree → push → merge into
+  `wat-bolt-tuning` worktree → push (to both `origin` and `github` each time). All merges
+  so far have been conflict-free.
+
+Environment notes for continuity:
+- `gh` CLI is installed at `~/.local/bin/gh` (not via apt — no sudo available in this
+  environment; downloaded the release tarball directly) and authenticated as
+  `watwat1234` (`gh auth setup-git` already run, so plain `git push github ...` works).
+- A `github` remote (`https://github.com/watwat1234/StarPilot.git`) now exists on the
+  shared repo (visible from every worktree, since worktrees share one `.git`).
+- Docker is NOT reachable from this WSL shell (only Windows-side `docker.exe`; WSL
+  integration not enabled in Docker Desktop) — blocks the proper `laptop_device_build.sh`
+  aarch64 cross-build path if that's picked back up later.
+- This worktree's own `.venv` is missing Pillow and other deps that
+  `/home/kirin/starpilot/StarPilot/.venv` has; that venv was used instead for anything
+  needing `text_measure`/PIL-dependent imports this session.
+
 ## Branching note (deviation from original plan)
 
 Original plan assumed branching from `wat-shutdown`. That branch doesn't exist in this
@@ -103,9 +135,8 @@ which never got a `BlindSpotIcon` control — its pre-existing sibling `BlindSpo
       even import here — missing `PIL`/full Flask app deps not in the `testing` extras
       group; pre-existing environment gap, unrelated to these changes, not investigated
       further.
-- [ ] Not pushed yet — `f8de7a6fc` and `f63e56fd7` are local to this worktree on
-      `wat-blindspot`, need to push to `custom_waffle` (same target as `fab1f5060`) when
-      ready.
+- [x] Pushed (later, along with the rest of `wat-blindspot`'s history — see the
+      "PIP draw-order fix + L/R side badge" follow-up below).
 - [ ] mici still lacks a `BlindSpotMetrics` ("Blind Spot Borders") settings row — same
       class of gap as the icon toggle had, not fixed (out of scope, not asked for yet).
 
@@ -179,8 +210,9 @@ mici, since the PIP looked like it might be its own canvas.
   were confirmed non-issues (guard moved correctly with the extracted call; `self._font`
   is never `None` where `_draw_side_label` runs).
 - [x] Pushed `wat-blindspot` to `origin` (git.waffle) and to a newly-added `github` remote
-  (`https://github.com/watwat1234/StarPilot.git`; needed installing `gh` CLI from apt into
-  `~/.local/bin` — no sudo available — then `gh auth login` + `gh auth setup-git`).
+  (`https://github.com/watwat1234/StarPilot.git`; needed `gh` CLI, but apt install failed
+  — no sudo/terminal for password — so downloaded the release tarball directly into
+  `~/.local/bin` instead, then `gh auth login` + `gh auth setup-git`).
 - [x] Merged forward through the existing branch chain, each hop conflict-free:
   `wat-blindspot` → `wat-ioniq-tuning` (in worktree `starpilot-wat-ioniq-merge`, after
   fast-forwarding that worktree's stale local branch ~50 commits to `origin/wat-ioniq-tuning`

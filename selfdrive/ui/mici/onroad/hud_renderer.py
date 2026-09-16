@@ -197,8 +197,7 @@ class HudRenderer(Widget):
     car_state = sm['carState']
     rivian_lateral_mode.update()
     self._wheel_tint = rivian_lateral_mode.wheel_tint
-    if ui_state.ui_params.get_bool("BlindSpotIcon"):
-      self._blind_spot_indicators.update()
+    self._blind_spot_indicators.update()
 
     v_cruise_cluster = car_state.vCruiseCluster
     set_speed = (
@@ -306,8 +305,7 @@ class HudRenderer(Widget):
 
   def render_blind_spot_icons(self) -> None:
     """Draw blind-spot icons above the PIP camera preview."""
-    if ui_state.ui_params.get_bool("BlindSpotIcon", default=True):
-      self._blind_spot_indicators.render(self._rect)
+    self._blind_spot_indicators.render(self._rect)
 
   def user_interacting(self) -> bool:
     return self._navigation_card.is_pressed

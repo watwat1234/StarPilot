@@ -312,6 +312,58 @@ with `Parameter 'BlindSpotIcon' is not editable.`
   remembering for anyone testing this branch in the meantime — Galaxy is not a source of
   truth for this one param right now.
 
+## Follow-up: on-device toggle crash confirmed as the same stale-.so issue, rendering decoupled from Params entirely (2026-09-15)
+
+User reported three things on the mici device: the L/R PIP badge works, the blind-spot
+icons still don't render, and pressing the on-device `BlindSpotIcon` settings toggle
+crashes `starpilot` outright — UI restarts, comma goes offroad, and won't go back onroad
+until a full power cycle.
+
+- Diagnosed from log artifacts the user placed at `/mnt/c/Users/Kirin/ioniq_logs`
+  (swaglog files + two standalone `.log` files from an earlier repro on 2026-07-28), not
+  a live SSH repro. The two `.log` files each contain a full Python traceback:
+  `selfdrive/ui/mici/widgets/button.py:402` (`BigParamControl._handle_mouse_release`) →
+  `self.params.put_bool("BlindSpotIcon", ...)` → `common.params_pyx.UnknownKeyName:
+  b'BlindSpotIcon'`, raised uncaught inside the UI render loop
+  (`ui.py` → `application.py:render` → nav widget → scroller → button mouse-release
+  handler). An uncaught exception there kills the whole `ui` process; since `ui` is a
+  required/critical process, its death is what forces the offroad lock — not a separate
+  bug, just openpilot's normal "critical process died" behavior.
+- This is the *write* side of the exact same stale-`params_pyx.so` issue already
+  described above (the "Galaxy 'not editable'" section, `read` side via `get_bool`).
+  `get_bool` catches `UnknownKeyName` and falls back to `default=`, which is why the
+  `default=True` workaround made *reads* safe; `put_bool` has no such fallback, so the
+  toggle's *write* still hard-crashes. The 2026-07-28 traceback predates that
+  `default=True` fix but the underlying stale-binary cause (and the write-path gap) is
+  identical and still unresolved today.
+- Confirmed by contrast why the L/R badge is unaffected: `pip_sidecam.py`'s
+  `_draw_side_label()` (`cff0aebe2`, see above) never touches `Params` at all — it's pure
+  render-loop state derived from the already-in-memory `side` string. Nothing that avoids
+  `Params.get_bool`/`put_bool` on this device can hit the stale-key-table problem.
+- Discussed and rejected an in-memory (non-persisted) toggle as an intermediate fix —
+  user preferred going all the way to matching the badge's pattern: no `Params`
+  dependency in the render path at all, toggle wiring left for later.
+- [x] Fix: removed the two `ui_state.ui_params.get_bool("BlindSpotIcon", ...)` gates in
+  `selfdrive/ui/mici/onroad/hud_renderer.py` (`_update_state()`'s
+  `self._blind_spot_indicators.update()` call and `render_blind_spot_icons()`'s
+  `self._blind_spot_indicators.render(self._rect)` call) — both now run unconditionally,
+  same as the L/R badge always drawing whenever the curved PIP renders. Not yet committed.
+- **Explicitly left alone per user instruction**: the settings toggle itself
+  (`BigParamControl("blind spot icon", "BlindSpotIcon")` in
+  `selfdrive/ui/mici/layouts/settings/visuals.py`) is untouched and **still crashes on
+  tap** — user will just avoid pressing it on-device in the meantime. Wiring the toggle
+  up properly (either restoring real `Params` plumbing once the binaries are rebuilt, or
+  an in-memory bridge in the meantime) is future work, not done.
+- Also **not touched**: the mirror `SettingRow("BlindSpotIcon", ...)` toggle in the
+  legacy (non-mici) `selfdrive/ui/layouts/settings/starpilot/appearance.py` — same
+  `put_bool` write-path crash risk would apply there too on a device with an equally
+  stale binary, but out of scope for this pass (user's device is mici; not asked).
+- Net effect right now: icons always render on mici regardless of any toggle state, the
+  settings UI still displays a toggle that does nothing useful and will crash if pressed,
+  and the real params plumbing (rebuilding `params_pyx.so` for real, per the Galaxy
+  section above) remains the eventual proper fix for both the toggle and Galaxy's stale
+  "not editable" display.
+
 ## Files changed
 - `selfdrive/ui/onroad/starpilot/blind_spot_indicators.py` (new)
 - `common/params_keys.h`

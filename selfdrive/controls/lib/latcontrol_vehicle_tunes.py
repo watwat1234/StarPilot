@@ -424,6 +424,18 @@ BOLT_2022_2023_TURN_IN_BOOST_LEFT = 0.18
 BOLT_2022_2023_TURN_IN_BOOST_RIGHT = 0.13
 BOLT_2022_2023_UNWIND_TAPER_LEFT = 0.38
 BOLT_2022_2023_UNWIND_TAPER_RIGHT = 0.40
+# Additive low-speed FF correction, sized to the measured siglin-curve under-prediction
+# (.scratch/bolt-tuning-916.md finding #6 on wat-bolt-analysis): the static torque curve
+# under-predicts required torque by a speed-dependent amount in the 5-11 m/s band, worst
+# around 7-9 m/s (~0.198 of the +-1 actuator scale), and is structurally unvalidated there
+# -- GM isn't in torqued.py's live-tuning ALLOWED_CARS, and the siglin curve ignores
+# torque_params even when live params are applied via the starpilot force_auto_tune
+# override. Additive (not multiplicative like ff_gain/turn_in_boost above) because the
+# measured residual is a torque-domain offset, not a percentage -- see finding #9's null
+# result from trying a multiplicative fix in this same regime. Tapers to 0 by 12 m/s so
+# the already-accurate highway-speed curve is untouched.
+BOLT_2022_2023_LOW_SPEED_FF_CORRECTION_BP = [2.5, 6.0, 8.0, 10.0, 12.0]  # m/s
+BOLT_2022_2023_LOW_SPEED_FF_CORRECTION_V = [0.067, 0.156, 0.198, 0.121, 0.0]
 BOLT_2022_2023_FRICTION_MULT = 1.09
 BOLT_2022_2023_FRICTION_LAT_RISE = 0.22
 BOLT_2022_2023_FRICTION_JERK_RISE = 0.26
@@ -2397,6 +2409,22 @@ def get_bolt_2022_2023_ff_scale(desired_lateral_accel: float, desired_lateral_je
                        ) *
                          unwind_weight * unwind_envelope)
   return 1.0 + (extra_scale * center_taper * turn_in_boost * max(unwind_taper, 0.0))
+
+
+def get_bolt_2022_2023_low_speed_ff_correction(desired_lateral_accel: float, v_ego: float) -> float:
+  if desired_lateral_accel == 0.0:
+    return 0.0
+  # Reuses the FF-scale onset gate (same BOLT_2022_2023_FF_ONSET/_WIDTH the sibling
+  # get_bolt_2022_2023_ff_scale already fades in with) so this correction fades toward 0
+  # near center instead of stepping discontinuously across desired_lateral_accel==0 --
+  # caught in /code-review low; the original version had no magnitude taper at all.
+  abs_lateral_accel = abs(desired_lateral_accel)
+  onset = _bolt_2022_2023_sigmoid((abs_lateral_accel - BOLT_2022_2023_FF_ONSET) / BOLT_2022_2023_FF_ONSET_WIDTH)
+  peak_magnitude = _flm_vehicle_knob(
+    "gm_bolt_2022_2023.low_speed_ff_correction",
+    float(np.interp(v_ego, BOLT_2022_2023_LOW_SPEED_FF_CORRECTION_BP, BOLT_2022_2023_LOW_SPEED_FF_CORRECTION_V)),
+  )
+  return math.copysign(onset * peak_magnitude, desired_lateral_accel)
 
 
 def get_bolt_2022_2023_center_output_scale(desired_lateral_accel: float, v_ego: float) -> float:

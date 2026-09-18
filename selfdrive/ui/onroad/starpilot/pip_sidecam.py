@@ -296,7 +296,7 @@ class PipSideCamera(Widget):
       return []
 
     car_state = ui_state.sm["carState"] if ui_state.sm.valid.get("carState", False) else None
-    if car_state is None:
+    if car_state is None or car_state.standstill:
       return []
 
     vasm_left, vasm_right = get_fresh_vasm_state(self._params_memory)

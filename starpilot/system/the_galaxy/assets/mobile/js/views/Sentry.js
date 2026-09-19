@@ -36,6 +36,9 @@ export const Sentry = {
       testBusy: false,
       liveBusy: false,
       deleteBusy: false,
+      timelapseBusy: false,
+      timelapseCamera: "wide",
+      timelapseFormat: "mp4",
       pushBusy: false,
       selectedImage: null,
     }
@@ -129,6 +132,28 @@ export const Sentry = {
       this.dateFrom = ""
       this.dateTo = ""
       this.applyFilter()
+    },
+    async makeTimelapse() {
+      if (this.timelapseBusy) return
+      this.timelapseBusy = true
+      try {
+        const { blob, frames } = await api.getSentryTimelapse({
+          ...this.historyRange(),
+          camera: this.timelapseCamera,
+          format: this.timelapseFormat,
+        })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `sentry-timelapse.${this.timelapseFormat}`
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        showSnackbar(`Timelapse ready (${frames} frame${frames === 1 ? "" : "s"}).`)
+      } catch (e) {
+        showSnackbar(e?.data?.error || e?.message || "Timelapse failed.", "error")
+      } finally {
+        this.timelapseBusy = false
+      }
     },
     async deleteAllHistory() {
       if (this.deleteBusy || !this.historyTotal) return
@@ -493,6 +518,26 @@ export const Sentry = {
               <button v-if="filterActive" type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Clear</button>
               <button v-if="historyTotal" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || historyBusy" @click="deleteAllHistory">
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
+              </button>
+            </div>
+            <div v-if="history.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
+              <label style="flex:1 1 110px;">
+                <div class="gx-row__desc" style="margin:0 0 4px;">Camera</div>
+                <select class="gx-field gx-field--full" v-model="timelapseCamera" :disabled="timelapseBusy">
+                  <option value="wide">Road</option>
+                  <option value="driver">Driver</option>
+                  <option value="both">Both</option>
+                </select>
+              </label>
+              <label style="flex:1 1 90px;">
+                <div class="gx-row__desc" style="margin:0 0 4px;">Format</div>
+                <select class="gx-field gx-field--full" v-model="timelapseFormat" :disabled="timelapseBusy">
+                  <option value="mp4">MP4</option>
+                  <option value="gif">GIF</option>
+                </select>
+              </label>
+              <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy" @click="makeTimelapse">
+                {{ timelapseBusy ? 'Encoding...' : (filterActive ? 'Timelapse of range' : 'Make timelapse') }}
               </button>
             </div>
             <div v-if="historyBusy && !history.length" class="gx-loading">Loading Sentry history...</div>

@@ -3,10 +3,22 @@
 Two ways to look through retained Sentry images: an MP4 timelapse export (endpoint) and an interactive viewer (frontend only). Companion to `sentry-history-pagination.md` (history refresh fix, pagination, date filter, bulk delete). This covers the timelapse feature added on top. Branch flow: developed on `sentry-history-pagination`, cherry-picked to `wat-ioniq-tuning` and `wat-bolt-tuning`, all three pushed to `origin` and `github`.
 All paths are under `starpilot/system/the_galaxy/`.
 
-## Status
-- Confirmed by the user on the device: the Sentry page (pagination etc.) is useful, and the timelapse feature works ("this is pretty great") after the ffmpeg fix below.
-- Verified on the dev box only: the encode helpers, run against synthetic images with both the system ffmpeg and the repo's bundled ffmpeg; the frontend (viewer, and syntax of the timelapse UI) with real Node + jsdom (see "Interactive viewer"). The Flask routes themselves were never run here (the module needs the full device environment). `py_compile` passes.
-- Not tested: encode time on the device CPU, very large histories (600 frames), the GIF path (removed, see below). JS syntax and behavior were checked later with real Node (see "Interactive viewer").
+## Status (as of 2026-09-19)
+- **Shipped and pushed** to `origin` and `github` on all three branches (see Commits): the MP4 timelapse endpoint and button, kind badges, gap pacing with gap label and timeline bar, the ffmpeg fix, the inset fix, and the interactive viewer.
+- **Confirmed by the user on the device:** the Sentry page is useful, and the timelapse works after the ffmpeg fix ("this is pretty great"). The user said the viewer "can actually just completely replace the existing history viewer" and is now trying it on the device and in a real browser. **No findings from that session are recorded yet**; see "Next steps".
+- **Verified on the dev box only:** the encode helpers, against synthetic images with both the system ffmpeg and the repo's bundled ffmpeg; the frontend with real Node + jsdom (7 component checks, 5 integration checks against the real `Sentry.js`); the repo's frontend tests (38 passed, 4 skipped). The Flask routes themselves were never run here (the module needs the full device environment). `py_compile` passes.
+- **Not tested anywhere yet:** touch dragging, `IntersectionObserver` and real image decoding (jsdom cannot show these), encode time on the device CPU, very large histories (hundreds of events).
+
+## Next steps
+1. **Collect the user's findings** from the device/browser session. What to look for: timeline dragging on touch (does the page scroll?), blank flashes when scrubbing fast over a slow link, whether revisited frames come from cache in the Network tab (if not, Galaxy probably was not restarted and is serving the old `max_age=0`), playback pacing and stop-at-end, delete landing on a sensible neighbor, selfie placeholder in Road mode, time to open the viewer on a long history. Anything from the browser console is especially useful because there is no console on the dev box.
+2. **Replace the paginated history list with the viewer** (user's idea, not started; decision deferred until they have used it more). Plan: build it as its own commit on `sentry-history-pagination` so it is easy to revert.
+   - Removes about 100 lines from `views/Sentry.js`: the `IntersectionObserver`, sentinel, append/dedupe, "Retry loading more", the paging state and the two watchers that re-arm it. Backend `limit`/`offset` stays (desktop UI and other callers use it); only the mobile UI stops calling it.
+   - Must move over first: `historyTotal` (drives "Delete all" visibility and its confirm text) and the newest-event comparison behind "New event - refresh" (currently `history[0]`) both need to read from the viewer's event list instead.
+   - "View history" should open the viewer directly rather than sitting next to a separate button.
+   - Keep the date filter, bulk delete, refresh button and MP4 export above the viewer.
+3. **Small viewer additions worth doing with the replacement:** tap the image to open it full size (the list has this via `target=_blank`; the viewer does not); optionally a thumbnail strip under the timeline if losing the "see ten events at once" view turns out to matter. Hold off on the strip until the user says so.
+4. **If the viewer feels slow on the hotspot:** widen or narrow the preload window (`PRELOAD_AHEAD`/`PRELOAD_BEHIND` in `SentryScrubber.js`) before building anything; a thumbnail route was deliberately not built because images are about 61KB.
+5. **Housekeeping:** the viewer and endpoint have no committed tests (the jsdom harness lived in a session scratchpad and was not saved; recreate it per "Dev-box testing notes" if needed). If the MP4 export turns out to be used rarely, consider whether it is worth keeping given the viewer.
 
 ## What it does
 `GET /api/sentry/timelapse` builds one MP4 from the retained Sentry event images and returns it as a download. The mobile Sentry view has a "Make timelapse" button (with Camera and Pacing pickers) in the history panel. It honors the active date filter, so the label becomes "Timelapse of range".
@@ -75,6 +87,10 @@ Added after the timelapse, because a viewer needs no encoding (no CPU wait, no 6
 | Gap pacing, gap label, timeline bar, MP4 only | `76051085f` | `66c7bb190` | `63dc545a5` |
 | Report ffmpeg's error on failure | `1f664711f` | `734318cde` | `ef038f298` |
 | Fix for the minimal ffmpeg build | `501509cd3` | `356b40b81` | `3298964e9` |
+| Interactive viewer | `33d1474e6` | `de469bdc2` | `53589d98d` |
+| Keep timelapse overlays inset (no jump on alarm border) | `ee87c0deb` | `0d578515a` | `c70ec3006` |
+
+Docs-only commits exist on `sentry-history-pagination` only, by the user's choice (`d3586f6b8`, `3ca7bff84`, and the one that added this status section), so `.scratch/sentry-timelapse.md` is not on the tuning branches.
 
 Worktrees: `starpilot-wat-bolt-analysis` = `sentry-history-pagination`, `starpilot-wat-ioniq-merge` = `wat-ioniq-tuning`, `starpilot-wat-bolt-merge` = `wat-bolt-tuning`.
 
@@ -82,7 +98,7 @@ Worktrees: `starpilot-wat-bolt-analysis` = `sentry-history-pagination`, `starpil
 `sentry-history-pagination` also carries unrelated Bolt investigation commits (notes, `tools/tuning` replay scripts) and, more importantly, panda firmware reverts (`9690383be` reverts the CAN/SBU stop-mode wake and GPIOC11 bootkick experiments, `64f88a635` restores stock `panda_*_ignition_only.bin` binaries). A full merge into `wat-ioniq-tuning` was tried, then dropped (reset to `418f87440`, nothing had been pushed) because it changes flashed firmware. The five Sentry commits were cherry-picked instead. `wat-bolt-tuning` had already merged the branch, so only the newer commits were cherry-picked there. `git cherry -v <target> <source>` shows which commits are patch-equivalent already.
 
 ## Deploying and retrying
-Pull the branch on the device (`wat-ioniq-tuning` at `356b40b81` or later) and **restart Galaxy**, since the route is backend code. Hard-reload the browser for the JS (module imports have no version query strings).
+Pull the branch on the device (`wat-ioniq-tuning` at `0d578515a` or later for the viewer and inset fix) and **restart Galaxy**, since the timelapse route and the image cache header are backend code. Hard-reload the browser for the JS (module imports have no version query strings).
 
 ## Test checklist
 1. Open Sentry, View history, Make timelapse with each Camera (Road, Driver, Both) and each Pacing. It downloads, plays, and the snackbar shows frame count and seconds.
@@ -92,6 +108,13 @@ Pull the branch on the device (`wat-ioniq-tuning` at `356b40b81` or later) and *
 5. Empty range: 404 message. Start the car (onroad): 409 message. Tap the button twice quickly: second gets "already being made".
 6. Time a large history (hundreds of events). Encode runs inside the request on the device CPU, so watch for proxy timeouts.
 7. Check nothing is left behind: the work dir is a `TemporaryDirectory`, so `/tmp/sentry-timelapse-*` should not accumulate.
+
+Viewer:
+8. Open viewer: starts on the newest event, count reads `N / N`. Road/Driver/Both switch instantly; a selfie shows a "No road image" placeholder in Road mode.
+9. Drag the timeline on a phone: page does not scroll, marker follows the finger. Step buttons and arrow keys move one event; Prev/Next alarm skip to alarms and disable at the ends.
+10. Play at 1x and 4x: bursts fast, lulls linger, no blank flash on a slow link, stops at the last event, Play from the end restarts.
+11. Network tab: revisiting a frame is served from cache (needs Galaxy restarted for the new `Cache-Control`). Only a window of images around the cursor is requested, not the whole history.
+12. Set a date range: viewer rescopes to it and jumps to the newest event in range. Delete from the viewer: confirm, event disappears, selection stays sensible. Hide history: viewer closes.
 
 ## Known gaps and follow-ups
 - No committed unit tests for the timelapse endpoint or the viewer (the viewer was tested with a throwaway harness, see above). The MP4 encoder was only exercised by ad hoc scripts.
@@ -103,3 +126,6 @@ Pull the branch on the device (`wat-ioniq-tuning` at `356b40b81` or later) and *
 - The gap label and bar are baked into the pixels; there is no way to turn them off.
 - Desktop UI has no timelapse (or date filter / bulk delete).
 - The `fps` param only matters for `timing=even` and is not exposed in the UI.
+- Viewer: the image is not tappable for a full-size view, and there is no thumbnail strip or grid (see Next steps).
+- Viewer: events seconds apart inside a multi-day range are under a pixel apart on the timeline, so dragging cannot separate them (use the step buttons or arrow keys).
+- Viewer: playback speed and camera choice are not remembered between openings.

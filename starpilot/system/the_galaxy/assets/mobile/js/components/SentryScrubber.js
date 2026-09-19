@@ -25,6 +25,12 @@ function formatGap(ms) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
+// Events the scrubber can show. Everything else (power-off, low-voltage, test events) is an alert.
+export function isCaptureEvent(event) {
+  return !!(event && event.eventId && !String(event.eventId).startsWith("test-")
+    && Array.isArray(event.imageUrls) && event.imageUrls.length && eventTime(event) !== null)
+}
+
 export const SentryScrubber = {
   name: "SentryScrubber",
   props: {
@@ -60,8 +66,7 @@ export const SentryScrubber = {
   computed: {
     frames() {
       return this.events
-        .filter((event) => event && event.eventId && !String(event.eventId).startsWith("test-")
-          && Array.isArray(event.imageUrls) && event.imageUrls.length && eventTime(event) !== null)
+        .filter(isCaptureEvent)
         .slice()
         .sort((a, b) => eventTime(a) - eventTime(b))
     },

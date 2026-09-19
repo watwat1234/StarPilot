@@ -301,9 +301,24 @@ export const api = {
   selectTestingGround(body) { return request("/api/testing_grounds/select", { method: "POST", data: body }) },
 
   getSentryStatus() { return requestOk("/api/sentry/status", { cache: "no-store" }) },
-  getSentryEvents({ limit, offset } = {}) {
-    const query = limit ? `?limit=${limit}&offset=${offset || 0}` : ""
-    return request(`/api/sentry/events${query}`, { cache: "no-store" })
+  getSentryEvents({ limit, offset, since, until } = {}) {
+    const query = new URLSearchParams()
+    if (limit) {
+      query.set("limit", limit)
+      query.set("offset", offset || 0)
+    }
+    if (since) query.set("since", since)
+    if (until) query.set("until", until)
+    const qs = query.toString()
+    return request(`/api/sentry/events${qs ? `?${qs}` : ""}`, { cache: "no-store" })
+  },
+  // With no since/until this deletes every event, so callers must pass all: true explicitly.
+  deleteSentryEvents({ since, until, all } = {}) {
+    const query = new URLSearchParams()
+    if (since) query.set("since", since)
+    if (until) query.set("until", until)
+    if (all) query.set("all", "1")
+    return request(`/api/sentry/events?${query.toString()}`, { method: "DELETE" })
   },
   getSentryLive() { return request("/api/sentry/live", { cache: "no-store" }) },
   deleteSentryEvent(eventId) { return request(`/api/sentry/events/${encodeURIComponent(eventId)}`, { method: "DELETE" }) },

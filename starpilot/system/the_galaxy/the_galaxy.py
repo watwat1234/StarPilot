@@ -868,13 +868,22 @@ def _sentry_time_filter_from_request():
 
 
 def _delete_sentry_event_storage(event_id: str) -> bool:
+  """Removes the event's directory from every root; raises OSError after trying all roots if any removal failed."""
   deleted = False
+  failure = None
   for root in _sentry_event_roots():
     directory = (root / event_id).resolve()
     if root not in directory.parents or not directory.is_dir():
       continue
-    shutil.rmtree(directory)
+    try:
+      shutil.rmtree(directory)
+    except OSError as error:
+      cloudlog.exception(f"sentry event storage delete failed: {directory}")
+      failure = error
+      continue
     deleted = True
+  if failure is not None:
+    raise failure
   return deleted
 
 
@@ -926,7 +935,7 @@ def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], ma
   for event in events:
     event_id = str(event.get("eventId") or "")
     detected_at = _parse_sentry_instant(event.get("detectedAt"))
-    if detected_at is None or event_id.startswith("test-"):
+    if detected_at is None:
       continue
     paths = [_sentry_image_path(event_id, filename) for filename in filenames]
     if all(paths):
@@ -1067,7 +1076,12 @@ def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], dur
     written = 0
     for index, (detected_at, kind, paths) in enumerate(frames):
       rendered = work / f"frame{index:05d}.jpg"
-      _render_sentry_timelapse_frame(paths, detected_at, kind, gaps[index], index, positions, kinds, rendered)
+      try:
+        _render_sentry_timelapse_frame(paths, detected_at, kind, gaps[index], index, positions, kinds, rendered)
+      except FileNotFoundError:
+        # The event was deleted while the timelapse was encoding; skip its frame.
+        cloudlog.warning(f"sentry timelapse skipped a deleted frame: {paths}")
+        continue
       # Cumulative rounding keeps the total exact; every frame gets at least one output frame.
       elapsed += durations[index]
       end = max(round(elapsed * _SENTRY_TIMELAPSE_OUTPUT_FPS), written + 1)
@@ -9526,13 +9540,10 @@ def setup(app):
 
     _sentry_event_catalog()
 
-    deleted_storage = False
-    for root in _sentry_event_roots():
-      directory = (root / event_id).resolve()
-      if root not in directory.parents or not directory.is_dir():
-        continue
-      shutil.rmtree(directory)
-      deleted_storage = True
+    try:
+      deleted_storage = _delete_sentry_event_storage(event_id)
+    except OSError:
+      return jsonify({"error": "Failed to delete the Sentry event's images."}), 500
 
     current_event = _stored_sentry_event()
     current_event_deleted = current_event is not None and current_event.get("eventId") == event_id

@@ -294,8 +294,10 @@ export const SentryScrubber = {
             :style="{ flex: '1 1 0', minWidth: 0, aspectRatio: '1344 / 760', background: 'rgba(0,0,0,.35)', borderRadius: '8px',
               overflow: 'hidden', position: 'relative', border: '4px solid ' + (current.kind === 'alarm' ? 'var(--error)' : 'transparent'),
               boxSizing: 'border-box' }">
-            <img v-if="entry.url" :src="entry.url" :alt="entry.label + ' camera capture'" decoding="async"
-              style="width:100%; height:100%; object-fit:contain; display:block;" />
+            <a v-if="entry.url" :href="entry.url" target="_blank" rel="noopener" style="display:block; width:100%; height:100%;">
+              <img :src="entry.url" :alt="entry.label + ' camera capture'" decoding="async"
+                style="width:100%; height:100%; object-fit:contain; display:block;" />
+            </a>
             <div v-else class="gx-row__desc" style="height:100%; display:flex; align-items:center; justify-content:center; margin:0;">
               No {{ entry.label.toLowerCase() }} image for this event
             </div>

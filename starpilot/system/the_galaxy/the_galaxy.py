@@ -881,6 +881,14 @@ _SENTRY_TIMELAPSE_LOCK = threading.Lock()
 _SENTRY_TIMELAPSE_FRAME_WIDTH = 640
 _SENTRY_TIMELAPSE_MAX_FRAMES = {"mp4": 600, "gif": 120}
 _SENTRY_TIMELAPSE_FILES = {"wide": ("wide.jpg",), "driver": ("driver.jpg",), "both": ("wide.jpg", "driver.jpg")}
+# kind -> (badge label, badge color); alarms also get a border so they stand out at a glance.
+_SENTRY_TIMELAPSE_BADGES = {
+  "warning": ("WARNING", (245, 166, 35)),
+  "alarm": ("ALARM", (220, 38, 38)),
+  "selfie": ("SELFIE", (59, 130, 246)),
+}
+_SENTRY_TIMELAPSE_DEFAULT_BADGE = ("EVENT", (140, 140, 140))
+_SENTRY_TIMELAPSE_ALARM_BORDER = 8
 _SENTRY_TIMELAPSE_FONTS = (
   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
   "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -901,8 +909,8 @@ def _sentry_timelapse_font(size: int):
     return ImageFont.load_default()
 
 
-def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], max_frames: int) -> list[tuple[datetime, list[Path]]]:
-  """Oldest-first (detected_at, image paths) for events that have every requested image, evenly sampled to max_frames."""
+def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], max_frames: int) -> list[tuple[datetime, str, list[Path]]]:
+  """Oldest-first (detected_at, kind, image paths) for events that have every requested image, evenly sampled to max_frames."""
   frames = []
   for event in events:
     event_id = str(event.get("eventId") or "")
@@ -911,14 +919,14 @@ def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], ma
       continue
     paths = [_sentry_image_path(event_id, filename) for filename in filenames]
     if all(paths):
-      frames.append((detected_at, paths))
+      frames.append((detected_at, str(event.get("kind") or ""), paths))
   frames.sort(key=lambda frame: frame[0])
   if len(frames) > max_frames:
     frames = [frames[i * (len(frames) - 1) // (max_frames - 1)] for i in range(max_frames)] if max_frames > 1 else frames[-1:]
   return frames
 
 
-def _render_sentry_timelapse_frame(paths: list[Path], detected_at: datetime, output_path: Path) -> None:
+def _render_sentry_timelapse_frame(paths: list[Path], detected_at: datetime, kind: str, output_path: Path) -> None:
   from PIL import Image, ImageDraw
 
   tiles = []
@@ -933,21 +941,35 @@ def _render_sentry_timelapse_frame(paths: list[Path], detected_at: datetime, out
   for index, tile in enumerate(tiles):
     frame.paste(tile, (index * _SENTRY_TIMELAPSE_FRAME_WIDTH, 0))
 
+  badge_label, badge_color = _SENTRY_TIMELAPSE_BADGES.get(kind, _SENTRY_TIMELAPSE_DEFAULT_BADGE)
   label = detected_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
   draw = ImageDraw.Draw(frame)
   font = _sentry_timelapse_font(22)
-  left, top, right, bottom = draw.textbbox((10, 8), label, font=font)
-  draw.rectangle((left - 6, top - 4, right + 6, bottom + 4), fill=(0, 0, 0))
-  draw.text((10, 8), label, fill=(255, 255, 255), font=font)
+
+  # Drawn as shapes plus text, not a Unicode glyph, so it does not depend on the font having the symbol.
+  inset = 0
+  if kind == "alarm":
+    draw.rectangle((0, 0, frame.width - 1, frame.height - 1), outline=badge_color, width=_SENTRY_TIMELAPSE_ALARM_BORDER)
+    inset = _SENTRY_TIMELAPSE_ALARM_BORDER
+  x, y = 10 + inset, 8 + inset
+  dot = 14
+  badge_width = draw.textlength(badge_label, font=font)
+  left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
+  height = bottom - top
+  total = dot + 8 + badge_width + 16 + (right - left)
+  draw.rectangle((x - 6, y - 4, x + total + 6, y + height + 8), fill=(0, 0, 0))
+  draw.ellipse((x, y + (height - dot) // 2 + 2, x + dot, y + (height - dot) // 2 + 2 + dot), fill=badge_color)
+  draw.text((x + dot + 8, y), badge_label, fill=badge_color, font=font)
+  draw.text((x + dot + 8 + badge_width + 16, y), label, fill=(255, 255, 255), font=font)
   frame.save(output_path, "JPEG", quality=88)
 
 
-def _encode_sentry_timelapse(frames: list[tuple[datetime, list[Path]]], output_format: str, fps: int) -> bytes:
+def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], output_format: str, fps: int) -> bytes:
   """Renders the frames and encodes them with ffmpeg; raises RuntimeError if ffmpeg fails."""
   with tempfile.TemporaryDirectory(prefix="sentry-timelapse-") as work_dir:
     work = Path(work_dir)
-    for index, (detected_at, paths) in enumerate(frames):
-      _render_sentry_timelapse_frame(paths, detected_at, work / f"frame{index:05d}.jpg")
+    for index, (detected_at, kind, paths) in enumerate(frames):
+      _render_sentry_timelapse_frame(paths, detected_at, kind, work / f"frame{index:05d}.jpg")
 
     output = work / f"timelapse.{output_format}"
     command = [utilities.FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-y", "-framerate", str(fps), "-i", str(work / "frame%05d.jpg")]

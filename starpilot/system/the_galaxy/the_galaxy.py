@@ -1011,10 +1011,10 @@ def _render_sentry_timelapse_frame(
   font = _sentry_timelapse_font(22)
   small_font = _sentry_timelapse_font(17)
 
-  inset = 0
+  # The overlays are always inset by the border width, so they do not jump when an alarm frame draws its border.
+  inset = _SENTRY_TIMELAPSE_ALARM_BORDER
   if kind == "alarm":
     draw.rectangle((0, 0, frame.width - 1, frame.height - 1), outline=badge_color, width=_SENTRY_TIMELAPSE_ALARM_BORDER)
-    inset = _SENTRY_TIMELAPSE_ALARM_BORDER
 
   # Drawn as shapes plus text, not a Unicode glyph, so it does not depend on the font having the symbol.
   x, y = 10 + inset, 8 + inset

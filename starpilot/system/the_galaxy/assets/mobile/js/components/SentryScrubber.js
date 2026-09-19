@@ -25,10 +25,9 @@ function formatGap(ms) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
-// Events the scrubber can show. Everything else (power-off, low-voltage, test events) is an alert.
+// Events the scrubber can show: anything with photos and a time, test captures included. The rest (power-off, low-voltage) are alerts.
 export function isCaptureEvent(event) {
-  return !!(event && event.eventId && !String(event.eventId).startsWith("test-")
-    && Array.isArray(event.imageUrls) && event.imageUrls.length && eventTime(event) !== null)
+  return !!(event && event.eventId && Array.isArray(event.imageUrls) && event.imageUrls.length && eventTime(event) !== null)
 }
 
 export const SentryScrubber = {

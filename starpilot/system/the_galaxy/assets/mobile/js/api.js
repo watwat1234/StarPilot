@@ -320,6 +320,21 @@ export const api = {
     if (all) query.set("all", "1")
     return request(`/api/sentry/events?${query.toString()}`, { method: "DELETE" })
   },
+  async getSentryTimelapse({ since, until, camera, format } = {}) {
+    const query = new URLSearchParams()
+    if (since) query.set("since", since)
+    if (until) query.set("until", until)
+    if (camera) query.set("camera", camera)
+    if (format) query.set("format", format)
+    const res = await fetch(`/api/sentry/timelapse?${query.toString()}`, { cache: "no-store" })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      const err = new Error(data?.error || res.statusText || "Timelapse failed")
+      err.data = data
+      throw err
+    }
+    return { blob: await res.blob(), frames: Number(res.headers.get("X-Timelapse-Frames")) || 0 }
+  },
   getSentryLive() { return request("/api/sentry/live", { cache: "no-store" }) },
   deleteSentryEvent(eventId) { return request(`/api/sentry/events/${encodeURIComponent(eventId)}`, { method: "DELETE" }) },
 

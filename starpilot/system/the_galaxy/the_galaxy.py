@@ -8933,8 +8933,29 @@ def setup(app):
 
   @app.route("/api/sentry/events", methods=["GET"])
   def get_sentry_events():
+    events = _sentry_event_catalog()
+    total = len(events)
+
+    # Pagination is opt-in so existing callers (mobile UI) still get the full list.
+    if request.args.get("limit") is None:
+      return jsonify({
+        "events": [_public_sentry_event(event) for event in events],
+        "total": total,
+        "hasMore": False,
+      })
+
+    limit = request.args.get("limit", default=10, type=int)
+    offset = request.args.get("offset", default=0, type=int)
+    limit = min(max(limit if limit is not None else 10, 1), 50)
+    offset = max(offset if offset is not None else 0, 0)
+    page = events[offset:offset + limit]
+
     return jsonify({
-      "events": [_public_sentry_event(event) for event in _sentry_event_catalog()],
+      "events": [_public_sentry_event(event) for event in page],
+      "total": total,
+      "offset": offset,
+      "limit": limit,
+      "hasMore": offset + len(page) < total,
     })
 
   @app.route("/api/sentry/events/<event_id>", methods=["DELETE"])

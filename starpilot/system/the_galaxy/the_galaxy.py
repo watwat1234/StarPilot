@@ -1081,7 +1081,9 @@ def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], dur
     except subprocess.TimeoutExpired as error:
       raise RuntimeError("Timelapse encoding timed out.") from error
     if result.returncode != 0 or not output.is_file():
-      raise RuntimeError("Timelapse encoding failed.")
+      detail = result.stderr.decode("utf-8", "replace").strip()[-400:]
+      cloudlog.error(f"sentry timelapse ffmpeg exit {result.returncode}: {detail}")
+      raise RuntimeError(f"Timelapse encoding failed: {detail.splitlines()[-1] if detail else 'ffmpeg exited with ' + str(result.returncode)}")
     return output.read_bytes()
 
 

@@ -12,7 +12,13 @@ function b64ToBytes(value) {
   return Uint8Array.from(raw, (ch) => ch.charCodeAt(0))
 }
 
-const HISTORY_PAGE_SIZE = 10
+// Local calendar day (YYYY-MM-DD), `daysAgo` days back from today.
+function localDay(daysAgo = 0) {
+  const d = new Date()
+  d.setDate(d.getDate() - daysAgo)
+  const pad = (n) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
 export const Sentry = {
   name: "Sentry",
@@ -24,20 +30,14 @@ export const Sentry = {
       params: {},
       status: {},
       event: {},
-      history: [],
-      historyTotal: 0,
-      historyHasMore: false,
-      historyError: false,
       dateFrom: "",
       dateTo: "",
       historyVisible: false,
-      historyBusy: false,
       newEvents: false,
       liveCapture: {},
       testBusy: false,
       liveBusy: false,
       deleteBusy: false,
-      viewerVisible: false,
       viewerBusy: false,
       viewerEvents: [],
       viewerKey: 0,
@@ -49,8 +49,8 @@ export const Sentry = {
     }
   },
   created() {
-    this.historyRequestId = 0
     this.viewerRequestId = 0
+    this.viewerLatestId = ""
     this.poll = usePolling(() => this.loadStatus(), { interval: 5000 })
     this.poll.start()
   },
@@ -64,24 +64,13 @@ export const Sentry = {
   beforeUnmount() {
     this.poll?.destroy()
     window.removeEventListener("keydown", this._onKeydown)
-    this.stopObserving()
-  },
-  watch: {
-    // history is replaced on every load, so this also re-arms the observer when the
-    // sentinel is still on screen after an append (e.g. a short first page).
-    history() { this.$nextTick(() => this.observeSentinel()) },
-    historyHasMore() { this.$nextTick(() => this.observeSentinel()) },
-    historyVisible(visible) {
-      if (!visible) {
-        this.stopObserving()
-        this.viewerVisible = false
-      }
-    },
   },
   computed: {
     statusText() { return String(this.status?.state || "unknown") },
     hasEvent() { return !!(this.event && this.event.eventId) },
     filterActive() { return !!(this.dateFrom || this.dateTo) },
+    // A new event can only show up in the viewer if the range still reaches today.
+    rangeIncludesNow() { return !this.dateTo || this.dateTo >= localDay() },
   },
   methods: {
     async loadParams() {
@@ -98,28 +87,15 @@ export const Sentry = {
         const payload = await api.getSentryStatus()
         this.status = payload?.status || {}
         this.event = payload?.lastEvent || {}
-        // Never rebuild the history list from the poll; just flag that it is stale.
-        if (this.historyVisible && !this.filterActive && this.history.length && this.hasEvent
-          && String(this.event.eventId) !== String(this.history[0].eventId || "")) {
+        // Never rebuild the viewer from the poll; just flag that it is stale. Compare against the
+        // latest event seen when the viewer last loaded, so an empty or past range does not false-flag.
+        if (this.historyVisible && this.rangeIncludesNow && this.hasEvent
+          && String(this.event.eventId) !== this.viewerLatestId) {
           this.newEvents = true
         }
       } catch (e) {
         if (!this.loading) showSnackbar("Failed to load Sentry status.", "error")
       }
-    },
-    stopObserving() {
-      this.observer?.disconnect()
-      this.observer = null
-    },
-    observeSentinel() {
-      this.stopObserving()
-      const el = this.$refs.sentinel
-      if (!el || typeof IntersectionObserver === "undefined") return
-      this.observer = new IntersectionObserver((entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return
-        if (this.historyHasMore && !this.historyBusy && !this.historyError) this.loadHistory({ append: true })
-      }, { rootMargin: "400px 0px" })
-      this.observer.observe(el)
     },
     // Local calendar days -> UTC instants; "until" is exclusive so the end date is inclusive.
     historyRange() {
@@ -138,12 +114,16 @@ export const Sentry = {
         return
       }
       this.viewerKey += 1
-      this.loadHistory({ force: true })
-      if (this.viewerVisible) this.loadViewerEvents()
+      this.loadViewerEvents()
     },
     clearFilter() {
       this.dateFrom = ""
       this.dateTo = ""
+      this.applyFilter()
+    },
+    showLastWeek() {
+      this.dateFrom = localDay(6)
+      this.dateTo = localDay()
       this.applyFilter()
     },
     async makeTimelapse() {
@@ -169,6 +149,7 @@ export const Sentry = {
       }
     },
     // The viewer needs every event in range (not one page), so it asks for the unpaginated list.
+    // The default range is today, which keeps this small.
     async loadViewerEvents() {
       const requestId = ++this.viewerRequestId
       this.viewerBusy = true
@@ -176,6 +157,8 @@ export const Sentry = {
         const payload = await api.getSentryEvents(this.historyRange())
         if (requestId !== this.viewerRequestId) return
         this.viewerEvents = Array.isArray(payload?.events) ? payload.events : []
+        this.newEvents = false
+        this.viewerLatestId = String(this.event?.eventId || "")
       } catch (e) {
         if (requestId !== this.viewerRequestId) return
         showSnackbar("Failed to load Sentry events for the viewer.", "error")
@@ -183,29 +166,19 @@ export const Sentry = {
         if (requestId === this.viewerRequestId) this.viewerBusy = false
       }
     },
-    openViewer() {
-      this.viewerVisible = true
-      this.viewerKey += 1
+    refreshAll() {
       this.loadViewerEvents()
     },
-    closeViewer() {
-      this.viewerVisible = false
-      // The paginated list was unmounted while the viewer was open, so re-arm its scroll observer.
-      this.$nextTick(() => this.observeSentinel())
-    },
-    refreshAll() {
-      this.loadHistory()
-      if (this.viewerVisible) this.loadViewerEvents()
-    },
     async deleteAllHistory() {
-      if (this.deleteBusy || !this.historyTotal) return
+      const total = this.viewerEvents.length
+      if (this.deleteBusy || !total) return
       const range = this.historyRange()
       const scoped = this.filterActive
       if (!(await GalaxyConfirm({
         title: scoped ? "Delete events in this range?" : "Delete ALL Sentry events?",
         message: scoped
-          ? `Delete the ${this.historyTotal} Sentry event${this.historyTotal === 1 ? "" : "s"} in this date range and their camera images? This cannot be undone.`
-          : `Delete all ${this.historyTotal} Sentry events and their camera images? This cannot be undone.`,
+          ? `Delete the ${total} Sentry event${total === 1 ? "" : "s"} in this date range and their camera images? This cannot be undone.`
+          : `Delete all ${total} Sentry events and their camera images? This cannot be undone.`,
         confirmLabel: scoped ? "Delete matching" : "Delete all",
         danger: true,
       }))) return
@@ -214,8 +187,7 @@ export const Sentry = {
         const result = await api.deleteSentryEvents({ ...range, all: !scoped })
         const failed = result?.failed ? ` ${result.failed} could not be removed.` : ""
         showSnackbar(`Deleted ${result?.deleted ?? 0} Sentry event${result?.deleted === 1 ? "" : "s"}.${failed}`)
-        await this.loadHistory({ force: true })
-        if (this.viewerVisible) await this.loadViewerEvents()
+        await this.loadViewerEvents()
         this.loadStatus()
       } catch (e) {
         showSnackbar(e?.data?.error || e?.message || "Sentry event deletion failed.", "error")
@@ -223,39 +195,15 @@ export const Sentry = {
         this.deleteBusy = false
       }
     },
-    async loadHistory({ append = false, force = false } = {}) {
-      if (this.historyBusy && !force) return
-      const requestId = ++this.historyRequestId
-      this.historyBusy = true
-      this.historyError = false
-      try {
-        const payload = await api.getSentryEvents({
-          limit: HISTORY_PAGE_SIZE,
-          offset: append ? this.history.length : 0,
-          ...this.historyRange(),
-        })
-        if (requestId !== this.historyRequestId) return
-        const events = Array.isArray(payload?.events) ? payload.events : []
-        if (append) {
-          const seen = new Set(this.history.map((e) => String(e?.eventId || "")))
-          this.history = [...this.history, ...events.filter((e) => !seen.has(String(e?.eventId || "")))]
-        } else {
-          this.history = events
-          this.newEvents = false
-        }
-        this.historyTotal = Number.isFinite(payload?.total) ? payload.total : this.history.length
-        this.historyHasMore = !!payload?.hasMore
-      } catch (e) {
-        if (requestId !== this.historyRequestId) return
-        this.historyError = true
-        showSnackbar("Failed to load Sentry history.", "error")
-      } finally {
-        if (requestId === this.historyRequestId) this.historyBusy = false
-      }
-    },
-    async toggleHistory() {
+    // Opening history always starts on today; most reviews are of the current day.
+    toggleHistory() {
       this.historyVisible = !this.historyVisible
-      if (this.historyVisible) this.loadHistory()
+      if (!this.historyVisible) return
+      this.dateFrom = localDay()
+      this.dateTo = localDay()
+      this.viewerEvents = []
+      this.viewerKey += 1
+      this.loadViewerEvents()
     },
     numeric(key, fallback) {
       const n = Number(this.params[key])
@@ -394,11 +342,7 @@ export const Sentry = {
       this.deleteBusy = true
       try {
         await api.deleteSentryEvent(eventId)
-        const before = this.history.length
-        this.history = this.history.filter((e) => String(e?.eventId || "") !== eventId)
         this.viewerEvents = this.viewerEvents.filter((e) => String(e?.eventId || "") !== eventId)
-        if (this.history.length < before) this.historyTotal = Math.max(0, this.historyTotal - 1)
-        if (!this.history.length && this.historyHasMore) this.loadHistory()
         if (String(this.event?.eventId || "") === eventId) {
           this.event = {}
           this.loadStatus()
@@ -516,8 +460,8 @@ export const Sentry = {
       <GalaxySection title="Latest Event" icon="bi-shield-exclamation" :collapsible="false">
         <div style="padding: var(--sp-3);">
           <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:var(--sp-2);">
-            <button type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" @click="toggleHistory">
-              {{ historyBusy ? 'Loading...' : (historyVisible ? 'Hide history' : 'View history') }}
+            <button type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" @click="toggleHistory">
+              {{ viewerBusy && !historyVisible ? 'Loading...' : (historyVisible ? 'Hide history' : 'View history') }}
             </button>
             <button type="button" class="gx-btn gx-btn--tonal" :disabled="testBusy" @click="sendTestEvent">
               {{ testBusy ? 'Capturing...' : 'Send test capture' }}
@@ -560,11 +504,11 @@ export const Sentry = {
                   @change="dateTo = $event.target.value; applyFilter()" />
               </label>
               <button v-if="filterActive" type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Clear</button>
-              <button v-if="historyTotal" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || historyBusy" @click="deleteAllHistory">
+              <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
             </div>
-            <div v-if="history.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
+            <div v-if="viewerEvents.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
               <label style="flex:1 1 110px;">
                 <div class="gx-row__desc" style="margin:0 0 4px;">Camera</div>
                 <select class="gx-field gx-field--full" v-model="timelapseCamera" :disabled="timelapseBusy">
@@ -580,51 +524,20 @@ export const Sentry = {
                   <option value="even">Even</option>
                 </select>
               </label>
-              <button type="button" class="gx-btn" :disabled="viewerBusy" @click="viewerVisible ? closeViewer() : openViewer()">
-                <i class="bi bi-sliders"></i> {{ viewerBusy ? 'Loading...' : (viewerVisible ? 'Close viewer' : (filterActive ? 'View range' : 'Open viewer')) }}
-              </button>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy" @click="makeTimelapse">
                 {{ timelapseBusy ? 'Encoding...' : (filterActive ? 'Timelapse of range' : 'Make timelapse') }}
               </button>
             </div>
-            <div v-if="viewerVisible">
-              <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy || viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
-              <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
-              <SentryScrubber v-else :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" @delete="deleteEvent" @close="closeViewer" />
-            </div>
-            <div v-else-if="historyBusy && !history.length" class="gx-loading">Loading Sentry history...</div>
-            <template v-else-if="history.length">
-              <p class="gx-row__desc">Showing {{ history.length }} of {{ historyTotal }} event{{ historyTotal === 1 ? '' : 's' }}{{ filterActive ? ' in this date range' : '' }}. Events stay here until you delete them.</p>
-              <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" @click="refreshAll">New event - refresh</button>
-              <article v-for="ev in history" :key="ev.eventId" style="border:1px solid var(--glass-border, rgba(255,255,255,.1)); border-radius:12px; padding:var(--sp-3); margin:var(--sp-2) 0;">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                    <strong>{{ ev.detectedAt || 'Sentry event' }}</strong>
-                    <span class="gx-chip" :style="{ color: kindColor(ev.kind) }">{{ kindLabel(ev.kind) }}</span>
-                  </div>
-                  <button type="button" class="gx-icon-btn" :disabled="deleteBusy" @click="deleteEvent(ev.eventId)" title="Delete event" style="color:var(--error);">
-                    <i class="bi bi-trash"></i>
-                  </button>
-                </div>
-                <p style="margin:8px 0;"><strong>{{ ev.message || 'Movement detected while parked.' }}</strong></p>
-                <template v-if="Array.isArray(ev.imageUrls) && ev.imageUrls.length">
-                  <div class="gx-sentry-images">
-                    <button v-for="(u, i) in ev.imageUrls" :key="u + i" type="button" class="gx-sentry-image-button"
-                      :aria-label="'Open Sentry capture ' + (i + 1)" @click="openImage(u, 'Sentry capture ' + (i + 1))">
-                      <img :src="u" :alt="'Sentry capture ' + (i + 1)" loading="lazy" />
-                    </button>
-                  </div>
-                </template>
-                <p v-else class="gx-empty">No camera images were available for this event.</p>
-              </article>
-              <div v-if="historyHasMore" ref="sentinel" style="text-align:center; padding:var(--sp-2) 0;">
-                <button v-if="historyError" type="button" class="gx-btn gx-btn--tonal" @click="loadHistory({ append: true })">
-                  Retry loading more
-                </button>
-                <span v-else class="gx-row__desc">{{ historyBusy ? 'Loading...' : history.length + ' of ' + historyTotal }}</span>
+            <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
+            <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
+            <SentryScrubber v-else-if="viewerEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" @delete="deleteEvent" @close="toggleHistory" />
+            <div v-else>
+              <p class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No retained Sentry events.' }}</p>
+              <div v-if="filterActive" style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="gx-btn gx-btn--tonal" @click="showLastWeek">Last 7 days</button>
+                <button type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Show all</button>
               </div>
-            </template>
-            <p v-else class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No retained Sentry events.' }}</p>
+            </div>
           </div>
         </div>
       </GalaxySection>

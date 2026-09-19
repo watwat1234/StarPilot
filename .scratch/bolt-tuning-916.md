@@ -1,6 +1,12 @@
 # Chevy Bolt lateral oscillation investigation (started 2026-09-16)
 
-## >>> NEXT STEP (as of 2026-09-17, read this first) <<<
+## >>> NEXT STEP (as of 2026-09-18, read this first) <<<
+
+**Fix (a) (the additive low-speed FF correction, finding #13) was driven
+on-vehicle and did NOT help -- reverted, see finding #15.** Do not re-ship
+that diff as-is. Decide between item #7 (planner/demand-side) and fix (b)
+(easing `error_with_lsf`'s low-speed P-amplification), per finding #10
+below -- those are now the two live, unprototyped candidate directions.
 
 **Decide between item #7 (planner/demand-side) and a *different* FF-side
 angle than the one already tried**, per finding #10 below. The gate check
@@ -1201,6 +1207,28 @@ recording:
    committed or deployed without the user explicitly confirming they want
    to proceed on that basis**, per the standing `feedback_commit_permission`
    rule and given this specific open question.
+
+### 15. Fix (a) driven on-vehicle -- did NOT help, reverted
+
+Per finding #14's process flag, the diff from finding #13 was committed
+(`a405bedf3`, "Add Bolt 2022/2023 low-speed FF correction for measured
+torque under-prediction") and validated on-vehicle by driving. **Result:
+the tune did not help.** Per the user's direction on 2026-09-18, the fix
+was reverted (`git revert a405bedf3`, commit `13a7e381d` on
+`wat-bolt-analysis`) -- `get_bolt_2022_2023_low_speed_ff_correction` and
+its `BOLT_2022_2023_LOW_SPEED_FF_CORRECTION_BP`/`_V` constants are gone
+again from `latcontrol_torque.py`/`latcontrol_vehicle_tunes.py`.
+
+This doesn't invalidate finding #6's underlying residual measurement (the
+siglin curve under-predicting torque in the 5-11 m/s band is still real
+and still structurally unvalidated by the live estimator) -- it means
+*this specific additive correction*, sized and shaped the way it was, was
+not the right fix, or the open-loop-vs-closed-loop gap flagged in findings
+#11/#13 masked a sizing/shape problem that on-vehicle testing couldn't
+distinguish from the underlying approach being wrong. Fix (b) (easing the
+`error_with_lsf` P-amplification instead of adding more FF) and item #7
+(planner-side demand easing) remain the untried directions -- see the
+NEXT STEP note above.
 
 ## Open questions / next steps (not yet started)
 

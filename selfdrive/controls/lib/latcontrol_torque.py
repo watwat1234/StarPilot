@@ -554,14 +554,6 @@ class LatControlTorque(LatControl):
       output_lataccel = self.pid.update(pid_log.error, error_rate=-measurement_rate, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       if bolt_2022_2023_tuned_path_active:
-        # Applied here (post lataccel->torque conversion), not up in the `ff` block above:
-        # ff is still in lateral-acceleration space at that point (see the "do error
-        # correction in lateral acceleration space" comment above), while this correction
-        # was sized from a torque-domain residual (bolt-tuning-916.md finding #6,
-        # siglin_pred - actual_measured_steer, on the +-1 actuator scale) -- adding it to
-        # `ff` pre-conversion, through the nonlinear/asymmetric siglin curve, would not
-        # produce the intended torque-domain offset. Caught in /code-review low.
-        output_torque += get_bolt_2022_2023_low_speed_ff_correction(setpoint, CS.vEgo)
         output_torque *= get_bolt_2022_2023_center_output_scale(setpoint, CS.vEgo)
         low_speed_center_output_limit = get_bolt_2022_2023_low_speed_center_output_limit(setpoint, CS.vEgo)
         output_torque = float(np.clip(

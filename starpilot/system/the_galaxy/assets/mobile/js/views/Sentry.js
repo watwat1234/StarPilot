@@ -11,6 +11,8 @@ function b64ToBytes(value) {
   return Uint8Array.from(raw, (ch) => ch.charCodeAt(0))
 }
 
+const HISTORY_PAGE_SIZE = 10
+
 export const Sentry = {
   name: "Sentry",
   components: { GalaxySection, GalaxySheet },
@@ -22,8 +24,11 @@ export const Sentry = {
       status: {},
       event: {},
       history: [],
+      historyTotal: 0,
+      historyHasMore: false,
       historyVisible: false,
       historyBusy: false,
+      newEvents: false,
       liveCapture: {},
       testBusy: false,
       liveBusy: false,
@@ -66,16 +71,33 @@ export const Sentry = {
         const payload = await api.getSentryStatus()
         this.status = payload?.status || {}
         this.event = payload?.lastEvent || {}
-        if (this.historyVisible && !this.historyBusy) this.loadHistory()
+        // Never rebuild the history list from the poll; just flag that it is stale.
+        if (this.historyVisible && this.history.length && this.hasEvent
+          && String(this.event.eventId) !== String(this.history[0].eventId || "")) {
+          this.newEvents = true
+        }
       } catch (e) {
         if (!this.loading) showSnackbar("Failed to load Sentry status.", "error")
       }
     },
-    async loadHistory() {
+    async loadHistory({ append = false } = {}) {
+      if (this.historyBusy) return
       this.historyBusy = true
       try {
-        const payload = await api.getSentryEvents()
-        this.history = Array.isArray(payload?.events) ? payload.events : []
+        const payload = await api.getSentryEvents({
+          limit: HISTORY_PAGE_SIZE,
+          offset: append ? this.history.length : 0,
+        })
+        const events = Array.isArray(payload?.events) ? payload.events : []
+        if (append) {
+          const seen = new Set(this.history.map((e) => String(e?.eventId || "")))
+          this.history = [...this.history, ...events.filter((e) => !seen.has(String(e?.eventId || "")))]
+        } else {
+          this.history = events
+          this.newEvents = false
+        }
+        this.historyTotal = Number.isFinite(payload?.total) ? payload.total : this.history.length
+        this.historyHasMore = !!payload?.hasMore
       } catch (e) {
         showSnackbar("Failed to load Sentry history.", "error")
       } finally {
@@ -223,7 +245,10 @@ export const Sentry = {
       this.deleteBusy = true
       try {
         await api.deleteSentryEvent(eventId)
+        const before = this.history.length
         this.history = this.history.filter((e) => String(e?.eventId || "") !== eventId)
+        if (this.history.length < before) this.historyTotal = Math.max(0, this.historyTotal - 1)
+        if (!this.history.length && this.historyHasMore) this.loadHistory()
         if (String(this.event?.eventId || "") === eventId) {
           this.event = {}
           this.loadStatus()
@@ -351,7 +376,7 @@ export const Sentry = {
               {{ deleteBusy ? 'Deleting...' : 'Delete event' }}
             </button>
           </div>
-          <p class="gx-row__desc">Events refresh automatically every five seconds.</p>
+          <p class="gx-row__desc">The latest event refreshes every five seconds. History updates when you refresh it.</p>
 
           <template v-if="hasEvent">
             <div style="display:flex; align-items:center; gap:8px; margin-top:var(--sp-2);">
@@ -373,9 +398,10 @@ export const Sentry = {
           <p v-else-if="!loading" class="gx-empty">No Sentry events recorded yet.</p>
 
           <div v-if="historyVisible" style="margin-top:var(--sp-3); border-top:1px solid var(--border-color, rgba(255,255,255,.08)); padding-top:var(--sp-2);">
-            <div v-if="historyBusy" class="gx-loading">Loading Sentry history...</div>
+            <div v-if="historyBusy && !history.length" class="gx-loading">Loading Sentry history...</div>
             <template v-else-if="history.length">
-              <p class="gx-row__desc">{{ history.length }} event{{ history.length === 1 ? '' : 's' }} retained. Events stay here until you delete them.</p>
+              <p class="gx-row__desc">Showing {{ history.length }} of {{ historyTotal }} event{{ historyTotal === 1 ? '' : 's' }}. Events stay here until you delete them.</p>
+              <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" @click="loadHistory()">New event - refresh</button>
               <article v-for="ev in history" :key="ev.eventId" style="border:1px solid var(--glass-border, rgba(255,255,255,.1)); border-radius:12px; padding:var(--sp-3); margin:var(--sp-2) 0;">
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
                   <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -397,6 +423,9 @@ export const Sentry = {
                 </template>
                 <p v-else class="gx-empty">No camera images were available for this event.</p>
               </article>
+              <button v-if="historyHasMore" type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" @click="loadHistory({ append: true })">
+                {{ historyBusy ? 'Loading...' : 'Load more (' + history.length + ' of ' + historyTotal + ')' }}
+              </button>
             </template>
             <p v-else class="gx-empty">No retained Sentry events.</p>
           </div>

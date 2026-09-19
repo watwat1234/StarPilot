@@ -1047,30 +1047,39 @@ def _render_sentry_timelapse_frame(
 
 
 def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], durations: list[float]) -> bytes:
-  """Renders the frames and encodes them to MP4 with ffmpeg, each shown for its duration; raises RuntimeError on failure."""
+  """Renders the frames and encodes them to MP4 with ffmpeg, each shown for its duration; raises RuntimeError on failure.
+
+  Each rendered frame is repeated (as hard links) to fill its duration at the output frame rate, so ffmpeg only
+  sees a plain image sequence. The device's ffmpeg is a minimal build with no fps filter, and the concat
+  demuxer's per-file durations were unreliable there.
+  """
   gaps = _sentry_timelapse_gaps(frames)
   positions = _sentry_timelapse_timeline(frames)
   kinds = [frame[1] for frame in frames]
   with tempfile.TemporaryDirectory(prefix="sentry-timelapse-") as work_dir:
     work = Path(work_dir)
-    frame_paths = []
+    sequence = work / "sequence"
+    sequence.mkdir()
+    elapsed = 0.0
+    written = 0
     for index, (detected_at, kind, paths) in enumerate(frames):
-      frame_path = work / f"frame{index:05d}.jpg"
-      _render_sentry_timelapse_frame(paths, detected_at, kind, gaps[index], index, positions, kinds, frame_path)
-      frame_paths.append(frame_path)
-
-    # The concat demuxer ignores the last entry's duration, so that frame is listed twice.
-    list_path = work / "frames.txt"
-    with open(list_path, "w") as list_file:
-      for frame_path, duration in zip(frame_paths, durations):
-        list_file.write(f"file '{frame_path}'\nduration {duration:.3f}\n")
-      list_file.write(f"file '{frame_paths[-1]}'\n")
+      rendered = work / f"frame{index:05d}.jpg"
+      _render_sentry_timelapse_frame(paths, detected_at, kind, gaps[index], index, positions, kinds, rendered)
+      # Cumulative rounding keeps the total exact; every frame gets at least one output frame.
+      elapsed += durations[index]
+      end = max(round(elapsed * _SENTRY_TIMELAPSE_OUTPUT_FPS), written + 1)
+      while written < end:
+        target = sequence / f"{written:06d}.jpg"
+        try:
+          os.link(rendered, target)
+        except OSError:
+          shutil.copyfile(rendered, target)
+        written += 1
 
     output = work / "timelapse.mp4"
     command = [
       utilities.FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-y",
-      "-f", "concat", "-safe", "0", "-i", str(list_path),
-      "-vf", f"fps={_SENTRY_TIMELAPSE_OUTPUT_FPS}",
+      "-framerate", str(_SENTRY_TIMELAPSE_OUTPUT_FPS), "-i", str(sequence / "%06d.jpg"),
       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "26", "-movflags", "+faststart",
       str(output),
     ]

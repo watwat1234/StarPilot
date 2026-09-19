@@ -45,6 +45,14 @@ Commit rules: one separate, revertable commit. Ask before committing.
 - [x] Tap the scrubber image to open full size (old cards used `target=_blank`)
 - [x] Thumbnail strip: skipped on purpose, only if requested
 
+### 4b. Photo-less events (power-off, low-voltage, test)
+Found in a real-browser check: Delete matching on a 1-capture day asked to delete 4, because the scrubber hides events without photos.
+- [x] `isCaptureEvent` exported from `SentryScrubber.js`, used by both files
+- [x] `Sentry.js` `captureEvents` / `alertEvents`. The confirm reads "1 capture and 3 alerts"
+- [x] Alert list under the scrubber (kind, time, message, per-row Delete). Delete matching still removes both
+- [x] Timelapse controls only when captures exist. Alerts-only day shows "No captures in this range."
+- [x] Tests: `test_ui_sentry_history_separates_photo_less_alerts`, 3 jsdom checks (18 total)
+
 ### 5. Keep (no change)
 - `api.js` `getSentryEvents` with `limit`/`offset`
 - `GET /api/sentry/events` pagination on the backend (used by hardwared, wheel_controlsd, sentryd and the desktop UI)
@@ -74,3 +82,4 @@ Commit rules: one separate, revertable commit. Ask before committing.
 - 2026-09-19: Plan written. Desktop UI stays as is. Range defaults to today.
 - 2026-09-19: Implemented in `views/Sentry.js` (old list removed, today default, empty-range buttons, `viewerLatestId` for the new-event flag) and `SentryScrubber.js` (tappable image). Added `test_ui_sentry_history_opens_the_scrubber_on_today`. `test_ui_vue_frontend.py`: 28 passed, 4 skipped (run with `--noconftest`, the repo conftest needs native extensions that are not built here). No node on this box, so the JS was only parse-checked with esprima, not run. Timezone: the range already used the browser's local days, and that is kept. Not done: browser walkthrough, commit.
 - 2026-09-19: Set up a persistent JS test env in this worktree (git-ignored, under `.venv/`): node from `nodejs-wheel-binaries`, plus Vue 3 and jsdom in `.venv/harness/`. Run `.venv/harness/run.sh`. Repo tests with node on PATH (`source .venv/harness/env.sh`): `test_ui_vue_frontend.py` + `test_frontend_module_graph.py` = 43 passed, 0 skipped. jsdom checks: 15 passed. Two early failures were harness bugs (scrubber has its own "Delete" button; "Show all" only exists on the empty state), not component bugs.
+- 2026-09-19: Real-browser feedback: Delete matching counted power-off/low-voltage/test events the scrubber never shows. Added the alert list and split counts (4b). jsdom 18 passed, repo tests 44 passed. Not committed.

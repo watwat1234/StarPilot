@@ -25,6 +25,7 @@ export const Sentry = {
       history: [],
       historyTotal: 0,
       historyHasMore: false,
+      historyError: false,
       historyVisible: false,
       historyBusy: false,
       newEvents: false,
@@ -40,7 +41,17 @@ export const Sentry = {
     this.poll.start()
   },
   mounted() { this.loadParams() },
-  beforeUnmount() { this.poll?.destroy() },
+  beforeUnmount() {
+    this.poll?.destroy()
+    this.stopObserving()
+  },
+  watch: {
+    // history is replaced on every load, so this also re-arms the observer when the
+    // sentinel is still on screen after an append (e.g. a short first page).
+    history() { this.$nextTick(() => this.observeSentinel()) },
+    historyHasMore() { this.$nextTick(() => this.observeSentinel()) },
+    historyVisible(visible) { if (!visible) this.stopObserving() },
+  },
   computed: {
     statusText() { return String(this.status?.state || "unknown") },
     hasEvent() { return !!(this.event && this.event.eventId) },
@@ -69,9 +80,24 @@ export const Sentry = {
         if (!this.loading) showSnackbar("Failed to load Sentry status.", "error")
       }
     },
+    stopObserving() {
+      this.observer?.disconnect()
+      this.observer = null
+    },
+    observeSentinel() {
+      this.stopObserving()
+      const el = this.$refs.sentinel
+      if (!el || typeof IntersectionObserver === "undefined") return
+      this.observer = new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return
+        if (this.historyHasMore && !this.historyBusy && !this.historyError) this.loadHistory({ append: true })
+      }, { rootMargin: "400px 0px" })
+      this.observer.observe(el)
+    },
     async loadHistory({ append = false } = {}) {
       if (this.historyBusy) return
       this.historyBusy = true
+      this.historyError = false
       try {
         const payload = await api.getSentryEvents({
           limit: HISTORY_PAGE_SIZE,
@@ -88,6 +114,7 @@ export const Sentry = {
         this.historyTotal = Number.isFinite(payload?.total) ? payload.total : this.history.length
         this.historyHasMore = !!payload?.hasMore
       } catch (e) {
+        this.historyError = true
         showSnackbar("Failed to load Sentry history.", "error")
       } finally {
         this.historyBusy = false
@@ -402,9 +429,12 @@ export const Sentry = {
                 </template>
                 <p v-else class="gx-empty">No camera images were available for this event.</p>
               </article>
-              <button v-if="historyHasMore" type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" @click="loadHistory({ append: true })">
-                {{ historyBusy ? 'Loading...' : 'Load more (' + history.length + ' of ' + historyTotal + ')' }}
-              </button>
+              <div v-if="historyHasMore" ref="sentinel" style="text-align:center; padding:var(--sp-2) 0;">
+                <button v-if="historyError" type="button" class="gx-btn gx-btn--tonal" @click="loadHistory({ append: true })">
+                  Retry loading more
+                </button>
+                <span v-else class="gx-row__desc">{{ historyBusy ? 'Loading...' : history.length + ' of ' + historyTotal }}</span>
+              </div>
             </template>
             <p v-else class="gx-empty">No retained Sentry events.</p>
           </div>

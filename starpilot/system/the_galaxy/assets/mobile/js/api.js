@@ -277,7 +277,10 @@ export const api = {
   selectTestingGround(body) { return request("/api/testing_grounds/select", { method: "POST", data: body }) },
 
   getSentryStatus() { return requestOk("/api/sentry/status", { cache: "no-store" }) },
-  getSentryEvents() { return request("/api/sentry/events", { cache: "no-store" }) },
+  getSentryEvents({ limit, offset } = {}) {
+    const query = limit ? `?limit=${limit}&offset=${offset || 0}` : ""
+    return request(`/api/sentry/events${query}`, { cache: "no-store" })
+  },
   getSentryLive() { return request("/api/sentry/live", { cache: "no-store" }) },
   deleteSentryEvent(eventId) { return request(`/api/sentry/events/${encodeURIComponent(eventId)}`, { method: "DELETE" }) },
 

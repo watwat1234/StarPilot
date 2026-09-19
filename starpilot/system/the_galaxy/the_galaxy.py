@@ -820,6 +820,60 @@ def _public_sentry_event(event: dict) -> dict:
   return public_event
 
 
+def _parse_sentry_instant(value) -> datetime | None:
+  text = str(value or "").strip()
+  if not text:
+    return None
+  try:
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+  except ValueError:
+    return None
+  return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _filter_sentry_events_by_time(events: list[dict], since: datetime | None, until: datetime | None) -> list[dict]:
+  """Keep events detected in [since, until). Events with an unparseable timestamp never match a date filter."""
+  if since is None and until is None:
+    return events
+  matched = []
+  for event in events:
+    detected_at = _parse_sentry_instant(event.get("detectedAt"))
+    if detected_at is None:
+      continue
+    if since is not None and detected_at < since:
+      continue
+    if until is not None and detected_at >= until:
+      continue
+    matched.append(event)
+  return matched
+
+
+def _sentry_time_filter_from_request():
+  """Returns (since, until, error_message); error_message is set when a supplied value is not a valid ISO timestamp."""
+  bounds = []
+  for key in ("since", "until"):
+    raw_value = request.args.get(key)
+    if raw_value in (None, ""):
+      bounds.append(None)
+      continue
+    instant = _parse_sentry_instant(raw_value)
+    if instant is None:
+      return None, None, f"Invalid '{key}' timestamp."
+    bounds.append(instant)
+  return bounds[0], bounds[1], None
+
+
+def _delete_sentry_event_storage(event_id: str) -> bool:
+  deleted = False
+  for root in _sentry_event_roots():
+    directory = (root / event_id).resolve()
+    if root not in directory.parents or not directory.is_dir():
+      continue
+    shutil.rmtree(directory)
+    deleted = True
+  return deleted
+
+
 def _capture_sentry_test_images(event_id: str) -> list[str]:
   from openpilot.system.camerad.snapshot import jpeg_write, snapshot
 
@@ -8933,7 +8987,11 @@ def setup(app):
 
   @app.route("/api/sentry/events", methods=["GET"])
   def get_sentry_events():
-    events = _sentry_event_catalog()
+    since, until, filter_error = _sentry_time_filter_from_request()
+    if filter_error:
+      return jsonify({"error": filter_error}), 400
+
+    events = _filter_sentry_events_by_time(_sentry_event_catalog(), since, until)
     total = len(events)
 
     # Pagination is opt-in so existing callers (mobile UI) still get the full list.
@@ -8957,6 +9015,47 @@ def setup(app):
       "limit": limit,
       "hasMore": offset + len(page) < total,
     })
+
+  @app.route("/api/sentry/events", methods=["DELETE"])
+  def delete_sentry_events():
+    if not params.get_bool("IsOffroad"):
+      return jsonify({"error": "Sentry events can only be deleted while parked."}), 409
+
+    since, until, filter_error = _sentry_time_filter_from_request()
+    if filter_error:
+      return jsonify({"error": filter_error}), 400
+    if since is None and until is None and request.args.get("all") != "1":
+      return jsonify({"error": "Refusing to delete every Sentry event without all=1."}), 400
+
+    targets = _filter_sentry_events_by_time(_sentry_event_catalog(), since, until)
+    target_ids = {event["eventId"] for event in targets}
+
+    failed = 0
+    removed_ids = set()
+    for event_id in target_ids:
+      if not event_id or event_id in {".", ".."} or Path(event_id).name != event_id:
+        failed += 1
+        continue
+      try:
+        _delete_sentry_event_storage(event_id)
+        removed_ids.add(event_id)
+      except OSError:
+        failed += 1
+
+    current_event = _stored_sentry_event()
+    with _SENTRY_EVENT_INDEX_LOCK:
+      events = _load_sentry_event_catalog_unlocked()
+      retained_events = [event for event in events if event.get("eventId") not in removed_ids]
+      if len(retained_events) != len(events):
+        _save_sentry_event_catalog_unlocked(retained_events)
+
+    if current_event is not None and current_event.get("eventId") in removed_ids:
+      if retained_events:
+        params.put("SentryModeLastEvent", json.dumps(retained_events[0], separators=(",", ":")))
+      else:
+        params.remove("SentryModeLastEvent")
+
+    return jsonify({"deleted": len(removed_ids), "failed": failed})
 
   @app.route("/api/sentry/events/<event_id>", methods=["DELETE"])
   def delete_sentry_event(event_id):

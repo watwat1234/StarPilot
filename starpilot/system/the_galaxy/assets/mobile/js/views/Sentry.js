@@ -242,6 +242,11 @@ export const Sentry = {
         this.liveBusy = false
       }
     },
+    // ISO instants from the backend are UTC; show them in the viewer's local time.
+    formatWhen(value) {
+      const ms = Date.parse(value || "")
+      return Number.isFinite(ms) ? new Date(ms).toLocaleString() : String(value || "")
+    },
     kindLabel(kind) {
       return String(kind || "event").toUpperCase()
     },
@@ -435,7 +440,7 @@ export const Sentry = {
             </span>
           </div>
           <template v-if="Array.isArray(liveCapture.imageUrls) && liveCapture.imageUrls.length">
-            <p class="gx-row__desc">Captured {{ liveCapture.capturedAt || 'just now' }}.</p>
+            <p class="gx-row__desc">Captured {{ liveCapture.capturedAt ? formatWhen(liveCapture.capturedAt) : 'just now' }}.</p>
             <div style="display:flex; flex-wrap:wrap; gap:8px;">
               <a v-for="(u, i) in liveCapture.imageUrls" :key="u + i" :href="liveImageUrl(u)" target="_blank" rel="noopener" style="flex:1 1 45%; min-width:120px;">
                 <img :src="liveImageUrl(u)" :alt="'Live Sentry camera ' + (i + 1)" style="width:100%; border-radius:8px; display:block;" />
@@ -464,7 +469,7 @@ export const Sentry = {
           <template v-if="hasEvent">
             <div style="display:flex; align-items:center; gap:8px; margin-top:var(--sp-2);">
               <span class="gx-chip" :style="{ color: kindColor(event.kind) }">{{ kindLabel(event.kind) }}</span>
-              <span class="gx-row__desc" style="margin:0;">{{ event.detectedAt || '' }}</span>
+              <span class="gx-row__desc" style="margin:0;">{{ formatWhen(event.detectedAt) }}</span>
             </div>
             <p style="margin:8px 0;"><strong>{{ event.message || 'Movement detected while parked.' }}</strong></p>
             <template v-if="Array.isArray(event.imageUrls) && event.imageUrls.length">
@@ -527,7 +532,7 @@ export const Sentry = {
                   <span class="gx-chip" :style="{ color: kindColor(alert.kind) }">{{ kindLabel(alert.kind) }}</span>
                   <div style="flex:1; min-width:0;">
                     <div>{{ alert.message || 'Sentry alert' }}</div>
-                    <div class="gx-row__desc" style="margin:0;">{{ alert.detectedAt ? new Date(alert.detectedAt).toLocaleString() : '' }}</div>
+                    <div class="gx-row__desc" style="margin:0;">{{ formatWhen(alert.detectedAt) }}</div>
                   </div>
                   <button type="button" class="gx-btn gx-btn--tonal" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">Delete</button>
                 </div>

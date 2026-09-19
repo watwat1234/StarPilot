@@ -38,7 +38,7 @@ export const Sentry = {
       deleteBusy: false,
       timelapseBusy: false,
       timelapseCamera: "wide",
-      timelapseFormat: "mp4",
+      timelapsePacing: "gap",
       pushBusy: false,
       selectedImage: null,
     }
@@ -137,18 +137,18 @@ export const Sentry = {
       if (this.timelapseBusy) return
       this.timelapseBusy = true
       try {
-        const { blob, frames } = await api.getSentryTimelapse({
+        const { blob, frames, seconds } = await api.getSentryTimelapse({
           ...this.historyRange(),
           camera: this.timelapseCamera,
-          format: this.timelapseFormat,
+          timing: this.timelapsePacing,
         })
         const url = URL.createObjectURL(blob)
         const a = document.createElement("a")
         a.href = url
-        a.download = `sentry-timelapse.${this.timelapseFormat}`
+        a.download = "sentry-timelapse.mp4"
         a.click()
         setTimeout(() => URL.revokeObjectURL(url), 1000)
-        showSnackbar(`Timelapse ready (${frames} frame${frames === 1 ? "" : "s"}).`)
+        showSnackbar(`Timelapse ready (${frames} frame${frames === 1 ? "" : "s"}, ${Math.round(seconds)}s).`)
       } catch (e) {
         showSnackbar(e?.data?.error || e?.message || "Timelapse failed.", "error")
       } finally {
@@ -530,10 +530,10 @@ export const Sentry = {
                 </select>
               </label>
               <label style="flex:1 1 90px;">
-                <div class="gx-row__desc" style="margin:0 0 4px;">Format</div>
-                <select class="gx-field gx-field--full" v-model="timelapseFormat" :disabled="timelapseBusy">
-                  <option value="mp4">MP4</option>
-                  <option value="gif">GIF</option>
+                <div class="gx-row__desc" style="margin:0 0 4px;">Pacing</div>
+                <select class="gx-field gx-field--full" v-model="timelapsePacing" :disabled="timelapseBusy">
+                  <option value="gap">By time gaps</option>
+                  <option value="even">Even</option>
                 </select>
               </label>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy" @click="makeTimelapse">

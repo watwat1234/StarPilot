@@ -546,6 +546,18 @@ def test_ui_cameras_hub_vasm_and_pip_native_no_embed():
     assert method in api, f"api.js should expose {method}"
 
 
+def test_ui_sentry_history_opens_the_scrubber_on_today():
+  """View history opens the scrubber directly (no paginated card list), seeded to the current day."""
+  sentry = _read("js/views/Sentry.js")
+  for gone in ("HISTORY_PAGE_SIZE", "observeSentinel", "loadHistory", "historyHasMore", "openViewer"):
+    assert gone not in sentry, f"old paginated history list should be removed: {gone}"
+  assert "<SentryScrubber" in sentry
+  toggle = sentry[sentry.index("toggleHistory() {"):]
+  toggle = toggle[:toggle.index("\n    },")]
+  assert "this.dateFrom = localDay()" in toggle and "this.dateTo = localDay()" in toggle
+  assert "loadViewerEvents()" in toggle
+
+
 def test_ui_mobile_polish_regressions():
   system = _read("js/views/SystemTools.js")
   css = _read("css/material.css")

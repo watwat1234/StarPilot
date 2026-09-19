@@ -5,18 +5,15 @@ All paths are under `starpilot/system/the_galaxy/`.
 
 ## Status (as of 2026-09-19)
 - **Shipped and pushed** to `origin` and `github` on all three branches (see Commits): the MP4 timelapse endpoint and button, kind badges, gap pacing with gap label and timeline bar, the ffmpeg fix, the inset fix, and the interactive viewer.
-- **Confirmed by the user on the device:** the Sentry page is useful, and the timelapse works after the ffmpeg fix ("this is pretty great"). The user said the viewer "can actually just completely replace the existing history viewer" and is now trying it on the device and in a real browser. **No findings from that session are recorded yet**; see "Next steps".
+- **Confirmed by the user on the device:** the Sentry page is useful, and the timelapse works after the ffmpeg fix ("this is pretty great"). The user has since tested the viewer on a real device in both mobile and desktop browsers and says it "works pretty well". They decided to make it the default: see "Old history list removed" below and `sentry-history-viewer-migration.md`.
+- **Old history list removed (uncommitted at time of writing):** mobile "View history" now opens the scrubber directly, seeded to today (`dateFrom = dateTo = today`). The paginated card list, infinite-scroll observer and paging state are gone from `views/Sentry.js`. Empty range shows "Last 7 days" / "Show all". The scrubber image is now tappable for full size. The desktop UI keeps its own list. Backend `limit`/`offset` is unchanged.
 - **Verified on the dev box only:** the encode helpers, against synthetic images with both the system ffmpeg and the repo's bundled ffmpeg; the frontend with real Node + jsdom (7 component checks, 5 integration checks against the real `Sentry.js`); the repo's frontend tests (38 passed, 4 skipped). The Flask routes themselves were never run here (the module needs the full device environment). `py_compile` passes.
 - **Not tested anywhere yet:** touch dragging, `IntersectionObserver` and real image decoding (jsdom cannot show these), encode time on the device CPU, very large histories (hundreds of events).
 
 ## Next steps
 1. **Collect the user's findings** from the device/browser session. What to look for: timeline dragging on touch (does the page scroll?), blank flashes when scrubbing fast over a slow link, whether revisited frames come from cache in the Network tab (if not, Galaxy probably was not restarted and is serving the old `max_age=0`), playback pacing and stop-at-end, delete landing on a sensible neighbor, selfie placeholder in Road mode, time to open the viewer on a long history. Anything from the browser console is especially useful because there is no console on the dev box.
-2. **Replace the paginated history list with the viewer** (user's idea, not started; decision deferred until they have used it more). Plan: build it as its own commit on `sentry-history-pagination` so it is easy to revert.
-   - Removes about 100 lines from `views/Sentry.js`: the `IntersectionObserver`, sentinel, append/dedupe, "Retry loading more", the paging state and the two watchers that re-arm it. Backend `limit`/`offset` stays (desktop UI and other callers use it); only the mobile UI stops calling it.
-   - Must move over first: `historyTotal` (drives "Delete all" visibility and its confirm text) and the newest-event comparison behind "New event - refresh" (currently `history[0]`) both need to read from the viewer's event list instead.
-   - "View history" should open the viewer directly rather than sitting next to a separate button.
-   - Keep the date filter, bulk delete, refresh button and MP4 export above the viewer.
-3. **Small viewer additions worth doing with the replacement:** tap the image to open it full size (the list has this via `target=_blank`; the viewer does not); optionally a thumbnail strip under the timeline if losing the "see ten events at once" view turns out to matter. Hold off on the strip until the user says so.
+2. **Replace the paginated history list with the viewer:** done, see Status. Remaining: browser check of the new flow (`sentry-history-viewer-migration.md` Verification), then commit.
+3. **Thumbnail strip under the timeline:** only if losing the "see ten events at once" view turns out to matter. Hold off until the user says so. (Tap-to-full-size is done.)
 4. **If the viewer feels slow on the hotspot:** widen or narrow the preload window (`PRELOAD_AHEAD`/`PRELOAD_BEHIND` in `SentryScrubber.js`) before building anything; a thumbnail route was deliberately not built because images are about 61KB.
 5. **Housekeeping:** the viewer and endpoint have no committed tests (the jsdom harness lived in a session scratchpad and was not saved; recreate it per "Dev-box testing notes" if needed). If the MP4 export turns out to be used rarely, consider whether it is worth keeping given the viewer.
 
@@ -65,7 +62,7 @@ Also added: on ffmpeg failure the message includes ffmpeg's last stderr line and
 Added after the timelapse, because a viewer needs no encoding (no CPU wait, no 60s cap, no 600-frame sampling, none of the ffmpeg-build trouble) and shows every event at native resolution. The MP4 export stays for producing a shareable file.
 
 - **Files:** new `assets/mobile/js/components/SentryScrubber.js`; wired into `assets/mobile/js/views/Sentry.js` with an "Open viewer" / "View range" button in the history panel (next to the timelapse controls).
-- **Data flow:** the parent fetches the full unpaginated event list (`api.getSentryEvents` with only `since`/`until`) and passes it as a prop. The component never calls `fetch` itself, because `tests/test_ui_vue_frontend.py` asserts `Sentry.js` has no `fetch(`. The viewer replaces the paginated list while open; hiding history or closing the viewer restores it (and re-arms the infinite-scroll observer).
+- **Data flow:** the parent fetches the full unpaginated event list (`api.getSentryEvents` with only `since`/`until`) and passes it as a prop. The component never calls `fetch` itself, because `tests/test_ui_vue_frontend.py` asserts `Sentry.js` has no `fetch(`. The viewer is now the only history view. It opens on today's range, and closing it hides history.
 - **Controls:** Road/Driver/Both toggle; play/pause with 0.5x-4x speed; prev/next event; prev/next **alarm**; a timeline where tap or drag jumps to the nearest event by real time; delete-current-event; keyboard (ArrowLeft/Right, Home/End, Space).
 - **Overlays are HTML**, not pixels: kind label in the kind color, local timestamp, "next event in ...", message, and a 4px always-present border that turns red on alarms (so nothing shifts). Selfies show a "No road image" placeholder in Road mode. Image boxes have a fixed 1344:760 aspect ratio so the layout never jumps.
 - **Playback** reuses the MP4 gap-pacing formula in JS (`0.15 + 0.25*log10(1 + gap_min)`, max 1.5s, last frame 1s), divided by the speed. It does not advance onto a frame whose image has not finished loading (waits up to 3s), and it stops at the last event.
@@ -126,6 +123,6 @@ Viewer:
 - The gap label and bar are baked into the pixels; there is no way to turn them off.
 - Desktop UI has no timelapse (or date filter / bulk delete).
 - The `fps` param only matters for `timing=even` and is not exposed in the UI.
-- Viewer: the image is not tappable for a full-size view, and there is no thumbnail strip or grid (see Next steps).
+- Viewer: there is no thumbnail strip or grid (see Next steps).
 - Viewer: events seconds apart inside a multi-day range are under a pixel apart on the timeline, so dragging cannot separate them (use the step buttons or arrow keys).
 - Viewer: playback speed and camera choice are not remembered between openings.

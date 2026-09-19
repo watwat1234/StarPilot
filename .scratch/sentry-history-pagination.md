@@ -4,6 +4,8 @@ Branch: `sentry-history-pagination` (merged into `wat-bolt-tuning`, pushed to `o
 All paths below are under `starpilot/system/the_galaxy/`.
 
 ## Status
+The mobile paginated list, infinite scroll and paging state described below were later removed: "View history" now opens the scrubber directly, seeded to today. See `sentry-history-viewer-migration.md`. The backend `limit`/`offset` pagination and the desktop Load more list are unchanged.
+
 Later work on this page (timelapse from the retained images, kind badges, gap pacing) is documented in `sentry-timelapse.md`. The user has since confirmed the Sentry page is working well on the device. The paragraph below is the original status when this doc was written and is kept for the record.
 
 **None of this had been run when this was written.** No `node` on the dev box, no `pytest` (`python3 -m unittest tests.test_ui_vue_frontend` errored and was not investigated), and no browser or device test. Only `python3 -m py_compile the_galaxy.py` was run (passes). The only device-side confirmation so far: the refresh fix worked after the mobile change was deployed (user report). Everything after that (infinite scroll, date filter, bulk delete) is untested.

@@ -887,6 +887,27 @@ def _delete_sentry_event_storage(event_id: str) -> bool:
   return deleted
 
 
+def _forget_sentry_events(removed_ids: set[str]) -> bool:
+  """Drops the events from the catalog and, if the last-event param named one, repoints it at the newest survivor.
+
+  Returns whether the catalog changed.
+  """
+  current_event = _stored_sentry_event()
+  with _SENTRY_EVENT_INDEX_LOCK:
+    events = _load_sentry_event_catalog_unlocked()
+    retained_events = [event for event in events if event.get("eventId") not in removed_ids]
+    catalog_changed = len(retained_events) != len(events)
+    if catalog_changed:
+      _save_sentry_event_catalog_unlocked(retained_events)
+
+  if current_event is not None and current_event.get("eventId") in removed_ids:
+    if retained_events:
+      params.put("SentryModeLastEvent", json.dumps(retained_events[0], separators=(",", ":")))
+    else:
+      params.remove("SentryModeLastEvent")
+  return catalog_changed
+
+
 _SENTRY_TIMELAPSE_LOCK = threading.Lock()
 _SENTRY_TIMELAPSE_FRAME_WIDTH = 640
 _SENTRY_TIMELAPSE_MAX_FRAMES = 600
@@ -9516,18 +9537,7 @@ def setup(app):
       except OSError:
         failed += 1
 
-    current_event = _stored_sentry_event()
-    with _SENTRY_EVENT_INDEX_LOCK:
-      events = _load_sentry_event_catalog_unlocked()
-      retained_events = [event for event in events if event.get("eventId") not in removed_ids]
-      if len(retained_events) != len(events):
-        _save_sentry_event_catalog_unlocked(retained_events)
-
-    if current_event is not None and current_event.get("eventId") in removed_ids:
-      if retained_events:
-        params.put("SentryModeLastEvent", json.dumps(retained_events[0], separators=(",", ":")))
-      else:
-        params.remove("SentryModeLastEvent")
+    _forget_sentry_events(removed_ids)
 
     return jsonify({"deleted": len(removed_ids), "failed": failed})
 
@@ -9545,23 +9555,9 @@ def setup(app):
     except OSError:
       return jsonify({"error": "Failed to delete the Sentry event's images."}), 500
 
-    current_event = _stored_sentry_event()
-    current_event_deleted = current_event is not None and current_event.get("eventId") == event_id
-    with _SENTRY_EVENT_INDEX_LOCK:
-      events = _load_sentry_event_catalog_unlocked()
-      retained_events = [event for event in events if event.get("eventId") != event_id]
-      catalog_deleted = len(retained_events) != len(events)
-      if catalog_deleted:
-        _save_sentry_event_catalog_unlocked(retained_events)
-
+    catalog_deleted = _forget_sentry_events({event_id})
     if not deleted_storage and not catalog_deleted:
       return jsonify({"error": "Sentry event not found."}), 404
-
-    if current_event_deleted:
-      if retained_events:
-        params.put("SentryModeLastEvent", json.dumps(retained_events[0], separators=(",", ":")))
-      else:
-        params.remove("SentryModeLastEvent")
 
     return jsonify({"deleted": True, "eventId": event_id})
 

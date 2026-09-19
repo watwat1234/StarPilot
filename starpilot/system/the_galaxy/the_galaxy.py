@@ -646,6 +646,7 @@ def _sentry_event_roots() -> tuple[Path, ...]:
   return tuple(root.resolve() for root in roots)
 
 
+_SENTRY_IMAGE_CACHE_SECONDS = 7 * 24 * 60 * 60
 _SENTRY_EVENT_INDEX_NAME = "events.json"
 _SENTRY_EVENT_INDEX_LOCK = threading.Lock()
 
@@ -9599,7 +9600,10 @@ def setup(app):
     image_path = _sentry_image_path(event_id, filename)
     if image_path is None:
       return jsonify({"error": "Sentry image not found."}), 404
-    return send_file(image_path, mimetype="image/jpeg", max_age=0)
+    # Stored event images never change, so let the browser keep them (the viewer re-visits frames constantly).
+    # The live snapshot is overwritten in place, so it must not be cached.
+    max_age = 0 if event_id == _SENTRY_LIVE_EVENT_ID else _SENTRY_IMAGE_CACHE_SECONDS
+    return send_file(image_path, mimetype="image/jpeg", max_age=max_age)
 
   @app.route("/api/sentry/live", methods=["GET"])
   def sentry_live():

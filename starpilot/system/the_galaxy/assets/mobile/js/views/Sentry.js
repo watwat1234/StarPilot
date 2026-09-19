@@ -3,7 +3,7 @@ import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySection } from "../components/GalaxySection.js"
 import { GalaxySheet } from "../components/GalaxySheet.js"
-import { SentryScrubber } from "../components/SentryScrubber.js"
+import { SentryScrubber, isCaptureEvent } from "../components/SentryScrubber.js"
 
 function b64ToBytes(value) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4)
@@ -66,6 +66,8 @@ export const Sentry = {
     window.removeEventListener("keydown", this._onKeydown)
   },
   computed: {
+    captureEvents() { return this.viewerEvents.filter(isCaptureEvent) },
+    alertEvents() { return this.viewerEvents.filter((e) => !isCaptureEvent(e)) },
     statusText() { return String(this.status?.state || "unknown") },
     hasEvent() { return !!(this.event && this.event.eventId) },
     filterActive() { return !!(this.dateFrom || this.dateTo) },
@@ -174,11 +176,15 @@ export const Sentry = {
       if (this.deleteBusy || !total) return
       const range = this.historyRange()
       const scoped = this.filterActive
+      const captures = this.captureEvents.length
+      const alerts = this.alertEvents.length
+      const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`
+      const what = alerts ? `${plural(captures, "capture")} and ${plural(alerts, "alert")}` : plural(total, "Sentry event")
       if (!(await GalaxyConfirm({
         title: scoped ? "Delete events in this range?" : "Delete ALL Sentry events?",
         message: scoped
-          ? `Delete the ${total} Sentry event${total === 1 ? "" : "s"} in this date range and their camera images? This cannot be undone.`
-          : `Delete all ${total} Sentry events and their camera images? This cannot be undone.`,
+          ? `Delete ${what} in this date range and their camera images? This cannot be undone.`
+          : `Delete all ${what} and their camera images? This cannot be undone.`,
         confirmLabel: scoped ? "Delete matching" : "Delete all",
         danger: true,
       }))) return
@@ -508,7 +514,7 @@ export const Sentry = {
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
             </div>
-            <div v-if="viewerEvents.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
+            <div v-if="captureEvents.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
               <label style="flex:1 1 110px;">
                 <div class="gx-row__desc" style="margin:0 0 4px;">Camera</div>
                 <select class="gx-field gx-field--full" v-model="timelapseCamera" :disabled="timelapseBusy">
@@ -530,7 +536,21 @@ export const Sentry = {
             </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
             <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
-            <SentryScrubber v-else-if="viewerEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" @delete="deleteEvent" @close="toggleHistory" />
+            <template v-else-if="viewerEvents.length">
+              <SentryScrubber v-if="captureEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" @delete="deleteEvent" @close="toggleHistory" />
+              <p v-else class="gx-empty">No captures in this range.</p>
+              <div v-if="alertEvents.length" data-testid="sentry-alerts" style="margin-top:var(--sp-2);">
+                <div class="gx-row__desc" style="margin:0 0 4px;">Alerts without photos</div>
+                <div v-for="alert in alertEvents" :key="alert.eventId" style="display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--border-color, rgba(255,255,255,.08));">
+                  <span class="gx-chip" :style="{ color: kindColor(alert.kind) }">{{ kindLabel(alert.kind) }}</span>
+                  <div style="flex:1; min-width:0;">
+                    <div>{{ alert.message || 'Sentry alert' }}</div>
+                    <div class="gx-row__desc" style="margin:0;">{{ alert.detectedAt ? new Date(alert.detectedAt).toLocaleString() : '' }}</div>
+                  </div>
+                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">Delete</button>
+                </div>
+              </div>
+            </template>
             <div v-else>
               <p class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No retained Sentry events.' }}</p>
               <div v-if="filterActive" style="display:flex; gap:8px; flex-wrap:wrap;">

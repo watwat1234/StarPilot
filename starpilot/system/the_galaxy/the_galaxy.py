@@ -877,7 +877,16 @@ def _delete_sentry_event_storage(event_id: str) -> bool:
 
 _SENTRY_TIMELAPSE_LOCK = threading.Lock()
 _SENTRY_TIMELAPSE_FRAME_WIDTH = 640
-_SENTRY_TIMELAPSE_MAX_FRAMES = {"mp4": 600, "gif": 120}
+_SENTRY_TIMELAPSE_MAX_FRAMES = 600
+_SENTRY_TIMELAPSE_OUTPUT_FPS = 30
+_SENTRY_TIMELAPSE_MAX_SECONDS = 60.0
+_SENTRY_TIMELAPSE_MIN_FRAME_SECONDS = 0.04
+# Gap-paced frame time: base + scale * log10(1 + gap in minutes), clamped. About 0.22s for a 1 minute gap,
+# 0.6s for an hour, 0.9s for a day and 1.15s for a week, so bursts stay readable and lulls still pause.
+_SENTRY_TIMELAPSE_GAP_BASE_SECONDS = 0.15
+_SENTRY_TIMELAPSE_GAP_SCALE_SECONDS = 0.25
+_SENTRY_TIMELAPSE_GAP_MAX_SECONDS = 1.5
+_SENTRY_TIMELAPSE_LAST_FRAME_SECONDS = 1.0
 _SENTRY_TIMELAPSE_FILES = {"wide": ("wide.jpg",), "driver": ("driver.jpg",), "both": ("wide.jpg", "driver.jpg")}
 # kind -> (badge label, badge color); alarms also get a border so they stand out at a glance.
 _SENTRY_TIMELAPSE_BADGES = {
@@ -887,6 +896,7 @@ _SENTRY_TIMELAPSE_BADGES = {
 }
 _SENTRY_TIMELAPSE_DEFAULT_BADGE = ("EVENT", (140, 140, 140))
 _SENTRY_TIMELAPSE_ALARM_BORDER = 8
+_SENTRY_TIMELAPSE_BAR_HEIGHT = 26
 _SENTRY_TIMELAPSE_FONTS = (
   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
   "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -924,7 +934,61 @@ def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], ma
   return frames
 
 
-def _render_sentry_timelapse_frame(paths: list[Path], detected_at: datetime, kind: str, output_path: Path) -> None:
+def _sentry_timelapse_gaps(frames: list[tuple[datetime, str, list[Path]]]) -> list[float | None]:
+  """Seconds from each frame to the next one; None for the last frame."""
+  return [(frames[i + 1][0] - frames[i][0]).total_seconds() for i in range(len(frames) - 1)] + [None]
+
+
+def _sentry_timelapse_durations(gaps: list[float | None], timing: str, fps: int) -> list[float]:
+  """How long each frame is shown. 'gap' compresses the real gaps logarithmically, 'even' uses 1/fps.
+
+  Either way the total is scaled down to _SENTRY_TIMELAPSE_MAX_SECONDS if it would run longer.
+  """
+  if timing == "even":
+    durations = [1.0 / fps] * len(gaps)
+  else:
+    durations = []
+    for gap in gaps:
+      if gap is None:
+        durations.append(_SENTRY_TIMELAPSE_LAST_FRAME_SECONDS)
+        continue
+      seconds = _SENTRY_TIMELAPSE_GAP_BASE_SECONDS + _SENTRY_TIMELAPSE_GAP_SCALE_SECONDS * math.log10(1 + max(gap, 0.0) / 60.0)
+      durations.append(min(seconds, _SENTRY_TIMELAPSE_GAP_MAX_SECONDS))
+
+  total = sum(durations)
+  if total > _SENTRY_TIMELAPSE_MAX_SECONDS:
+    scale = _SENTRY_TIMELAPSE_MAX_SECONDS / total
+    durations = [max(duration * scale, _SENTRY_TIMELAPSE_MIN_FRAME_SECONDS) for duration in durations]
+  return durations
+
+
+def _format_sentry_gap(seconds: float) -> str:
+  seconds = int(max(seconds, 0))
+  if seconds < 60:
+    return f"{seconds}s"
+  minutes = seconds // 60
+  if minutes < 60:
+    return f"{minutes}m"
+  hours, minutes = divmod(minutes, 60)
+  if hours < 24:
+    return f"{hours}h {minutes}m"
+  days, hours = divmod(hours, 24)
+  return f"{days}d {hours}h"
+
+
+def _sentry_timelapse_timeline(frames: list[tuple[datetime, str, list[Path]]]) -> list[float]:
+  """Each frame's position (0..1) along the real time span of the range."""
+  start = frames[0][0]
+  span = (frames[-1][0] - start).total_seconds()
+  if span <= 0:
+    return [0.5] * len(frames)
+  return [(frame[0] - start).total_seconds() / span for frame in frames]
+
+
+def _render_sentry_timelapse_frame(
+  paths: list[Path], detected_at: datetime, kind: str, gap_to_next: float | None,
+  index: int, positions: list[float], kinds: list[str], output_path: Path,
+) -> None:
   from PIL import Image, ImageDraw
 
   tiles = []
@@ -936,47 +1000,80 @@ def _render_sentry_timelapse_frame(paths: list[Path], detected_at: datetime, kin
 
   frame_height = max(tile.height for tile in tiles)
   frame = Image.new("RGB", (_SENTRY_TIMELAPSE_FRAME_WIDTH * len(tiles), frame_height))
-  for index, tile in enumerate(tiles):
-    frame.paste(tile, (index * _SENTRY_TIMELAPSE_FRAME_WIDTH, 0))
+  for tile_index, tile in enumerate(tiles):
+    frame.paste(tile, (tile_index * _SENTRY_TIMELAPSE_FRAME_WIDTH, 0))
 
   badge_label, badge_color = _SENTRY_TIMELAPSE_BADGES.get(kind, _SENTRY_TIMELAPSE_DEFAULT_BADGE)
   label = detected_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
   draw = ImageDraw.Draw(frame)
   font = _sentry_timelapse_font(22)
+  small_font = _sentry_timelapse_font(17)
 
-  # Drawn as shapes plus text, not a Unicode glyph, so it does not depend on the font having the symbol.
   inset = 0
   if kind == "alarm":
     draw.rectangle((0, 0, frame.width - 1, frame.height - 1), outline=badge_color, width=_SENTRY_TIMELAPSE_ALARM_BORDER)
     inset = _SENTRY_TIMELAPSE_ALARM_BORDER
+
+  # Drawn as shapes plus text, not a Unicode glyph, so it does not depend on the font having the symbol.
   x, y = 10 + inset, 8 + inset
   dot = 14
   badge_width = draw.textlength(badge_label, font=font)
   left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
-  height = bottom - top
+  line_height = bottom - top
   total = dot + 8 + badge_width + 16 + (right - left)
-  draw.rectangle((x - 6, y - 4, x + total + 6, y + height + 8), fill=(0, 0, 0))
-  draw.ellipse((x, y + (height - dot) // 2 + 2, x + dot, y + (height - dot) // 2 + 2 + dot), fill=badge_color)
+  gap_text = f"next event in {_format_sentry_gap(gap_to_next)}" if gap_to_next is not None else "last event"
+  box_bottom = y + line_height + 8 + 22
+  draw.rectangle((x - 6, y - 4, x + total + 6, box_bottom), fill=(0, 0, 0))
+  draw.ellipse((x, y + (line_height - dot) // 2 + 2, x + dot, y + (line_height - dot) // 2 + 2 + dot), fill=badge_color)
   draw.text((x + dot + 8, y), badge_label, fill=badge_color, font=font)
   draw.text((x + dot + 8 + badge_width + 16, y), label, fill=(255, 255, 255), font=font)
+  draw.text((x, y + line_height + 8), gap_text, fill=(170, 170, 170), font=small_font)
+
+  # Timeline bar along the bottom: every event in real-time position, the current one highlighted.
+  bar_top = frame.height - inset - _SENTRY_TIMELAPSE_BAR_HEIGHT
+  bar_left, bar_right = inset + 10, frame.width - inset - 10
+  draw.rectangle((inset, bar_top, frame.width - inset, frame.height - inset), fill=(0, 0, 0))
+  middle = bar_top + _SENTRY_TIMELAPSE_BAR_HEIGHT // 2
+  draw.line((bar_left, middle, bar_right, middle), fill=(120, 120, 120), width=3)
+  for other_index, position in enumerate(positions):
+    tick_x = bar_left + position * (bar_right - bar_left)
+    tick_color = _SENTRY_TIMELAPSE_BADGES.get(kinds[other_index], _SENTRY_TIMELAPSE_DEFAULT_BADGE)[1]
+    if other_index > index:
+      tick_color = tuple(channel * 2 // 5 for channel in tick_color)
+    draw.line((tick_x, bar_top + 4, tick_x, frame.height - inset - 4), fill=tick_color, width=3)
+  current_x = bar_left + positions[index] * (bar_right - bar_left)
+  draw.rectangle((current_x - 3, bar_top + 2, current_x + 3, frame.height - inset - 2), fill=(255, 255, 255))
   frame.save(output_path, "JPEG", quality=88)
 
 
-def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], output_format: str, fps: int) -> bytes:
-  """Renders the frames and encodes them with ffmpeg; raises RuntimeError if ffmpeg fails."""
+def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], durations: list[float]) -> bytes:
+  """Renders the frames and encodes them to MP4 with ffmpeg, each shown for its duration; raises RuntimeError on failure."""
+  gaps = _sentry_timelapse_gaps(frames)
+  positions = _sentry_timelapse_timeline(frames)
+  kinds = [frame[1] for frame in frames]
   with tempfile.TemporaryDirectory(prefix="sentry-timelapse-") as work_dir:
     work = Path(work_dir)
+    frame_paths = []
     for index, (detected_at, kind, paths) in enumerate(frames):
-      _render_sentry_timelapse_frame(paths, detected_at, kind, work / f"frame{index:05d}.jpg")
+      frame_path = work / f"frame{index:05d}.jpg"
+      _render_sentry_timelapse_frame(paths, detected_at, kind, gaps[index], index, positions, kinds, frame_path)
+      frame_paths.append(frame_path)
 
-    output = work / f"timelapse.{output_format}"
-    command = [utilities.FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-y", "-framerate", str(fps), "-i", str(work / "frame%05d.jpg")]
-    if output_format == "gif":
-      command += ["-filter_complex", "split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4", "-loop", "0"]
-    else:
-      command += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "26", "-movflags", "+faststart"]
-    command.append(str(output))
+    # The concat demuxer ignores the last entry's duration, so that frame is listed twice.
+    list_path = work / "frames.txt"
+    with open(list_path, "w") as list_file:
+      for frame_path, duration in zip(frame_paths, durations):
+        list_file.write(f"file '{frame_path}'\nduration {duration:.3f}\n")
+      list_file.write(f"file '{frame_paths[-1]}'\n")
 
+    output = work / "timelapse.mp4"
+    command = [
+      utilities.FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-y",
+      "-f", "concat", "-safe", "0", "-i", str(list_path),
+      "-vf", f"fps={_SENTRY_TIMELAPSE_OUTPUT_FPS}",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "26", "-movflags", "+faststart",
+      str(output),
+    ]
     try:
       result = subprocess.run(command, capture_output=True, timeout=180)
     except subprocess.TimeoutExpired as error:
@@ -9216,32 +9313,34 @@ def setup(app):
       return jsonify({"error": filter_error}), 400
 
     camera = request.args.get("camera", "wide")
-    output_format = request.args.get("format", "mp4")
+    timing = request.args.get("timing", "gap")
     fps = request.args.get("fps", default=4, type=int)
     if camera not in _SENTRY_TIMELAPSE_FILES:
       return jsonify({"error": "camera must be wide, driver, or both."}), 400
-    if output_format not in _SENTRY_TIMELAPSE_MAX_FRAMES:
-      return jsonify({"error": "format must be mp4 or gif."}), 400
+    if timing not in {"gap", "even"}:
+      return jsonify({"error": "timing must be gap or even."}), 400
     fps = min(max(fps if fps is not None else 4, 1), 30)
 
     events = _filter_sentry_events_by_time(_sentry_event_catalog(), since, until)
-    frames = _sentry_timelapse_sources(events, _SENTRY_TIMELAPSE_FILES[camera], _SENTRY_TIMELAPSE_MAX_FRAMES[output_format])
+    frames = _sentry_timelapse_sources(events, _SENTRY_TIMELAPSE_FILES[camera], _SENTRY_TIMELAPSE_MAX_FRAMES)
     if not frames:
       return jsonify({"error": "No Sentry images to make a timelapse from."}), 404
+    durations = _sentry_timelapse_durations(_sentry_timelapse_gaps(frames), timing, fps)
 
     if not _SENTRY_TIMELAPSE_LOCK.acquire(blocking=False):
       return jsonify({"error": "A timelapse is already being made."}), 409
     try:
-      data = _encode_sentry_timelapse(frames, output_format, fps)
+      data = _encode_sentry_timelapse(frames, durations)
     except (RuntimeError, OSError) as error:
       cloudlog.exception("sentry timelapse failed")
       return jsonify({"error": str(error) or "Timelapse encoding failed."}), 500
     finally:
       _SENTRY_TIMELAPSE_LOCK.release()
 
-    response = Response(data, mimetype="image/gif" if output_format == "gif" else "video/mp4")
-    response.headers["Content-Disposition"] = f'attachment; filename="sentry-timelapse.{output_format}"'
+    response = Response(data, mimetype="video/mp4")
+    response.headers["Content-Disposition"] = 'attachment; filename="sentry-timelapse.mp4"'
     response.headers["X-Timelapse-Frames"] = str(len(frames))
+    response.headers["X-Timelapse-Seconds"] = f"{sum(durations):.1f}"
     response.headers["Cache-Control"] = "no-store"
     return response
 

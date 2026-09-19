@@ -296,12 +296,12 @@ export const api = {
     if (all) query.set("all", "1")
     return request(`/api/sentry/events?${query.toString()}`, { method: "DELETE" })
   },
-  async getSentryTimelapse({ since, until, camera, format } = {}) {
+  async getSentryTimelapse({ since, until, camera, timing } = {}) {
     const query = new URLSearchParams()
     if (since) query.set("since", since)
     if (until) query.set("until", until)
     if (camera) query.set("camera", camera)
-    if (format) query.set("format", format)
+    if (timing) query.set("timing", timing)
     const res = await fetch(`/api/sentry/timelapse?${query.toString()}`, { cache: "no-store" })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
@@ -309,7 +309,11 @@ export const api = {
       err.data = data
       throw err
     }
-    return { blob: await res.blob(), frames: Number(res.headers.get("X-Timelapse-Frames")) || 0 }
+    return {
+      blob: await res.blob(),
+      frames: Number(res.headers.get("X-Timelapse-Frames")) || 0,
+      seconds: Number(res.headers.get("X-Timelapse-Seconds")) || 0,
+    }
   },
   getSentryLive() { return request("/api/sentry/live", { cache: "no-store" }) },
   deleteSentryEvent(eventId) { return request(`/api/sentry/events/${encodeURIComponent(eventId)}`, { method: "DELETE" }) },

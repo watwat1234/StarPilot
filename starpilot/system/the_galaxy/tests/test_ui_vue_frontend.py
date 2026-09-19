@@ -558,6 +558,17 @@ def test_ui_sentry_history_opens_the_scrubber_on_today():
   assert "loadViewerEvents()" in toggle
 
 
+def test_ui_sentry_history_separates_photo_less_alerts():
+  """Power-off / low-voltage / test events have no photos: listed apart from the scrubber, counted separately."""
+  scrubber = _read("js/components/SentryScrubber.js")
+  assert "export function isCaptureEvent" in scrubber and ".filter(isCaptureEvent)" in scrubber
+  sentry = _read("js/views/Sentry.js")
+  assert "import { SentryScrubber, isCaptureEvent }" in sentry
+  assert "captureEvents()" in sentry and "alertEvents()" in sentry
+  assert '<div v-if="captureEvents.length" style="display:flex' in sentry
+  assert 'v-for="alert in alertEvents"' in sentry
+
+
 def test_ui_mobile_polish_regressions():
   system = _read("js/views/SystemTools.js")
   css = _read("css/material.css")

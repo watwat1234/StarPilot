@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -233,3 +235,37 @@ def test_timelapse_skips_a_frame_deleted_mid_encode(env, monkeypatch, tmp_path):
   fps = the_galaxy._SENTRY_TIMELAPSE_OUTPUT_FPS
   assert len(encoded) == 2 * fps  # frames a and c, one second each; b was skipped
   assert len(warnings) == 1 and "/b/" in warnings[0]
+
+
+@pytest.mark.skipif(shutil.which(getattr(the_galaxy.utilities, "FFMPEG_BIN", "ffmpeg")) is None, reason="ffmpeg not installed")
+def test_timelapse_real_encode_skips_a_frame_deleted_mid_encode(env, monkeypatch, tmp_path):
+  from PIL import Image
+
+  for hour, event_id in enumerate(("a", "b", "c"), start=1):
+    env.add_event(event_id, hour)
+    Image.new("RGB", (320, 180), (40 * hour, 90, 160)).save(env.roots[0] / event_id / "wide.jpg")
+  frames = the_galaxy._sentry_timelapse_sources(the_galaxy._sentry_event_catalog(), ("wide.jpg",), 600)
+  assert len(frames) == 3
+
+  real_render = the_galaxy._render_sentry_timelapse_frame
+
+  def render_with_delete(paths, detected_at, kind, gap, index, positions, kinds, output_path):
+    if index == 1:  # the user deletes the middle event just before its frame is rendered
+      shutil.rmtree(paths[0].parent)
+    return real_render(paths, detected_at, kind, gap, index, positions, kinds, output_path)
+
+  monkeypatch.setattr(the_galaxy, "_render_sentry_timelapse_frame", render_with_delete)
+  monkeypatch.setattr(the_galaxy.cloudlog, "warning", lambda *args, **kwargs: None, raising=False)
+
+  data = the_galaxy._encode_sentry_timelapse(frames, [1.0, 1.0, 1.0])
+
+  video = tmp_path / "out.mp4"
+  video.write_bytes(data)
+  assert data[4:8] == b"ftyp"
+  probe = subprocess.run(
+    [str(Path(the_galaxy.utilities.FFMPEG_BIN).with_name("ffprobe")), "-v", "error", "-select_streams", "v:0",
+     "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(video)],
+    capture_output=True, text=True,
+  )
+  assert probe.returncode == 0, probe.stderr
+  assert int(probe.stdout.strip()) == 2 * the_galaxy._SENTRY_TIMELAPSE_OUTPUT_FPS  # frames a and c, one second each

@@ -14,13 +14,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-server supervisor \
-      x11vnc fluxbox novnc websockify xterm \
+      x11vnc fluxbox novnc websockify xterm xfce4-terminal dbus-x11 \
       ccache gdb rsync htop jq ripgrep less \
       nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && git lfs install --system \
     && git config --system --add safe.directory '*' \
-    && mkdir -p /run/sshd
+    && mkdir -p /run/sshd \
+    && update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper
 
 # Docker CLI + compose plugin (client only) so ./build can start the arm64
 # builder container through the host's /var/run/docker.sock. The CLI version
@@ -66,6 +67,7 @@ RUN rsync -a --chown=${DEV_UID}:${DEV_GID} --exclude=/.venv --exclude=/.local/bi
 
 COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
 COPY tools/wat_dev/entrypoint.sh /entrypoint.sh
+COPY tools/wat_dev/Xresources /etc/wat-dev.Xresources
 COPY tools/wat_dev/bin/sp-agnos-check tools/wat_dev/bin/sp-build /usr/local/bin/
 RUN chmod +x /entrypoint.sh
 

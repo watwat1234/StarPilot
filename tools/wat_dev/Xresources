@@ -1,0 +1,34 @@
+! Loaded by supervisord (xrdb -merge) before fluxbox starts. Keeps xterm usable
+! (TrueType font, dark theme, 256 colors, UTF-8, copy/paste) for anything that
+! still launches it; the default terminal is xfce4-terminal.
+XTerm*faceName:          DejaVu Sans Mono
+XTerm*faceSize:          11
+XTerm*renderFont:        true
+XTerm*utf8:              1
+XTerm*termName:          xterm-256color
+XTerm*saveLines:         20000
+XTerm*scrollBar:         false
+XTerm*metaSendsEscape:   true
+XTerm*selectToClipboard: true
+XTerm*background:        #1e1e1e
+XTerm*foreground:        #d4d4d4
+XTerm*cursorColor:       #d4d4d4
+XTerm*color0:  #1e1e1e
+XTerm*color1:  #f14c4c
+XTerm*color2:  #23d18b
+XTerm*color3:  #f5f543
+XTerm*color4:  #3b8eea
+XTerm*color5:  #d670d6
+XTerm*color6:  #29b8db
+XTerm*color7:  #d4d4d4
+XTerm*color8:  #666666
+XTerm*color9:  #f14c4c
+XTerm*color10: #23d18b
+XTerm*color11: #f5f543
+XTerm*color12: #3b8eea
+XTerm*color13: #d670d6
+XTerm*color14: #29b8db
+XTerm*color15: #ffffff
+XTerm*VT100.translations: #override \n\
+    Ctrl Shift <Key>C: copy-selection(CLIPBOARD) \n\
+    Ctrl Shift <Key>V: insert-selection(CLIPBOARD)

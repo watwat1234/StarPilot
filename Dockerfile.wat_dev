@@ -22,19 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git config --system --add safe.directory '*' \
     && mkdir -p /run/sshd
 
-RUN curl -fsSL https://code-server.dev/install.sh | sh
-
-# Browser code-server extensions, kept outside ~ (the home volume is seeded once)
-# and loaded via --extra-extensions-dir in supervisord.conf. code-server pulls
-# from Open VSX, so a marketplace hiccup only warns instead of failing the build.
-# (Desktop VS Code Remote-SSH installs its own extensions on the remote.)
-RUN mkdir -p /opt/code-server-extensions \
-    && for ext in ms-python.python llvm-vs-code-extensions.vscode-clangd eamodio.gitlens; do \
-         code-server --extensions-dir /opt/code-server-extensions --install-extension "$ext" \
-           || echo "WARNING: could not install $ext"; \
-       done \
-    && chmod -R a+rX /opt/code-server-extensions
-
 # Docker CLI + compose plugin (client only) so ./build can start the arm64
 # builder container through the host's /var/run/docker.sock. The CLI version
 # matches the Unraid host (27.5.1).
@@ -53,7 +40,7 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 RUN npm install -g @anthropic-ai/claude-code
 
 # uv is installed under ~/.local/bin by the base image but isn't on PATH;
-# symlink it so every shell (ssh, code-server, supervisord children) finds it.
+# symlink it so every shell (ssh, supervisord children) finds it.
 RUN ln -s /home/${DEV_USER}/.local/bin/uv /usr/local/bin/uv \
     && ln -s /home/${DEV_USER}/.local/bin/uvx /usr/local/bin/uvx
 
@@ -68,5 +55,5 @@ COPY tools/wat_dev/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENV DEV_USER=${DEV_USER} DISPLAY=:1 CCACHE_DIR=/ccache
-EXPOSE 22 8443 6080
+EXPOSE 22 6080
 ENTRYPOINT ["/entrypoint.sh"]

@@ -15,11 +15,9 @@ services:
     security_opt: ["seccomp=unconfined"]
     environment:
       AUTHORIZED_KEY: "${AUTHORIZED_KEY:?set AUTHORIZED_KEY in .env}"
-      PASSWORD: "${CODE_SERVER_PASSWORD:?set CODE_SERVER_PASSWORD in .env}"   # code-server login
       REPOS_DIR: "${REPOS_DIR:?set REPOS_DIR in .env}"
     ports:
       - "2222:22"      # ssh (VS Code Remote-SSH)
-      - "8443:8443"    # code-server
       - "6080:6080"    # noVNC desktop (vnc.html)
     volumes:
       # Mounted at the SAME path as on the host, so ./build (which starts

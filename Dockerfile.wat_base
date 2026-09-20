@@ -1,7 +1,8 @@
-# Layered on the repo's own base image so the toolchain matches upstream.
-# Build the base first from your checkout:
-#   docker build -f Dockerfile.openpilot_base -t openpilot-base .
-FROM openpilot-base
+# Layered on the repo's own base image (Dockerfile.openpilot_base).
+# Local: tag the base as openpilot-base (the default below).
+# CI:    --build-arg BASE_IMAGE=git.waffle/waffle/starpilot-base:latest
+ARG BASE_IMAGE=openpilot-base
+FROM ${BASE_IMAGE}
 
 ARG DEV_USER=batman
 # Unraid's default owner for shares is nobody:users (99:100)
@@ -26,6 +27,11 @@ RUN curl -fsSL https://code-server.dev/install.sh | sh
 # volume can't shadow it. Log in once inside the container; credentials land in
 # ~/.claude on the home volume. Rebuild the image to update.
 RUN npm install -g @anthropic-ai/claude-code
+
+# uv is installed under ~/.local/bin by the base image but isn't on PATH;
+# symlink it so every shell (ssh, code-server, supervisord children) finds it.
+RUN ln -s /home/${DEV_USER}/.local/bin/uv /usr/local/bin/uv \
+    && ln -s /home/${DEV_USER}/.local/bin/uvx /usr/local/bin/uvx
 
 # Remap the base image's user onto Unraid's nobody:users so files in the
 # bind-mounted workspace have sane ownership on the host.

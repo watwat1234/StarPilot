@@ -13,15 +13,39 @@ USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      openssh-server supervisor sudo curl ca-certificates \
-      xvfb x11vnc fluxbox novnc websockify xterm \
-      git git-lfs ccache gdb rsync htop tmux \
-      libx264-dev nodejs npm \
+      openssh-server supervisor \
+      x11vnc fluxbox novnc websockify xterm \
+      ccache gdb rsync htop jq ripgrep less \
+      nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && git lfs install --system \
+    && git config --system --add safe.directory '*' \
     && mkdir -p /run/sshd
 
 RUN curl -fsSL https://code-server.dev/install.sh | sh
+
+# Browser code-server extensions, kept outside ~ (the home volume is seeded once)
+# and loaded via --extra-extensions-dir in supervisord.conf. code-server pulls
+# from Open VSX, so a marketplace hiccup only warns instead of failing the build.
+# (Desktop VS Code Remote-SSH installs its own extensions on the remote.)
+RUN mkdir -p /opt/code-server-extensions \
+    && for ext in ms-python.python llvm-vs-code-extensions.vscode-clangd eamodio.gitlens; do \
+         code-server --extensions-dir /opt/code-server-extensions --install-extension "$ext" \
+           || echo "WARNING: could not install $ext"; \
+       done \
+    && chmod -R a+rX /opt/code-server-extensions
+
+# Docker CLI + compose plugin (client only) so ./build can start the arm64
+# builder container through the host's /var/run/docker.sock. The CLI version
+# matches the Unraid host (27.5.1).
+ARG DOCKER_VERSION=27.5.1
+ARG COMPOSE_VERSION=v2.32.4
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+      | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
+    && mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+         -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # Claude Code CLI, installed system-wide (not under ~) so the persistent home
 # volume can't shadow it. Log in once inside the container; credentials land in

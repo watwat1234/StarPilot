@@ -27,4 +27,11 @@ export DISPLAY=:1 CCACHE_DIR=/ccache
 source "$HOME/.venv/bin/activate"
 EOF
 
+# Docker socket (optional mount): give the dev user the socket's group
+if [ -S /var/run/docker.sock ]; then
+  sock_gid=$(stat -c %g /var/run/docker.sock)
+  getent group "$sock_gid" >/dev/null || groupadd -g "$sock_gid" dockerhost
+  usermod -aG "$sock_gid" "$DEV_USER"
+fi
+
 exec /usr/bin/supervisord -n

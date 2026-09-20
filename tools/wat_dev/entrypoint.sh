@@ -33,8 +33,10 @@ chmod 700 "$HOME_DIR/.ssh"; chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 : "${REPOS_DIR:?set by docker-compose (DEV_ROOT/workspace)}"
 : "${CCACHE_DIR:?set by docker-compose (DEV_ROOT/ccache)}"
 : "${UV_CACHE_DIR:?set by docker-compose (DEV_ROOT/uv_cache)}"
-mkdir -p "$REPOS_DIR" "$CCACHE_DIR" "$UV_CACHE_DIR"
-chown "$DEV_USER": "$REPOS_DIR" "$CCACHE_DIR" "$UV_CACHE_DIR" 2>/dev/null || true
+: "${COMMA_SYSROOT_DIR:?set by docker-compose (DEV_ROOT/sysroot)}"
+: "${COMMA_HOST_CACHE_DIR:?set by docker-compose (DEV_ROOT/build_cache)}"
+mkdir -p "$REPOS_DIR" "$CCACHE_DIR" "$UV_CACHE_DIR" "$COMMA_SYSROOT_DIR" "$COMMA_HOST_CACHE_DIR"
+chown "$DEV_USER": "$REPOS_DIR" "$CCACHE_DIR" "$UV_CACHE_DIR" "$COMMA_SYSROOT_DIR" "$COMMA_HOST_CACHE_DIR" 2>/dev/null || true
 
 # uv hardlinks cache -> .venv; that needs the same mount and a filesystem that
 # allows it. uv falls back to copying (6 GB per venv), so just warn.
@@ -48,7 +50,8 @@ rm -f "$t" "$REPOS_DIR/.linktest.$$"
 
 # sshd sessions don't inherit container env; pam_env reads /etc/environment
 sed -i '/^\(DEV_ROOT\|UV_CACHE_DIR\|CCACHE_DIR\|REPOS_DIR\|UV_LINK_MODE\)=/d' /etc/environment 2>/dev/null || true
-printf '%s\n' "DEV_ROOT=$DEV_ROOT" "UV_CACHE_DIR=$UV_CACHE_DIR" "CCACHE_DIR=$CCACHE_DIR" "REPOS_DIR=$REPOS_DIR" >> /etc/environment
+printf '%s\n' "DEV_ROOT=$DEV_ROOT" "UV_CACHE_DIR=$UV_CACHE_DIR" "CCACHE_DIR=$CCACHE_DIR" "REPOS_DIR=$REPOS_DIR" \
+  "COMMA_SYSROOT_DIR=$COMMA_SYSROOT_DIR" "COMMA_HOST_SYSROOT_DIR=$COMMA_HOST_SYSROOT_DIR" "COMMA_HOST_CACHE_DIR=$COMMA_HOST_CACHE_DIR" >> /etc/environment
 
 # sshd sessions don't inherit container env; give them DISPLAY. Rewritten on every
 # start (the old block hardcoded CCACHE_DIR=/ccache and sat in the persistent home

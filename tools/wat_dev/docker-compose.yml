@@ -22,6 +22,11 @@ services:
       REPOS_DIR: "${DEV_ROOT}/workspace"
       CCACHE_DIR: "${DEV_ROOT}/ccache"
       UV_CACHE_DIR: "${DEV_ROOT}/uv_cache"
+      # Device-build sysroot and caches (AGNOS image, scons), shared by all clones.
+      # Same path inside and outside, since ./build passes them to the host's Docker.
+      COMMA_SYSROOT_DIR: "${DEV_ROOT}/sysroot"
+      COMMA_HOST_SYSROOT_DIR: "${DEV_ROOT}/sysroot"
+      COMMA_HOST_CACHE_DIR: "${DEV_ROOT}/build_cache"
     ports:
       - "2222:22"      # ssh (VS Code Remote-SSH)
       - "6080:6080"    # noVNC desktop (vnc.html)

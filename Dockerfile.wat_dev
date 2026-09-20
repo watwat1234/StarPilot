@@ -60,6 +60,7 @@ RUN rsync -a --exclude=/.venv --exclude=/.local/bin/uv --exclude=/.local/bin/uvx
 
 COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
 COPY tools/wat_dev/entrypoint.sh /entrypoint.sh
+COPY tools/wat_dev/bin/sp-agnos-check tools/wat_dev/bin/sp-build /usr/local/bin/
 RUN chmod +x /entrypoint.sh
 
 # CCACHE_DIR / UV_CACHE_DIR / REPOS_DIR are set by docker-compose (all under DEV_ROOT).

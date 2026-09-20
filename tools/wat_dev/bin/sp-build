@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# ./build for the current clone, after checking the shared AGNOS sysroot is current.
+# Usage: sp-build [args for ./build]   (e.g. sp-build --params)
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "sp-build: run from inside a StarPilot clone" >&2; exit 1; }
+sp-agnos-check
+cd "$ROOT"
+exec ./build "$@"

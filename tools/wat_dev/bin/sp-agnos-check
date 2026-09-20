@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Make sure the shared AGNOS sysroot matches this clone's system/hardware/tici/agnos.json.
+# The sysroot and its download cache are shared by every clone, and ./build never
+# refreshes them, so an upstream AGNOS bump would otherwise go unnoticed.
+# Stamp: $COMMA_SYSROOT_DIR/.agnos_hash holds the manifest's "system" hash.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "sp-agnos-check: run from inside a StarPilot clone" >&2; exit 1; }
+MANIFEST="$ROOT/system/hardware/tici/agnos.json"
+SYSROOT="${COMMA_SYSROOT_DIR:?COMMA_SYSROOT_DIR not set}"
+CACHE="${COMMA_HOST_CACHE_DIR:?COMMA_HOST_CACHE_DIR not set}"
+STAMP="$SYSROOT/.agnos_hash"
+
+[ -f "$MANIFEST" ] || { echo "sp-agnos-check: $MANIFEST not found" >&2; exit 1; }
+want="$(jq -r '.[] | select(.name == "system") | .hash' "$MANIFEST")"
+[ -n "$want" ] && [ "$want" != "null" ] || { echo "sp-agnos-check: no system hash in $MANIFEST" >&2; exit 1; }
+have="$(cat "$STAMP" 2>/dev/null || true)"
+
+[ "$want" = "$have" ] && exit 0
+
+echo "AGNOS in this clone's manifest differs from the shared sysroot."
+echo "  manifest: ${want}"
+echo "  sysroot:  ${have:-<no stamp>}   ($SYSROOT)"
+refresh_cmd="rm -rf $CACHE/agnos/agnos_system.img* && (cd $ROOT && scripts/laptop_device_build.sh setup-sysroot-agnos)"
+
+if [ ! -t 0 ]; then
+  echo "Not a terminal, so not refreshing. To refresh by hand, then write the stamp:" >&2
+  echo "  $refresh_cmd && echo $want > $STAMP" >&2
+  exit 1
+fi
+
+read -r -p "Refresh now (multi-GB download)? [y/N] " answer
+case "$answer" in
+  y|Y|yes|YES) ;;
+  *) echo "Aborted. Refresh later with: sp-agnos-check" >&2; exit 1 ;;
+esac
+
+# Drop the cached image too: the extractor reuses agnos_system.img whatever the manifest says.
+rm -rf "$CACHE"/agnos/agnos_system.img*
+chmod -R u+w "$SYSROOT" 2>/dev/null || true
+find "$SYSROOT" -mindepth 1 -delete
+(cd "$ROOT" && scripts/laptop_device_build.sh setup-sysroot-agnos)
+echo "$want" > "$STAMP"
+echo "Sysroot refreshed."

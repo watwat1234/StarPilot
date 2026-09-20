@@ -46,8 +46,14 @@ RUN cp /home/${DEV_USER}/.local/bin/uv /usr/local/bin/uv \
 
 # Remap the base image's user onto Unraid's nobody:users so files in the
 # bind-mounted workspace have sane ownership on the host.
-RUN usermod -o -u ${DEV_UID} -g ${DEV_GID} ${DEV_USER} \
-    && chown -R ${DEV_UID}:${DEV_GID} /home/${DEV_USER} \
+# usermod -u chowns the whole home tree, and the base's 6 GB .venv lives there:
+# that rewrites every file into a new 6 GB layer. Point the account at a
+# nonexistent home while remapping so nothing is chowned; /home/batman is a bind
+# mount at run time anyway, and the seed below is chowned on its own.
+RUN usermod -d /nonexistent ${DEV_USER} \
+    && usermod -o -u ${DEV_UID} -g ${DEV_GID} ${DEV_USER} \
+    && usermod -d /home/${DEV_USER} ${DEV_USER} \
+    && chown ${DEV_UID}:${DEV_GID} /home/${DEV_USER} \
     && echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev
 
 # /home/batman is a bind mount (DEV_ROOT/home) that starts empty and hides the
@@ -55,7 +61,7 @@ RUN usermod -o -u ${DEV_UID} -g ${DEV_GID} ${DEV_USER} \
 # base's .venv is skipped (each clone gets its own), and so are uv/uvx (the copies
 # in /usr/local/bin are the image's; a seeded one in ~/.local/bin would shadow them
 # and go stale on rebuilds).
-RUN rsync -a --exclude=/.venv --exclude=/.local/bin/uv --exclude=/.local/bin/uvx \
+RUN rsync -a --chown=${DEV_UID}:${DEV_GID} --exclude=/.venv --exclude=/.local/bin/uv --exclude=/.local/bin/uvx \
       /home/${DEV_USER}/ /opt/home-seed/
 
 COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf

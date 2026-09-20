@@ -52,8 +52,11 @@ RUN usermod -o -u ${DEV_UID} -g ${DEV_GID} ${DEV_USER} \
 
 # /home/batman is a bind mount (DEV_ROOT/home) that starts empty and hides the
 # image's copy. Keep the base's dotfiles here so the entrypoint can seed it. The
-# base's .venv is skipped: each clone gets its own.
-RUN rsync -a --exclude=/.venv /home/${DEV_USER}/ /opt/home-seed/
+# base's .venv is skipped (each clone gets its own), and so are uv/uvx (the copies
+# in /usr/local/bin are the image's; a seeded one in ~/.local/bin would shadow them
+# and go stale on rebuilds).
+RUN rsync -a --exclude=/.venv --exclude=/.local/bin/uv --exclude=/.local/bin/uvx \
+      /home/${DEV_USER}/ /opt/home-seed/
 
 COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
 COPY tools/wat_dev/entrypoint.sh /entrypoint.sh

@@ -69,5 +69,4 @@ RUN chmod +x /entrypoint.sh
 
 ENV DEV_USER=${DEV_USER} DISPLAY=:1 CCACHE_DIR=/ccache
 EXPOSE 22 8443 6080
-WORKDIR /workspace
 ENTRYPOINT ["/entrypoint.sh"]

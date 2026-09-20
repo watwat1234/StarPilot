@@ -17,8 +17,9 @@ echo "${AUTHORIZED_KEY:?set AUTHORIZED_KEY to your ssh public key}" > "$HOME_DIR
 chown -R "$DEV_USER": "$HOME_DIR/.ssh"
 chmod 700 "$HOME_DIR/.ssh"; chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 
-# The workspace and caches are mounted as root-owned volumes on first run
-chown "$DEV_USER": /ccache /workspace 2>/dev/null || true
+# The repos folder and caches are mounted as root-owned volumes on first run
+: "${REPOS_DIR:?set REPOS_DIR (host folder holding the clones)}"
+chown "$DEV_USER": /ccache "$REPOS_DIR" 2>/dev/null || true
 
 # sshd sessions don't inherit container env; give them PATH/DISPLAY
 grep -q "openpilot dev env" "$HOME_DIR/.bashrc" 2>/dev/null || cat >> "$HOME_DIR/.bashrc" <<'EOF'

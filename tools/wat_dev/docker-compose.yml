@@ -15,18 +15,22 @@ services:
     security_opt: ["seccomp=unconfined"]
     environment:
       AUTHORIZED_KEY: "${AUTHORIZED_KEY:?set AUTHORIZED_KEY in .env}"
-      REPOS_DIR: "${REPOS_DIR:?set REPOS_DIR in .env}"
+      # Everything lives under one mount (DEV_ROOT) so uv can hardlink from its
+      # cache into each clone's .venv (hardlinks fail across separate mounts).
+      REPOS_DIR: "${DEV_ROOT:?set DEV_ROOT in .env}/workspace"
+      CCACHE_DIR: "${DEV_ROOT}/ccache"
+      UV_CACHE_DIR: "${DEV_ROOT}/uv_cache"
     ports:
       - "2222:22"      # ssh (VS Code Remote-SSH)
       - "6080:6080"    # noVNC desktop (vnc.html)
     volumes:
       # Mounted at the SAME path as on the host, so ./build (which starts
       # containers through the host's Docker) sees real host paths and needs
-      # no COMMA_HOST_ROOT_DIR override. Put your clones directly under it.
-      - ${REPOS_DIR}:${REPOS_DIR}
+      # no COMMA_HOST_ROOT_DIR override. Put your clones under DEV_ROOT/workspace.
+      # Use a direct pool path (/mnt/<pool>/...), not /mnt/user: FUSE shares
+      # don't support hardlinks reliably.
+      - ${DEV_ROOT}:${DEV_ROOT}
       - home:/home/batman               # named volume so it's seeded with the image's .venv
-      - ${CCACHE_HOST_DIR:?set CCACHE_HOST_DIR in .env}:/ccache
-      - ${UV_CACHE_HOST_DIR:?set UV_CACHE_HOST_DIR in .env}:/uv_cache
       - sshkeys:/etc/ssh/keys
       - /var/run/docker.sock:/var/run/docker.sock   # device builds; gives the container control of the host's Docker
     # Optional GPU for a rendered sim (needs the Nvidia driver plugin):

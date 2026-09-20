@@ -47,3 +47,14 @@ jobs:
           echo "$TOKEN" | docker login "${IMAGE%%/*}" -u "$REGISTRY_USER" --password-stdin
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::8}"
+
+      - name: Link package to repo
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          owner="$(echo "${REGISTRY_USER}" | tr '[:upper:]' '[:lower:]')"
+          repo="${GITHUB_REPOSITORY#*/}"
+          curl -fsS -X POST \
+            -H "Authorization: token ${TOKEN}" \
+            "${GITHUB_SERVER_URL}/api/v1/packages/${owner}/container/starpilot-base/-/link/${repo}" \
+            || echo "::warning::could not link package to repo (already linked, or token lacks scope)"

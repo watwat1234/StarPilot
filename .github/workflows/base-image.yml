@@ -1,4 +1,4 @@
-# Place at .forgejo/workflows/base-image.yml in the StarPilot fork.
+# Place at .github/workflows/base-image.yml in the StarPilot fork.
 # Builds Dockerfile.openpilot_base and pushes it to the Forgejo container registry.
 #
 # Requirements:
@@ -17,7 +17,7 @@ on:
       - uv.lock
       - tools/install_ubuntu_dependencies.sh
       - tools/install_python_dependencies.sh
-      - .forgejo/workflows/base-image.yml
+      - .github/workflows/base-image.yml
 
 jobs:
   build:

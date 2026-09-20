@@ -1,7 +1,7 @@
-# Layered on the repo's own base image (Dockerfile.openpilot_base).
-# Local: tag the base as openpilot-base (the default below).
-# CI:    --build-arg BASE_IMAGE=git.waffle/waffle/starpilot-base:latest
-ARG BASE_IMAGE=openpilot-base
+# Layered on the repo's own base image (Dockerfile.openpilot_base), built by the
+# base-image workflow and pushed to the Forgejo registry. Override with
+# --build-arg BASE_IMAGE=... to use a different tag.
+ARG BASE_IMAGE=git.waffle/waffle/starpilot-base:latest
 FROM ${BASE_IMAGE}
 
 ARG DEV_USER=batman

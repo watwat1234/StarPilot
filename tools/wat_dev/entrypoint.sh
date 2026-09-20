@@ -19,7 +19,12 @@ chmod 700 "$HOME_DIR/.ssh"; chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 
 # The repos folder and caches are mounted as root-owned volumes on first run
 : "${REPOS_DIR:?set REPOS_DIR (host folder holding the clones)}"
-chown "$DEV_USER": /ccache "$REPOS_DIR" 2>/dev/null || true
+chown "$DEV_USER": /ccache /uv_cache "$REPOS_DIR" 2>/dev/null || true
+
+# sshd sessions don't inherit container env; pam_env reads /etc/environment
+for kv in UV_CACHE_DIR=/uv_cache UV_LINK_MODE=copy; do
+  grep -q "^${kv%%=*}=" /etc/environment 2>/dev/null || echo "$kv" >> /etc/environment
+done
 
 # sshd sessions don't inherit container env; give them PATH/DISPLAY
 grep -q "openpilot dev env" "$HOME_DIR/.bashrc" 2>/dev/null || cat >> "$HOME_DIR/.bashrc" <<'EOF'

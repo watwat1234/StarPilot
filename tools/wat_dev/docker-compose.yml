@@ -26,6 +26,7 @@ services:
       - ${REPOS_DIR}:${REPOS_DIR}
       - home:/home/batman               # named volume so it's seeded with the image's .venv
       - ${CCACHE_HOST_DIR:?set CCACHE_HOST_DIR in .env}:/ccache
+      - ${UV_CACHE_HOST_DIR:?set UV_CACHE_HOST_DIR in .env}:/uv_cache
       - sshkeys:/etc/ssh/keys
       - /var/run/docker.sock:/var/run/docker.sock   # device builds; gives the container control of the host's Docker
     # Optional GPU for a rendered sim (needs the Nvidia driver plugin):

@@ -54,6 +54,8 @@ COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
 COPY tools/wat_dev/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-ENV DEV_USER=${DEV_USER} DISPLAY=:1 CCACHE_DIR=/ccache
+# uv downloads/wheels go to a mounted cache, not the home volume. Copy mode because
+# the cache and the repo's .venv are on different filesystems (hardlinks would fail).
+ENV DEV_USER=${DEV_USER} DISPLAY=:1 CCACHE_DIR=/ccache UV_CACHE_DIR=/uv_cache UV_LINK_MODE=copy
 EXPOSE 22 6080
 ENTRYPOINT ["/entrypoint.sh"]

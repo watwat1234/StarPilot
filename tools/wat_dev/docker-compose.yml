@@ -28,6 +28,7 @@ services:
       COMMA_SYSROOT_DIR: "${DEV_ROOT}/sysroot"
       COMMA_HOST_SYSROOT_DIR: "${DEV_ROOT}/sysroot"
       COMMA_HOST_CACHE_DIR: "${DEV_ROOT}/build_cache"
+    networks: [containernet]
     ports:
       - "2222:22"      # ssh (VS Code Remote-SSH)
       - "6080:6080"    # noVNC desktop (vnc.html)
@@ -48,6 +49,10 @@ services:
     # Optional GPU for a rendered sim (needs the Nvidia driver plugin):
     # runtime: nvidia
     # environment: [NVIDIA_VISIBLE_DEVICES=all]
+
+networks:
+  containernet:
+    external: true      # existing bridge on the Unraid host
 
 volumes:
   sshkeys:

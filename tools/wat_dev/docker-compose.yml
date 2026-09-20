@@ -16,6 +16,7 @@ services:
     security_opt: ["seccomp=unconfined"]
     environment:
       AUTHORIZED_KEY: "${AUTHORIZED_KEY:?set AUTHORIZED_KEY in .env}"
+      VNC_PASSWORD: "${VNC_PASSWORD:?set VNC_PASSWORD in .env}"
       # Everything lives under one mount (DEV_ROOT) so uv can hardlink from its
       # cache into each clone's .venv (hardlinks fail across separate mounts).
       DEV_ROOT: "${DEV_ROOT:?set DEV_ROOT in .env}"
@@ -30,6 +31,7 @@ services:
     ports:
       - "2222:22"      # ssh (VS Code Remote-SSH)
       - "6080:6080"    # noVNC desktop (vnc.html)
+      - "5900:5900"    # native VNC client (password from VNC_PASSWORD)
     volumes:
       # Mounted at the SAME path as on the host, so ./build (which starts
       # containers through the host's Docker) sees real host paths and needs

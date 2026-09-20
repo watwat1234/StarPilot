@@ -11,6 +11,11 @@ PermitRootLogin no
 AllowUsers ${DEV_USER}
 EOF
 
+# VNC password for x11vnc (native clients on 5900 and noVNC on 6080 both use it).
+# VNC only looks at the first 8 characters.
+x11vnc -storepasswd "${VNC_PASSWORD:?set VNC_PASSWORD in .env}" /etc/x11vnc.pass >/dev/null
+chown "$DEV_USER": /etc/x11vnc.pass; chmod 600 /etc/x11vnc.pass
+
 HOME_DIR=$(getent passwd "$DEV_USER" | cut -d: -f6)
 
 # /home/batman is a bind mount: empty on first run, root-owned, and it hides the

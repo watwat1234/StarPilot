@@ -1,0 +1,43 @@
+# Layered on the repo's own base image so the toolchain matches upstream.
+# Build the base first from your checkout:
+#   docker build -f Dockerfile.openpilot_base -t openpilot-base .
+FROM openpilot-base
+
+ARG DEV_USER=batman
+# Unraid's default owner for shares is nobody:users (99:100)
+ARG DEV_UID=99
+ARG DEV_GID=100
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      openssh-server supervisor sudo curl ca-certificates \
+      xvfb x11vnc fluxbox novnc websockify xterm \
+      git git-lfs ccache gdb rsync htop tmux \
+      libx264-dev nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && git lfs install --system \
+    && mkdir -p /run/sshd
+
+RUN curl -fsSL https://code-server.dev/install.sh | sh
+
+# Claude Code CLI, installed system-wide (not under ~) so the persistent home
+# volume can't shadow it. Log in once inside the container; credentials land in
+# ~/.claude on the home volume. Rebuild the image to update.
+RUN npm install -g @anthropic-ai/claude-code
+
+# Remap the base image's user onto Unraid's nobody:users so files in the
+# bind-mounted workspace have sane ownership on the host.
+RUN usermod -o -u ${DEV_UID} -g ${DEV_GID} ${DEV_USER} \
+    && chown -R ${DEV_UID}:${DEV_GID} /home/${DEV_USER} \
+    && echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev
+
+COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
+COPY tools/wat_dev/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV DEV_USER=${DEV_USER} DISPLAY=:1 CCACHE_DIR=/ccache
+EXPOSE 22 8443 6080
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

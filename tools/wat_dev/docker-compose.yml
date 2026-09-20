@@ -10,6 +10,7 @@ services:
     container_name: starpilot-dev
     restart: unless-stopped
     hostname: starpilot-dev
+    working_dir: ${DEV_ROOT}            # where `docker exec` lands
     shm_size: 4g
     cap_add: [SYS_PTRACE]               # gdb
     security_opt: ["seccomp=unconfined"]
@@ -17,7 +18,8 @@ services:
       AUTHORIZED_KEY: "${AUTHORIZED_KEY:?set AUTHORIZED_KEY in .env}"
       # Everything lives under one mount (DEV_ROOT) so uv can hardlink from its
       # cache into each clone's .venv (hardlinks fail across separate mounts).
-      REPOS_DIR: "${DEV_ROOT:?set DEV_ROOT in .env}/workspace"
+      DEV_ROOT: "${DEV_ROOT:?set DEV_ROOT in .env}"
+      REPOS_DIR: "${DEV_ROOT}/workspace"
       CCACHE_DIR: "${DEV_ROOT}/ccache"
       UV_CACHE_DIR: "${DEV_ROOT}/uv_cache"
     ports:
@@ -30,7 +32,10 @@ services:
       # Use a direct pool path (/mnt/<pool>/...), not /mnt/user: FUSE shares
       # don't support hardlinks reliably.
       - ${DEV_ROOT}:${DEV_ROOT}
-      - home:/home/batman               # named volume so it's seeded with the image's .venv
+      # Home and /tmp on the same pool as the repos, not in Docker's image store
+      # (the smaller, fuller cache pool). Home is seeded from the image on start.
+      - ${DEV_ROOT}/home:/home/batman
+      - ${DEV_ROOT}/tmp:/tmp
       - sshkeys:/etc/ssh/keys
       - /var/run/docker.sock:/var/run/docker.sock   # device builds; gives the container control of the host's Docker
     # Optional GPU for a rendered sim (needs the Nvidia driver plugin):
@@ -39,4 +44,3 @@ services:
 
 volumes:
   sshkeys:
-  home:

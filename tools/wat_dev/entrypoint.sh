@@ -12,12 +12,24 @@ AllowUsers ${DEV_USER}
 EOF
 
 HOME_DIR=$(getent passwd "$DEV_USER" | cut -d: -f6)
+
+# /home/batman is a bind mount: empty on first run, root-owned, and it hides the
+# image's copy. Seed missing files from the image; never overwrite existing ones.
+chown "$DEV_USER": "$HOME_DIR"
+rsync -a --ignore-existing /opt/home-seed/ "$HOME_DIR/"
+
+# /tmp is a bind mount too (persists across restarts): make it sticky+world-writable
+# and clear X's lock/socket from the previous run so Xvfb can start.
+chmod 1777 /tmp
+rm -rf /tmp/.X1-lock /tmp/.X11-unix
+mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 mkdir -p "$HOME_DIR/.ssh"
 echo "${AUTHORIZED_KEY:?set AUTHORIZED_KEY to your ssh public key}" > "$HOME_DIR/.ssh/authorized_keys"
 chown -R "$DEV_USER": "$HOME_DIR/.ssh"
 chmod 700 "$HOME_DIR/.ssh"; chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 
 # The repos folder and caches sit on a root-owned bind mount on first run
+: "${DEV_ROOT:?set by docker-compose}"
 : "${REPOS_DIR:?set by docker-compose (DEV_ROOT/workspace)}"
 : "${CCACHE_DIR:?set by docker-compose (DEV_ROOT/ccache)}"
 : "${UV_CACHE_DIR:?set by docker-compose (DEV_ROOT/uv_cache)}"
@@ -35,8 +47,8 @@ fi
 rm -f "$t" "$REPOS_DIR/.linktest.$$"
 
 # sshd sessions don't inherit container env; pam_env reads /etc/environment
-sed -i '/^\(UV_CACHE_DIR\|CCACHE_DIR\|REPOS_DIR\|UV_LINK_MODE\)=/d' /etc/environment 2>/dev/null || true
-printf '%s\n' "UV_CACHE_DIR=$UV_CACHE_DIR" "CCACHE_DIR=$CCACHE_DIR" "REPOS_DIR=$REPOS_DIR" >> /etc/environment
+sed -i '/^\(DEV_ROOT\|UV_CACHE_DIR\|CCACHE_DIR\|REPOS_DIR\|UV_LINK_MODE\)=/d' /etc/environment 2>/dev/null || true
+printf '%s\n' "DEV_ROOT=$DEV_ROOT" "UV_CACHE_DIR=$UV_CACHE_DIR" "CCACHE_DIR=$CCACHE_DIR" "REPOS_DIR=$REPOS_DIR" >> /etc/environment
 
 # sshd sessions don't inherit container env; give them DISPLAY. Rewritten on every
 # start (the old block hardcoded CCACHE_DIR=/ccache and sat in the persistent home
@@ -45,6 +57,8 @@ sed -i '/^# openpilot dev env$/,/activate"$/d' "$HOME_DIR/.bashrc" 2>/dev/null |
 cat >> "$HOME_DIR/.bashrc" <<'EOF'
 # openpilot dev env
 export DISPLAY=:1
+# start in DEV_ROOT, but only for shells that open in $HOME (keeps VS Code's folder)
+[ "$PWD" = "$HOME" ] && [ -d "$DEV_ROOT" ] && cd "$DEV_ROOT"
 [ -f "$HOME/.venv/bin/activate" ] && source "$HOME/.venv/bin/activate"
 EOF
 

@@ -39,16 +39,21 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 # ~/.claude on the home volume. Rebuild the image to update.
 RUN npm install -g @anthropic-ai/claude-code
 
-# uv is installed under ~/.local/bin by the base image but isn't on PATH;
-# symlink it so every shell (ssh, supervisord children) finds it.
-RUN ln -s /home/${DEV_USER}/.local/bin/uv /usr/local/bin/uv \
-    && ln -s /home/${DEV_USER}/.local/bin/uvx /usr/local/bin/uvx
+# uv is installed under ~/.local/bin by the base image, but /home/batman is
+# bind-mounted over at run time. Copy the binaries somewhere the mount can't hide.
+RUN cp /home/${DEV_USER}/.local/bin/uv /usr/local/bin/uv \
+    && if [ -f /home/${DEV_USER}/.local/bin/uvx ]; then cp /home/${DEV_USER}/.local/bin/uvx /usr/local/bin/uvx; fi
 
 # Remap the base image's user onto Unraid's nobody:users so files in the
 # bind-mounted workspace have sane ownership on the host.
 RUN usermod -o -u ${DEV_UID} -g ${DEV_GID} ${DEV_USER} \
     && chown -R ${DEV_UID}:${DEV_GID} /home/${DEV_USER} \
     && echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev
+
+# /home/batman is a bind mount (DEV_ROOT/home) that starts empty and hides the
+# image's copy. Keep the base's dotfiles here so the entrypoint can seed it. The
+# base's .venv is skipped: each clone gets its own.
+RUN rsync -a --exclude=/.venv /home/${DEV_USER}/ /opt/home-seed/
 
 COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
 COPY tools/wat_dev/entrypoint.sh /entrypoint.sh

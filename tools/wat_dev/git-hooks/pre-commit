@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Guardrail: built firmware and generated models are tracked upstream on purpose, but a local
+# build rewrites them (obj/version embeds the git hash), so they must never ride along in
+# our own commits. Allowed: finishing an upstream merge (MERGE_HEAD exists) and the wat-ioniq
+# branch (the only one that regenerates panda firmware). Bypass deliberately with
+# WAT_ALLOW_BUILD_ARTIFACTS=1 git commit ...
+set -eu
+
+[ "${WAT_ALLOW_BUILD_ARTIFACTS:-}" = 1 ] && exit 0
+[ -f "$(git rev-parse --git-path MERGE_HEAD)" ] && exit 0
+[ "$(git symbolic-ref --short -q HEAD || true)" = wat-ioniq ] && exit 0
+
+bad=$(git diff --cached --name-only -- panda/board/obj selfdrive/locationd/models/generated)
+if [ -n "$bad" ]; then
+  n=$(printf '%s\n' "$bad" | wc -l)
+  {
+    echo "pre-commit: refusing to commit build artifacts ($n staged files):"
+    printf '%s\n' "$bad" | head -10 | sed 's/^/  /'
+    [ "$n" -gt 10 ] && echo "  ..."
+    echo "Unstage them:  git restore --staged panda/board/obj selfdrive/locationd/models/generated"
+    echo "Only wat-ioniq may commit regenerated firmware; upstream merges are exempt."
+  } >&2
+  exit 1
+fi

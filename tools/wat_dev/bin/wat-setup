@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Per-clone setup for wat branches. Idempotent. Run from inside a StarPilot clone
+# (or as `git wat-setup` once the alias is registered).
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "wat-setup: run from inside a StarPilot clone" >&2; exit 1; }
+cd "$ROOT"
+[ -x tools/wat_dev/git-hooks/pre-commit ] || { echo "wat-setup: tools/wat_dev/git-hooks/pre-commit not found here (branch without wat tooling?)" >&2; exit 1; }
+
+git config core.hooksPath tools/wat_dev/git-hooks
+# upstream keeps conflicting in the Sentry the_galaxy files; remember resolutions
+git config rerere.enabled true
+git config --global alias.wat-setup '!tools/wat_dev/bin/wat-setup' 2>/dev/null || true
+echo "wat-setup: hooksPath=$(git config core.hooksPath) rerere=$(git config rerere.enabled) in $ROOT"

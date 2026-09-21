@@ -71,6 +71,10 @@ COPY tools/wat_dev/Xresources /etc/wat-dev.Xresources
 COPY tools/wat_dev/bin/sp-agnos-check tools/wat_dev/bin/sp-build /usr/local/bin/
 RUN chmod +x /entrypoint.sh
 
+# `git wat-setup` inside any StarPilot clone (hooks path, rerere). The entrypoint also runs
+# it for every clone under REPOS_DIR, so hooks survive the clones being persistent volumes.
+RUN git config --system alias.wat-setup '!tools/wat_dev/bin/wat-setup'
+
 # CCACHE_DIR / UV_CACHE_DIR / REPOS_DIR are set by docker-compose (all under DEV_ROOT).
 ENV DEV_USER=${DEV_USER} DISPLAY=:1
 EXPOSE 22 6080

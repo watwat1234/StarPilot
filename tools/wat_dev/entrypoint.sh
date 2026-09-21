@@ -53,6 +53,13 @@ else
 fi
 rm -f "$t" "$REPOS_DIR/.linktest.$$"
 
+# Per-clone git config (hooks path, rerere) lives in each clone's .git/config, so apply it to
+# every StarPilot clone/worktree under REPOS_DIR on each start. Never fatal.
+for d in "$REPOS_DIR"/*/; do
+  [ -e "${d}.git" ] && [ -x "${d}tools/wat_dev/bin/wat-setup" ] || continue
+  runuser -u "$DEV_USER" -- bash -c 'cd "$1" && tools/wat_dev/bin/wat-setup' _ "$d" || echo "WARNING: wat-setup failed in $d"
+done
+
 # sshd sessions don't inherit container env; pam_env reads /etc/environment
 sed -i '/^\(DEV_ROOT\|UV_CACHE_DIR\|CCACHE_DIR\|REPOS_DIR\|UV_LINK_MODE\)=/d' /etc/environment 2>/dev/null || true
 printf '%s\n' "DEV_ROOT=$DEV_ROOT" "UV_CACHE_DIR=$UV_CACHE_DIR" "CCACHE_DIR=$CCACHE_DIR" "REPOS_DIR=$REPOS_DIR" \

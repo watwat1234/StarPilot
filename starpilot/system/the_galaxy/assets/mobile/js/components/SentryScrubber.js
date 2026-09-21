@@ -35,12 +35,13 @@ export const SentryScrubber = {
   props: {
     events: { type: Array, default: () => [] },
     deleteBusy: { type: Boolean, default: false },
+    // Selected camera ("wide" | "driver" | "both"); owned by the parent so the timelapse can follow it.
+    camera: { type: String, default: "both" },
   },
-  emits: ["delete", "close"],
+  emits: ["delete", "close", "update:camera", "open-image"],
   data() {
     return {
       index: 0,
-      camera: "wide",
       playing: false,
       speed: 1,
       dragging: false,
@@ -112,6 +113,13 @@ export const SentryScrubber = {
     camera() { this.preload() },
   },
   methods: {
+    // A plain click opens the capture in the page's image viewer; modified/middle clicks keep the link's
+    // default so "open in new tab" still works.
+    openCapture(event, entry) {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
+      event.preventDefault()
+      this.$emit("open-image", entry.url, entry.label + " camera capture")
+    },
     kindLabel(kind) { return String(kind || "event").toUpperCase() },
     kindColor(kind) {
       const k = String(kind || "")
@@ -273,9 +281,9 @@ export const SentryScrubber = {
     <div tabindex="0" @keydown="onKeydown" style="outline:none;">
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:var(--sp-2);">
         <div role="group" aria-label="Camera" style="display:flex; gap:4px;">
-          <button type="button" class="gx-btn" :class="{ 'gx-btn--tonal': camera !== 'wide' }" :aria-pressed="camera === 'wide'" @click="camera = 'wide'">Road</button>
-          <button type="button" class="gx-btn" :class="{ 'gx-btn--tonal': camera !== 'driver' }" :aria-pressed="camera === 'driver'" @click="camera = 'driver'">Driver</button>
-          <button type="button" class="gx-btn" :class="{ 'gx-btn--tonal': camera !== 'both' }" :aria-pressed="camera === 'both'" @click="camera = 'both'">Both</button>
+          <button type="button" class="gx-btn" :class="{ 'gx-btn--tonal': camera !== 'wide' }" :aria-pressed="camera === 'wide'" @click="$emit('update:camera', 'wide')">Road</button>
+          <button type="button" class="gx-btn" :class="{ 'gx-btn--tonal': camera !== 'driver' }" :aria-pressed="camera === 'driver'" @click="$emit('update:camera', 'driver')">Driver</button>
+          <button type="button" class="gx-btn" :class="{ 'gx-btn--tonal': camera !== 'both' }" :aria-pressed="camera === 'both'" @click="$emit('update:camera', 'both')">Both</button>
         </div>
         <button type="button" class="gx-btn gx-btn--tonal" @click="$emit('close')">Close viewer</button>
       </div>
@@ -298,7 +306,7 @@ export const SentryScrubber = {
             :style="{ flex: '1 1 0', minWidth: 0, aspectRatio: '1344 / 760', background: 'rgba(0,0,0,.35)', borderRadius: '8px',
               overflow: 'hidden', position: 'relative', border: '4px solid ' + (current.kind === 'alarm' ? 'var(--error)' : 'transparent'),
               boxSizing: 'border-box' }">
-            <a v-if="entry.url" :href="entry.url" target="_blank" rel="noopener" style="display:block; width:100%; height:100%;">
+            <a v-if="entry.url" :href="entry.url" @click="openCapture($event, entry)" style="display:block; width:100%; height:100%;">
               <img :src="entry.url" :alt="entry.label + ' camera capture'" decoding="async"
                 style="width:100%; height:100%; object-fit:contain; display:block;" />
             </a>
@@ -338,6 +346,7 @@ export const SentryScrubber = {
           </select>
           <button type="button" class="gx-btn gx-btn--tonal" :disabled="!hasKind(-1, 'alarm')" @click="jumpKind(-1, 'alarm')">Prev alarm</button>
           <button type="button" class="gx-btn gx-btn--tonal" :disabled="!hasKind(1, 'alarm')" @click="jumpKind(1, 'alarm')">Next alarm</button>
+          <slot name="actions"></slot>
           <button type="button" class="gx-btn gx-btn--danger" style="margin-left:auto;" :disabled="deleteBusy" @click="$emit('delete', current.eventId)">
             <i class="bi bi-trash"></i> Delete
           </button>

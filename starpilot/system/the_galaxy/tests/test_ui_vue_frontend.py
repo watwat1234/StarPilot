@@ -605,8 +605,18 @@ def test_ui_sentry_history_separates_photo_less_alerts():
   sentry = _read("js/views/Sentry.js")
   assert "import { SentryScrubber, isCaptureEvent }" in sentry
   assert "captureEvents()" in sentry and "alertEvents()" in sentry
-  assert '<div v-if="captureEvents.length" style="display:flex' in sentry
+  assert '<SentryScrubber v-if="captureEvents.length"' in sentry
   assert 'v-for="alert in alertEvents"' in sentry
+
+
+def test_ui_sentry_scrubber_captures_open_in_the_page_viewer():
+  """Clicking a scrubber capture opens the shared in-page image viewer, not a new browser tab."""
+  scrubber = _read("js/components/SentryScrubber.js")
+  sentry = _read("js/views/Sentry.js")
+  assert 'target="_blank"' not in scrubber
+  assert '"open-image"' in scrubber and 'this.$emit("open-image"' in scrubber
+  assert "@click=\"openCapture($event, entry)\"" in scrubber
+  assert '@open-image="openImage"' in sentry
 
 
 def test_ui_mobile_polish_regressions():

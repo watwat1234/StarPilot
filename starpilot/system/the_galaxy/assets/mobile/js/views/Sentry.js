@@ -41,9 +41,8 @@ export const Sentry = {
       viewerBusy: false,
       viewerEvents: [],
       viewerKey: 0,
+      viewerCamera: "both",
       timelapseBusy: false,
-      timelapseCamera: "wide",
-      timelapsePacing: "gap",
       pushBusy: false,
       selectedImage: null,
     }
@@ -71,6 +70,14 @@ export const Sentry = {
     statusText() { return String(this.status?.state || "unknown") },
     hasEvent() { return !!(this.event && this.event.eventId) },
     filterActive() { return !!(this.dateFrom || this.dateTo) },
+    activePreset() {
+      if (!this.dateFrom && !this.dateTo) return "all"
+      if (this.dateFrom === localDay(1) && this.dateTo === localDay(1)) return "yesterday"
+      if (this.dateTo !== localDay()) return ""
+      if (this.dateFrom === localDay()) return "today"
+      if (this.dateFrom === localDay(6)) return "week"
+      return ""
+    },
     // A new event can only show up in the viewer if the range still reaches today.
     rangeIncludesNow() { return !this.dateTo || this.dateTo >= localDay() },
   },
@@ -123,6 +130,16 @@ export const Sentry = {
       this.dateTo = ""
       this.applyFilter()
     },
+    showToday() {
+      this.dateFrom = localDay()
+      this.dateTo = localDay()
+      this.applyFilter()
+    },
+    showYesterday() {
+      this.dateFrom = localDay(1)
+      this.dateTo = localDay(1)
+      this.applyFilter()
+    },
     showLastWeek() {
       this.dateFrom = localDay(6)
       this.dateTo = localDay()
@@ -134,8 +151,8 @@ export const Sentry = {
       try {
         const { blob, frames, seconds } = await api.getSentryTimelapse({
           ...this.historyRange(),
-          camera: this.timelapseCamera,
-          timing: this.timelapsePacing,
+          camera: this.viewerCamera,
+          timing: "gap",
         })
         const url = URL.createObjectURL(blob)
         const a = document.createElement("a")
@@ -514,35 +531,27 @@ export const Sentry = {
                 <input class="gx-field gx-field--full" type="date" :value="dateTo" :min="dateFrom || null"
                   @change="dateTo = $event.target.value; applyFilter()" />
               </label>
-              <button v-if="filterActive" type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Clear</button>
               <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
             </div>
-            <div v-if="captureEvents.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
-              <label style="flex:1 1 110px;">
-                <div class="gx-row__desc" style="margin:0 0 4px;">Camera</div>
-                <select class="gx-field gx-field--full" v-model="timelapseCamera" :disabled="timelapseBusy">
-                  <option value="wide">Road</option>
-                  <option value="driver">Driver</option>
-                  <option value="both">Both</option>
-                </select>
-              </label>
-              <label style="flex:1 1 90px;">
-                <div class="gx-row__desc" style="margin:0 0 4px;">Pacing</div>
-                <select class="gx-field gx-field--full" v-model="timelapsePacing" :disabled="timelapseBusy">
-                  <option value="gap">By time gaps</option>
-                  <option value="even">Even</option>
-                </select>
-              </label>
-              <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy" @click="makeTimelapse">
-                {{ timelapseBusy ? 'Encoding...' : (filterActive ? 'Timelapse of range' : 'Make timelapse') }}
-              </button>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:var(--sp-2);">
+              <button type="button" :class="['gx-btn', activePreset === 'today' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showToday">Today</button>
+              <button type="button" :class="['gx-btn', activePreset === 'yesterday' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showYesterday">Yesterday</button>
+              <button type="button" :class="['gx-btn', activePreset === 'week' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showLastWeek">Last 7 days</button>
+              <button type="button" :class="['gx-btn', activePreset === 'all' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="clearFilter">All</button>
             </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
             <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
             <template v-else-if="viewerEvents.length">
-              <SentryScrubber v-if="captureEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" @delete="deleteEvent" @close="toggleHistory" />
+              <SentryScrubber v-if="captureEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" v-model:camera="viewerCamera" @delete="deleteEvent" @close="toggleHistory" @open-image="openImage">
+                <template #actions>
+                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy"
+                    title="Create a timelapse video of the events in the selected date range" aria-label="Create timelapse video" @click="makeTimelapse">
+                    <i class="bi bi-film"></i> {{ timelapseBusy ? 'Encoding...' : 'Timelapse video' }}
+                  </button>
+                </template>
+              </SentryScrubber>
               <p v-else class="gx-empty">No captures in this range.</p>
               <div v-if="alertEvents.length" data-testid="sentry-alerts" style="margin-top:var(--sp-2);">
                 <div class="gx-row__desc" style="margin:0 0 4px;">Alerts without photos</div>
@@ -558,10 +567,6 @@ export const Sentry = {
             </template>
             <div v-else>
               <p class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No retained Sentry events.' }}</p>
-              <div v-if="filterActive" style="display:flex; gap:8px; flex-wrap:wrap;">
-                <button type="button" class="gx-btn gx-btn--tonal" @click="showLastWeek">Last 7 days</button>
-                <button type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Show all</button>
-              </div>
             </div>
           </div>
         </div>

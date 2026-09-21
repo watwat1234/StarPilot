@@ -6,6 +6,16 @@
 # WAT_ALLOW_BUILD_ARTIFACTS=1 git commit ...
 set -eu
 
+# Never allowed, whatever the branch or override: firmware stamped DEV-unknown-DEBUG means the
+# build could not see git (typically a worktree built without sp-build). The stamp is compiled in
+# and signed, so it can't be repaired after the fact. Only --no-verify skips this.
+if git diff --cached --name-only | grep -qx 'panda/board/obj/version' \
+   && git show :panda/board/obj/version | grep -q unknown; then
+  echo "pre-commit: staged panda/board/obj/version says '$(git show :panda/board/obj/version)'." >&2
+  echo "Firmware was built without git visible; rebuild with sp-build (or sp-panda-build) as your own user." >&2
+  exit 1
+fi
+
 [ "${WAT_ALLOW_BUILD_ARTIFACTS:-}" = 1 ] && exit 0
 [ -f "$(git rev-parse --git-path MERGE_HEAD)" ] && exit 0
 [ "$(git symbolic-ref --short -q HEAD || true)" = wat-ioniq ] && exit 0

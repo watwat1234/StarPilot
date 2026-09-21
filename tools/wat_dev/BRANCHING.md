@@ -3,7 +3,7 @@
 ```
 master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebuild)
                               │
-                              ├────> wat-ioniq      (Dom-wat + CAN/SBU wake + Ioniq tune + Ioniq torqued + Ioniq firmware)
+                              ├────> wat-ioniq      (Dom-wat + CAN/SBU wake + Ioniq tune + Ioniq torqued; only branch that rebuilds firmware)
                               └────> wat-analysis ──> wat-analysis-bolt   (+ wat-bolt)
                                                  └──> wat-analysis-ioniq  (+ wat-ioniq)
 ```
@@ -12,8 +12,8 @@ master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebu
 |---|---|---|
 | `Dom` | fast-forward mirror of upstream `master/Dom` | nothing |
 | `Dom-wat` | upstream Dom + common wat work: lateral controller unwind fix, `Paths.log_root` fix, blind-spot / PiP, Sentry, dev-container env + CI | nothing directly |
-| `wat-bolt` | exactly `Dom-wat` (the Bolt 2022/2023 tune is upstream's own). Carries upstream's stock firmware. | Bolt (`github` `wat-bolt-tuning` alias) |
-| `wat-ioniq` | `Dom-wat` + CAN/SBU wake + GPIOC11 bootkick, custom Ioniq 6 tune, Ioniq 6 torqued changes, regenerated panda firmware | Ioniq (`github` `wat-ioniq-tuning` alias) |
+| `wat-bolt` | exactly `Dom-wat` (the Bolt 2022/2023 tune is upstream's own). Carries upstream's stock firmware. | Bolt (devices track `github` `wat-bolt`) |
+| `wat-ioniq` | `Dom-wat` + CAN/SBU wake + GPIOC11 bootkick, custom Ioniq 6 tune, Ioniq 6 torqued changes. It is the only branch that regenerates panda firmware, and that commit is added separately (see the rule below). | Ioniq (`github` `wat-ioniq`), only when the rule below is met |
 | `wat-analysis*` | analyzers, notes, plans, route scripts. Never deployed. | nothing |
 | `bolt-ff-experiments` | parked Bolt FF/ringdown tuning work (2026-09-16..18); not canonical, merged into nothing | nothing |
 | `wat-reorg-notes` | orphan branch: runbook and working files from the 2026-09-20 reorganization, history only | nothing |

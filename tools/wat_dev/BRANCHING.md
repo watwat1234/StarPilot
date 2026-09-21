@@ -17,18 +17,16 @@ master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebu
 | `wat-analysis*` | analyzers, notes, plans, route scripts. Never deployed. | nothing |
 | `bolt-ff-experiments` | parked Bolt FF/ringdown tuning work (2026-09-16..18); not canonical, merged into nothing | nothing |
 | `wat-reorg-notes` | orphan branch: runbook and working files from the 2026-09-20 reorganization, history only | nothing |
+| `wat-reorg-open-items` | orphan branch: follow-ups from the reorganization (pending work, open decisions, known issues); living, never merged | nothing |
 
-## WARNING: `wat-ioniq` is not deployable until its firmware is rebuilt
+## Rule: `wat-ioniq` is deployed only with firmware built from its own panda source
 
-Until the firmware rebuild commit (`panda: regenerate firmware for wat-ioniq`) exists, `wat-ioniq`
-carries the wake **source** but upstream's stock firmware objects under `panda/board/obj/`. Do not push it to
-`github` or flash it before that commit exists. The Ioniq keeps running the old `wat-ioniq-tuning` build (which has the
-wake firmware) until then.
-
-Rebuild procedure (in the `starpilot-dev` container): `git switch wat-ioniq && sp-build`, verify the panda targets
-were built (`arm-none-eabi-gcc` present), commit only `panda/board/obj/**` as
-`panda: regenerate firmware for wat-ioniq`, then confirm `git diff origin/wat-ioniq -- panda/board/obj` is non-empty and
-`panda/board/{main.c,power_saving.h,boards/cuatro.h}` still match the old `wat-ioniq-tuning`.
+`wat-ioniq` is the only branch that rebuilds panda firmware (only the Ioniq has the CAN/SBU wake). Never push it to
+`github` or flash it unless its tip contains a `panda: regenerate firmware for wat-ioniq` commit that is newer than the last
+change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without that carries the wake *source* but stale
+(upstream stock) firmware objects and is not deployable. The rebuild runs in the `starpilot-dev` container
+(`git switch wat-ioniq && sp-build`, verify the panda targets built, commit only `panda/board/obj/**`), and afterwards
+`git diff origin/wat-ioniq -- panda/board/obj` must be non-empty while the source files still match the previous Ioniq build.
 
 ## Flows
 
@@ -61,26 +59,6 @@ alias exists). It sets `core.hooksPath=tools/wat_dev/git-hooks` and `rerere.enab
 registers the `git wat-setup` alias and its entrypoint runs it for every clone under `REPOS_DIR` (needs an image rebuild
 to take effect).
 
-## Open issues (undecided, deliberately left alone)
+## Open items and known issues
 
-- **Upstream PR staging.** How to stage PRs from `Dom-wat` work to upstream is deferred; nothing is set up. Upstream-PR-ability is
-  opportunistic. Whatever the mechanism, wat-only paths must be excluded from any PR: `tools/wat_dev`, `Dockerfile.wat_*`,
-  `.github/workflows/base-image.yml`, `.forgejo`.
-- **`base-image.yml` trigger.** `.github/workflows/base-image.yml` is really a Forgejo workflow (builds `Dockerfile.openpilot_base`
-  to the Forgejo registry as `waffle`, runner `unraid-runner`). It triggers only on `push: branches: [main]`, and this repo has no
-  `main`, so only `workflow_dispatch` works today. Whether to retarget it to `Dom-wat` is undecided; leave it as is until decided.
-
-## Known issues (as of Dom-wat creation, 2026-09-20)
-
-- **Sentry tests pollute blind-spot tests when run in one pytest process.**
-  `starpilot/system/the_galaxy/tests/test_sentry_*.py` replace `cloudlog` with a `types.SimpleNamespace` in
-  `sys.modules`. Anything imported afterwards that calls `cloudlog.debug` at import time (e.g.
-  `openpilot/system/ui/lib/multilang.py` via `gui_app`) fails with
-  `AttributeError: 'types.SimpleNamespace' object has no attribute 'debug'`, so
-  `selfdrive/ui/tests/test_blind_spot_indicators.py` errors if it runs after them. Each suite passes alone.
-  Run them in separate pytest invocations until the Sentry tests restore `sys.modules` (or stub `debug`). Not fixed on purpose.
-- **Two upstream test failures in `selfdrive/controls/tests/test_latcontrol.py`** (they fail identically on plain
-  `master/Dom`, not caused by wat changes): `test_bolt_2022_2023_low_speed_center_output_limit` and
-  `test_palisade_center_output_taper_curve`.
-- **Running tests on x86 needs local builds.** The `.so`/`.a` files tracked upstream are aarch64, so pytest needs a local
-  `./build` (which dirties tracked files; the pre-commit hook keeps them out of commits).
+Not tracked here, so this file stays policy. See `OPEN_ITEMS.md` on branch `wat-reorg-open-items`.

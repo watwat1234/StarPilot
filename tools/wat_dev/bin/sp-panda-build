@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Build panda firmware (./build --panda) from a git worktree.
+#
+# scripts/laptop_device_build.sh mounts only the checkout at /work in its build container. In a
+# worktree, .git is a file pointing at the main repo's .git/worktrees/<name> by absolute path, which
+# doesn't exist in there, so panda/SConscript's `git rev-parse` fails and the firmware is stamped
+# DEV-unknown-DEBUG. That string is compiled into every image and covered by the signature, so it
+# can't be fixed afterwards.
+#
+# Rather than carry a patch to the upstream script, this runs ./build --panda through temporary
+# copies of build and laptop_device_build.sh with the main repo's git dir added as a read-only mount
+# at its own absolute path. It aborts if the upstream files no longer look the way the patch expects.
+# In a normal clone (.git is a directory) it just runs ./build --panda.
+# Usage: sp-panda-build [args for ./build --panda]
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "sp-panda-build: run from inside a StarPilot clone" >&2; exit 1; }
+cd "$ROOT"
+command -v sp-agnos-check >/dev/null 2>&1 && sp-agnos-check
+
+if [ -d .git ]; then
+  ./build --panda "$@"
+else
+  gitdir="$(git rev-parse --path-format=absolute --git-common-dir)"
+  script=scripts/laptop_device_build.sh
+  tmp_script=scripts/.laptop_device_build.wat.sh
+  tmp_build=.build.wat
+  trap 'rm -f "$tmp_script" "$tmp_build"' EXIT
+
+  mount_line='    -v "${HOST_ROOT_DIR}:/work" \'
+  n=$(grep -cxF -- "$mount_line" "$script" || true)
+  [ "$n" -ge 1 ] || { echo "sp-panda-build: no '/work' mount line in $script; the patch needs updating" >&2; exit 1; }
+  awk -v line="$mount_line" -v g="$gitdir" '{ print } $0 == line { print "    -v \"" g ":" g ":ro\" \\" }' "$script" > "$tmp_script"
+  [ "$(grep -cF -- "$gitdir:$gitdir:ro" "$tmp_script")" = "$n" ] || { echo "sp-panda-build: script patch did not apply" >&2; exit 1; }
+  chmod +x "$tmp_script"
+
+  refs=$(grep -cF 'scripts/laptop_device_build.sh' build || true)
+  [ "$refs" -ge 1 ] || { echo "sp-panda-build: build no longer calls $script; the patch needs updating" >&2; exit 1; }
+  sed "s|scripts/laptop_device_build\.sh|$tmp_script|g" build > "$tmp_build"
+  chmod +x "$tmp_build"
+
+  "./$tmp_build" --panda "$@"
+fi
+
+version="$(cat panda/board/obj/version)"
+case "$version" in
+  *unknown*) echo "sp-panda-build: firmware stamped '$version'; git was not visible in the build container" >&2; exit 1 ;;
+esac
+echo "sp-panda-build: firmware version $version"

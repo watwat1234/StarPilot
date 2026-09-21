@@ -29,10 +29,24 @@ services:
       COMMA_HOST_SYSROOT_DIR: "${DEV_ROOT}/sysroot"
       COMMA_HOST_CACHE_DIR: "${DEV_ROOT}/build_cache"
     networks: [containernet]
-    ports:
-      - "2222:22"      # ssh (VS Code Remote-SSH)
-      - "6080:6080"    # noVNC desktop (vnc.html)
-      - "5900:5900"    # native VNC client (password from VNC_PASSWORD)
+    labels:
+      # Traefik TCP passthrough for native VNC (needs a `vnc` entrypoint on :5900 in Traefik)
+      - traefik.tcp.routers.starpilot-vnc.rule=HostSNI(`*`)
+      - traefik.tcp.routers.starpilot-vnc.entrypoints=vnc
+      - traefik.tcp.routers.starpilot-vnc.service=starpilot-vnc
+      - traefik.tcp.services.starpilot-vnc.loadbalancer.server.port=5900
+      # Same for ssh (needs an `ssh` entrypoint in Traefik)
+      - traefik.tcp.routers.starpilot-ssh.rule=HostSNI(`*`)
+      - traefik.tcp.routers.starpilot-ssh.entrypoints=ssh
+      - traefik.tcp.routers.starpilot-ssh.service=starpilot-ssh
+      - traefik.tcp.services.starpilot-ssh.loadbalancer.server.port=22
+      # noVNC desktop over HTTP (websocket upgrade is handled by Traefik)
+      - traefik.http.routers.starpilot-novnc.rule=Host(`starpilot-dev.docker.lan`)
+      - traefik.http.routers.starpilot-novnc.entrypoints=http
+      - traefik.http.routers.starpilot-novnc.service=starpilot-novnc
+      - traefik.http.services.starpilot-novnc.loadbalancer.server.port=6080
+    # No published ports: Traefik is the only entrypoint (ssh 2222, VNC 5900,
+    # noVNC on http) and reaches the container over containernet.
     volumes:
       # Mounted at the SAME path as on the host, so ./build (which starts
       # containers through the host's Docker) sees real host paths and needs

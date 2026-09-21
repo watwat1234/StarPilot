@@ -58,3 +58,18 @@ Hooks and config are per clone. Run once in each clone: `./tools/wat_dev/bin/wat
 alias exists). It sets `core.hooksPath=tools/wat_dev/git-hooks` and `rerere.enabled=true`. The dev container's image
 registers the `git wat-setup` alias and its entrypoint runs it for every clone under `REPOS_DIR` (needs an image rebuild
 to take effect).
+
+## Known issues (as of Dom-wat creation, 2026-09-20)
+
+- **Sentry tests pollute blind-spot tests when run in one pytest process.**
+  `starpilot/system/the_galaxy/tests/test_sentry_*.py` replace `cloudlog` with a `types.SimpleNamespace` in
+  `sys.modules`. Anything imported afterwards that calls `cloudlog.debug` at import time (e.g.
+  `openpilot/system/ui/lib/multilang.py` via `gui_app`) fails with
+  `AttributeError: 'types.SimpleNamespace' object has no attribute 'debug'`, so
+  `selfdrive/ui/tests/test_blind_spot_indicators.py` errors if it runs after them. Each suite passes alone.
+  Run them in separate pytest invocations until the Sentry tests restore `sys.modules` (or stub `debug`). Not fixed on purpose.
+- **Two upstream test failures in `selfdrive/controls/tests/test_latcontrol.py`** (they fail identically on plain
+  `master/Dom`, not caused by wat changes): `test_bolt_2022_2023_low_speed_center_output_limit` and
+  `test_palisade_center_output_taper_curve`.
+- **Running tests on x86 needs local builds.** The `.so`/`.a` files tracked upstream are aarch64, so pytest needs a local
+  `./build` (which dirties tracked files; the pre-commit hook keeps them out of commits).

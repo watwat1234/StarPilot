@@ -45,6 +45,11 @@ services:
       - traefik.http.routers.starpilot-novnc.entrypoints=http
       - traefik.http.routers.starpilot-novnc.service=starpilot-novnc
       - traefik.http.services.starpilot-novnc.loadbalancer.server.port=6080
+      # Galaxy dev server (plain HTTP + SSE, no websockets)
+      - traefik.http.routers.starpilot-galaxy.rule=Host(`starpilot-galaxy.docker.lan`)
+      - traefik.http.routers.starpilot-galaxy.entrypoints=http
+      - traefik.http.routers.starpilot-galaxy.service=starpilot-galaxy
+      - traefik.http.services.starpilot-galaxy.loadbalancer.server.port=8083
     # No published ports: Traefik is the only entrypoint (ssh 2222, VNC 5900,
     # noVNC on http) and reaches the container over containernet.
     volumes:

@@ -15,6 +15,8 @@ master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebu
 | `wat-bolt` | exactly `Dom-wat` (the Bolt 2022/2023 tune is upstream's own). Carries upstream's stock firmware. | Bolt (`github` `wat-bolt-tuning` alias) |
 | `wat-ioniq` | `Dom-wat` + CAN/SBU wake + GPIOC11 bootkick, custom Ioniq 6 tune, Ioniq 6 torqued changes, regenerated panda firmware | Ioniq (`github` `wat-ioniq-tuning` alias) |
 | `wat-analysis*` | analyzers, notes, plans, route scripts. Never deployed. | nothing |
+| `bolt-ff-experiments` | parked Bolt FF/ringdown tuning work (2026-09-16..18); not canonical, merged into nothing | nothing |
+| `wat-reorg-notes` | orphan branch: runbook and working files from the 2026-09-20 reorganization, history only | nothing |
 
 ## WARNING: `wat-ioniq` is not deployable until its firmware is rebuilt
 
@@ -58,6 +60,15 @@ Hooks and config are per clone. Run once in each clone: `./tools/wat_dev/bin/wat
 alias exists). It sets `core.hooksPath=tools/wat_dev/git-hooks` and `rerere.enabled=true`. The dev container's image
 registers the `git wat-setup` alias and its entrypoint runs it for every clone under `REPOS_DIR` (needs an image rebuild
 to take effect).
+
+## Open issues (undecided, deliberately left alone)
+
+- **Upstream PR staging.** How to stage PRs from `Dom-wat` work to upstream is deferred; nothing is set up. Upstream-PR-ability is
+  opportunistic. Whatever the mechanism, wat-only paths must be excluded from any PR: `tools/wat_dev`, `Dockerfile.wat_*`,
+  `.github/workflows/base-image.yml`, `.forgejo`.
+- **`base-image.yml` trigger.** `.github/workflows/base-image.yml` is really a Forgejo workflow (builds `Dockerfile.openpilot_base`
+  to the Forgejo registry as `waffle`, runner `unraid-runner`). It triggers only on `push: branches: [main]`, and this repo has no
+  `main`, so only `workflow_dispatch` works today. Whether to retarget it to `Dom-wat` is undecided; leave it as is until decided.
 
 ## Known issues (as of Dom-wat creation, 2026-09-20)
 

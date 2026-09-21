@@ -41,9 +41,8 @@ export const Sentry = {
       viewerBusy: false,
       viewerEvents: [],
       viewerKey: 0,
+      viewerCamera: "both",
       timelapseBusy: false,
-      timelapseCamera: "wide",
-      timelapsePacing: "gap",
       pushBusy: false,
       selectedImage: null,
     }
@@ -152,8 +151,8 @@ export const Sentry = {
       try {
         const { blob, frames, seconds } = await api.getSentryTimelapse({
           ...this.historyRange(),
-          camera: this.timelapseCamera,
-          timing: this.timelapsePacing,
+          camera: this.viewerCamera,
+          timing: "gap",
         })
         const url = URL.createObjectURL(blob)
         const a = document.createElement("a")
@@ -542,30 +541,17 @@ export const Sentry = {
               <button type="button" :class="['gx-btn', activePreset === 'week' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showLastWeek">Last 7 days</button>
               <button type="button" :class="['gx-btn', activePreset === 'all' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="clearFilter">All</button>
             </div>
-            <div v-if="captureEvents.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
-              <label style="flex:1 1 110px;">
-                <div class="gx-row__desc" style="margin:0 0 4px;">Camera</div>
-                <select class="gx-field gx-field--full" v-model="timelapseCamera" :disabled="timelapseBusy">
-                  <option value="wide">Road</option>
-                  <option value="driver">Driver</option>
-                  <option value="both">Both</option>
-                </select>
-              </label>
-              <label style="flex:1 1 90px;">
-                <div class="gx-row__desc" style="margin:0 0 4px;">Pacing</div>
-                <select class="gx-field gx-field--full" v-model="timelapsePacing" :disabled="timelapseBusy">
-                  <option value="gap">By time gaps</option>
-                  <option value="even">Even</option>
-                </select>
-              </label>
-              <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy" @click="makeTimelapse">
-                {{ timelapseBusy ? 'Encoding...' : (filterActive ? 'Timelapse of range' : 'Make timelapse') }}
-              </button>
-            </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
             <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
             <template v-else-if="viewerEvents.length">
-              <SentryScrubber v-if="captureEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" @delete="deleteEvent" @close="toggleHistory" />
+              <SentryScrubber v-if="captureEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" v-model:camera="viewerCamera" @delete="deleteEvent" @close="toggleHistory" @open-image="openImage">
+                <template #actions>
+                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy"
+                    title="Create a timelapse video of the events in the selected date range" aria-label="Create timelapse video" @click="makeTimelapse">
+                    <i class="bi bi-film"></i> {{ timelapseBusy ? 'Encoding...' : 'Timelapse video' }}
+                  </button>
+                </template>
+              </SentryScrubber>
               <p v-else class="gx-empty">No captures in this range.</p>
               <div v-if="alertEvents.length" data-testid="sentry-alerts" style="margin-top:var(--sp-2);">
                 <div class="gx-row__desc" style="margin:0 0 4px;">Alerts without photos</div>

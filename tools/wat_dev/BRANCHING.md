@@ -73,3 +73,8 @@ to take effect).
   `test_palisade_center_output_taper_curve`.
 - **Running tests on x86 needs local builds.** The `.so`/`.a` files tracked upstream are aarch64, so pytest needs a local
   `./build` (which dirties tracked files; the pre-commit hook keeps them out of commits).
+- **`wat-ioniq` only: `test_ioniq_6_friction_center_fade_curve` fails.** Commit `f3391a0b4` raised
+  `IONIQ_6_FRICTION_CENTER_FADE_MAX` from 0.50 to 0.80 but the test still asserts
+  `get_ioniq_6_friction_center_fade_scale(0.0, 30.0) >= 0.5`; the function now returns ~0.267. Stale assertion, not a
+  controller bug; the old deployed `wat-ioniq-tuning` has the same mismatch. Fix when convenient by asserting
+  `>= 1 - IONIQ_6_FRICTION_CENTER_FADE_MAX`. Left unfixed on purpose.

@@ -71,6 +71,14 @@ export const Sentry = {
     statusText() { return String(this.status?.state || "unknown") },
     hasEvent() { return !!(this.event && this.event.eventId) },
     filterActive() { return !!(this.dateFrom || this.dateTo) },
+    activePreset() {
+      if (!this.dateFrom && !this.dateTo) return "all"
+      if (this.dateFrom === localDay(1) && this.dateTo === localDay(1)) return "yesterday"
+      if (this.dateTo !== localDay()) return ""
+      if (this.dateFrom === localDay()) return "today"
+      if (this.dateFrom === localDay(6)) return "week"
+      return ""
+    },
     // A new event can only show up in the viewer if the range still reaches today.
     rangeIncludesNow() { return !this.dateTo || this.dateTo >= localDay() },
   },
@@ -121,6 +129,16 @@ export const Sentry = {
     clearFilter() {
       this.dateFrom = ""
       this.dateTo = ""
+      this.applyFilter()
+    },
+    showToday() {
+      this.dateFrom = localDay()
+      this.dateTo = localDay()
+      this.applyFilter()
+    },
+    showYesterday() {
+      this.dateFrom = localDay(1)
+      this.dateTo = localDay(1)
       this.applyFilter()
     },
     showLastWeek() {
@@ -514,10 +532,15 @@ export const Sentry = {
                 <input class="gx-field gx-field--full" type="date" :value="dateTo" :min="dateFrom || null"
                   @change="dateTo = $event.target.value; applyFilter()" />
               </label>
-              <button v-if="filterActive" type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Clear</button>
               <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:var(--sp-2);">
+              <button type="button" :class="['gx-btn', activePreset === 'today' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showToday">Today</button>
+              <button type="button" :class="['gx-btn', activePreset === 'yesterday' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showYesterday">Yesterday</button>
+              <button type="button" :class="['gx-btn', activePreset === 'week' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showLastWeek">Last 7 days</button>
+              <button type="button" :class="['gx-btn', activePreset === 'all' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="clearFilter">All</button>
             </div>
             <div v-if="captureEvents.length" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
               <label style="flex:1 1 110px;">
@@ -558,10 +581,6 @@ export const Sentry = {
             </template>
             <div v-else>
               <p class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No retained Sentry events.' }}</p>
-              <div v-if="filterActive" style="display:flex; gap:8px; flex-wrap:wrap;">
-                <button type="button" class="gx-btn gx-btn--tonal" @click="showLastWeek">Last 7 days</button>
-                <button type="button" class="gx-btn gx-btn--tonal" @click="clearFilter">Show all</button>
-              </div>
             </div>
           </div>
         </div>

@@ -50,7 +50,14 @@ tracked files and binaries conflict on every merge. Policy:
 - On merge conflicts in those paths, take upstream's side; never hand-merge binaries.
 - Firmware is per car. Only `wat-ioniq` rebuilds panda firmware (only the Ioniq has the wake), and only in the dev container.
 - `git-hooks/pre-commit` rejects staged files under those paths, except while finishing an upstream merge and on
-  `wat-ioniq`. Override deliberately with `WAT_ALLOW_BUILD_ARTIFACTS=1`.
+  `wat-ioniq`. Override deliberately with `WAT_ALLOW_BUILD_ARTIFACTS=1`. It also always rejects a staged
+  `panda/board/obj/version` containing `unknown` (only `--no-verify` skips that).
+- **Build through `sp-build` (or `sp-panda-build` for firmware only), as the checkout's owner.** In a worktree the build
+  container cannot see git, so a direct `./build` or `scripts/laptop_device_build.sh` stamps firmware
+  `DEV-unknown-DEBUG` (compiled in and signed, so it cannot be repaired afterwards). `sp-build` patches temporary copies
+  of those scripts to mount the main repo's git dir, aborts if upstream's versions no longer match the patch, and fails
+  on an `unknown` stamp. Run it as the user that owns the checkout (`docker exec -u batman`), not root, or git rejects the
+  repo as dubious-ownership. A rebuilt dev image puts both commands on `PATH`; until then use `tools/wat_dev/bin/`.
 
 ## Setup
 

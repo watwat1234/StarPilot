@@ -1,8 +1,49 @@
 #!/usr/bin/env bash
-# ./build for the current clone, after checking the shared AGNOS sysroot is current.
-# Usage: sp-build [args for ./build]   (e.g. sp-build --params)
+# ./build for the current clone or worktree, after checking the shared AGNOS sysroot is current.
+# Usage: sp-build [args for ./build]   (e.g. sp-build --params, sp-build --panda)
+#
+# scripts/laptop_device_build.sh mounts only the checkout at /work in its build container. In a
+# worktree, .git is a file pointing at the main repo's .git/worktrees/<name> by absolute path, which
+# doesn't exist in there, so panda/SConscript's `git rev-parse` fails and the firmware is stamped
+# DEV-unknown-DEBUG. That string is compiled into every image and covered by the signature, so it
+# can't be fixed afterwards.
+#
+# Rather than carry a patch to the upstream scripts, in a worktree this runs ./build through
+# temporary copies of build and laptop_device_build.sh with the main repo's git dir added as a
+# read-only mount at its own absolute path. It aborts if the upstream files no longer look the way
+# the patch expects. In a normal clone (.git is a directory) it runs ./build directly.
+# Run it as the checkout's owner (not root): git refuses a repo owned by another user.
 set -euo pipefail
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "sp-build: run from inside a StarPilot clone" >&2; exit 1; }
 sp-agnos-check
 cd "$ROOT"
-exec ./build "$@"
+
+if [ -d .git ]; then
+  ./build "$@"
+else
+  gitdir="$(git rev-parse --path-format=absolute --git-common-dir)"
+  script=scripts/laptop_device_build.sh
+  tmp_script=scripts/.laptop_device_build.wat.sh
+  tmp_build=.build.wat
+  trap 'rm -f "$tmp_script" "$tmp_build"' EXIT
+
+  mount_line='    -v "${HOST_ROOT_DIR}:/work" \'
+  n=$(grep -cxF -- "$mount_line" "$script" || true)
+  [ "$n" -ge 1 ] || { echo "sp-build: no '/work' mount line in $script; the worktree patch needs updating" >&2; exit 1; }
+  awk -v line="$mount_line" -v g="$gitdir" '{ print } $0 == line { print "    -v \"" g ":" g ":ro\" \\" }' "$script" > "$tmp_script"
+  [ "$(grep -cF -- "$gitdir:$gitdir:ro" "$tmp_script")" = "$n" ] || { echo "sp-build: script patch did not apply" >&2; exit 1; }
+  chmod +x "$tmp_script"
+
+  refs=$(grep -cF 'scripts/laptop_device_build.sh' build || true)
+  [ "$refs" -ge 1 ] || { echo "sp-build: build no longer calls $script; the worktree patch needs updating" >&2; exit 1; }
+  sed "s|scripts/laptop_device_build\.sh|$tmp_script|g" build > "$tmp_build"
+  chmod +x "$tmp_build"
+
+  "./$tmp_build" "$@"
+fi
+
+version="$(cat panda/board/obj/version 2>/dev/null || true)"
+case "$version" in
+  *unknown*) echo "sp-build: panda firmware is stamped '$version'; git was not visible in the build container" >&2; exit 1 ;;
+esac

@@ -68,7 +68,7 @@ RUN rsync -a --chown=${DEV_UID}:${DEV_GID} --exclude=/.venv --exclude=/.local/bi
 COPY tools/wat_dev/supervisord.conf /etc/supervisor/conf.d/dev.conf
 COPY tools/wat_dev/entrypoint.sh /entrypoint.sh
 COPY tools/wat_dev/Xresources /etc/wat-dev.Xresources
-COPY tools/wat_dev/bin/sp-agnos-check tools/wat_dev/bin/sp-build /usr/local/bin/
+COPY tools/wat_dev/bin/sp-agnos-check tools/wat_dev/bin/sp-build tools/wat_dev/bin/sp-panda-build /usr/local/bin/
 RUN chmod +x /entrypoint.sh
 
 # `git wat-setup` inside any StarPilot clone (hooks path, rerere). The entrypoint also runs

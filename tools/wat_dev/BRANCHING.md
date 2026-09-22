@@ -30,7 +30,12 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
 
 ## Flows
 
-- **Upstream ingest:** `Dom` -> `Dom-wat` -> `wat-bolt` / `wat-ioniq`. Merge, never rebase.
+- **Upstream ingest:** `Dom` -> `Dom-wat` -> `wat-bolt` / `wat-ioniq`. Merge, never rebase. Before merging, review
+  `git log --oneline <old-Dom-tip>..<new-Dom-tip>` and summarize what's incoming and its likely impact. Call out any
+  tuning changes to the Bolt or Ioniq 6 specifically (both deployed cars) — e.g. `opendbc_repo/opendbc/car/gm/carcontroller.py`
+  (`BOLT_*` constants), `opendbc_repo/opendbc/car/hyundai/carcontroller.py` (`IONIQ_6_*` constants),
+  `opendbc_repo/opendbc/car/{gm,hyundai}/values.py` (platform specs), and `opendbc_repo/opendbc/car/torque_data/*.toml`
+  (`CHEVROLET_BOLT_*` / `HYUNDAI_IONIQ_6` rows). A prior upstream Ioniq 6 tune landed badly; don't take one blind.
 - **Common feature:** short-lived branch off `Dom-wat`, merge it back, then merge `Dom-wat` into both car branches.
 - **Car work:** short-lived branch off `wat-<car>`, merge it back, named `wat-<car>-<class>-<name>` (see naming below).
 - **One mechanism per feature.** Sentry and blind-spot are not long-lived branches. They landed in `Dom-wat` once;

@@ -1,5 +1,7 @@
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.onroad.starpilot import blind_spot_indicators
 from openpilot.selfdrive.ui.onroad.starpilot.blind_spot_indicators import BlindSpotIndicators
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -55,3 +57,28 @@ def test_render_no_ops_when_alpha_is_zero(monkeypatch):
   indicators.render(blind_spot_indicators.rl.Rectangle(0, 0, 800, 600))
 
   assert calls == []
+
+
+def _make_hud_renderer():
+  renderer = object.__new__(HudRenderer)
+  renderer._rect = blind_spot_indicators.rl.Rectangle(0, 0, 800, 600)
+  renderer._blind_spot_indicators = MagicMock()
+  return renderer
+
+
+def test_render_blind_spot_icons_respects_param_off(monkeypatch):
+  renderer = _make_hud_renderer()
+  monkeypatch.setattr(ui_state.ui_params, "get_bool", lambda key, default=False: False)
+
+  renderer.render_blind_spot_icons()
+
+  renderer._blind_spot_indicators.render.assert_not_called()
+
+
+def test_render_blind_spot_icons_respects_param_on(monkeypatch):
+  renderer = _make_hud_renderer()
+  monkeypatch.setattr(ui_state.ui_params, "get_bool", lambda key, default=False: True)
+
+  renderer.render_blind_spot_icons()
+
+  renderer._blind_spot_indicators.render.assert_called_once_with(renderer._rect)

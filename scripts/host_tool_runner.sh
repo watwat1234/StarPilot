@@ -278,6 +278,7 @@ ensure_host_python_extensions() {
     msgq_repo/msgq/ipc_pyx.so \
     msgq_repo/msgq/visionipc/visionipc_pyx.so \
     rednose/helpers/ekf_sym_pyx.so \
+    selfdrive/pandad/pandad_api_impl.so \
     system/loggerd/bootlog \
     system/loggerd/loggerd \
     system/loggerd/encoderd

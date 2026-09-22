@@ -32,7 +32,7 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
 
 - **Upstream ingest:** `Dom` -> `Dom-wat` -> `wat-bolt` / `wat-ioniq`. Merge, never rebase.
 - **Common feature:** short-lived branch off `Dom-wat`, merge it back, then merge `Dom-wat` into both car branches.
-- **Car work:** short-lived branch off `wat-<car>`, merge it back.
+- **Car work:** short-lived branch off `wat-<car>`, merge it back, named `wat-<car>-<class>-<name>` (see naming below).
 - **One mechanism per feature.** Sentry and blind-spot are not long-lived branches. They landed in `Dom-wat` once;
   further work is a short-lived branch off `Dom-wat`. Do not keep cherry-picked copies of the same feature on several
   branches (that is the duplicate-commit mess this scheme replaced).
@@ -40,6 +40,24 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
   branch off `wat-analysis`. Cherry-pick (never merge) from the car analysis branches.
 - **Upstream PRs:** opportunistic; staging strategy is deferred. wat-only paths to exclude from any PR:
   `tools/wat_dev`, `Dockerfile.wat_*`, `.github/workflows/base-image.yml`, `.forgejo`.
+
+## Car-work branch naming: `wat-<car>-<class>-<name>`
+
+Short-lived car-work branches (the "Car work" flow above) carry a `<class>` tag so intent is visible before
+anyone opens the diff:
+
+- **`fix`** — restores or corrects known-bad behavior; usually small, usually pinned by a test. Merge as soon as
+  it's verified; don't let it linger.
+- **`tune`** — deliberate parameter/behavior tradeoff, backed by data (e.g. an offline A/B replay with a before/after
+  metric). Expect a commit message with the numbers, not just the change.
+- **`experiment`** — open-ended, may be abandoned, not merged until it proves out. Parking a dead-end experiment
+  (like `bolt-ff-experiments`) is fine; don't invent a `fix` or `tune` story to justify it.
+
+Example: `wat-ioniq-fix-restore-torque-clear` (class `fix`) reverted an undocumented Ioniq 6 torque-zeroing removal
+that traded a cosmetic turn-blip for reintroducing the steer-fault condition the zeroing existed to prevent.
+
+`feature/*` stays reserved for common work landing on `Dom-wat` (per the "Common feature" flow above) — it is not
+part of this car-work class tag.
 
 ## Firmware and generated files
 

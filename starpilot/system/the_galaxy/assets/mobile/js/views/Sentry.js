@@ -2,6 +2,7 @@ import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySection } from "../components/GalaxySection.js"
+import { GalaxySelect } from "../components/GalaxySelect.js"
 import { GalaxySheet } from "../components/GalaxySheet.js"
 import { SentryScrubber, isCaptureEvent } from "../components/SentryScrubber.js"
 
@@ -22,7 +23,7 @@ function localDay(daysAgo = 0) {
 
 export const Sentry = {
   name: "Sentry",
-  components: { GalaxySection, GalaxySheet, SentryScrubber },
+  components: { GalaxySection, GalaxySelect, GalaxySheet, SentryScrubber },
   data() {
     return {
       loading: true,
@@ -145,6 +146,12 @@ export const Sentry = {
       this.dateTo = localDay()
       this.applyFilter()
     },
+    onPresetChange(preset) {
+      if (preset === "today") return this.showToday()
+      if (preset === "yesterday") return this.showYesterday()
+      if (preset === "week") return this.showLastWeek()
+      return this.clearFilter()
+    },
     async makeTimelapse() {
       if (this.timelapseBusy) return
       this.timelapseBusy = true
@@ -197,11 +204,12 @@ export const Sentry = {
       const alerts = this.alertEvents.length
       const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`
       const what = alerts ? `${plural(captures, "capture")} and ${plural(alerts, "alert")}` : plural(total, "Sentry event")
+      const imagesClause = captures ? " and their camera images" : ""
       if (!(await GalaxyConfirm({
         title: scoped ? "Delete events in this range?" : "Delete ALL Sentry events?",
         message: scoped
-          ? `Delete ${what} in this date range and their camera images? This cannot be undone.`
-          : `Delete all ${what} and their camera images? This cannot be undone.`,
+          ? `Delete ${what} in this date range${imagesClause}? This cannot be undone.`
+          : `Delete all ${what}${imagesClause}? This cannot be undone.`,
         confirmLabel: scoped ? "Delete matching" : "Delete all",
         danger: true,
       }))) return
@@ -361,9 +369,14 @@ export const Sentry = {
     async deleteEvent(eventId) {
       eventId = String(eventId || "")
       if (!eventId || this.deleteBusy) return
+      const matched = this.viewerEvents.find((e) => String(e?.eventId || "") === eventId)
+        || (String(this.event?.eventId || "") === eventId ? this.event : null)
+      const hasImages = Array.isArray(matched?.imageUrls) && matched.imageUrls.length > 0
       if (!(await GalaxyConfirm({
         title: "Delete Sentry event?",
-        message: "Delete this Sentry event and its camera images? This cannot be undone.",
+        message: hasImages
+          ? "Delete this Sentry event and its camera images? This cannot be undone."
+          : "Delete this Sentry event? This cannot be undone.",
         confirmLabel: "Delete",
         danger: true,
       }))) return
@@ -531,15 +544,21 @@ export const Sentry = {
                 <input class="gx-field gx-field--full" type="date" :value="dateTo" :min="dateFrom || null"
                   @change="dateTo = $event.target.value; applyFilter()" />
               </label>
-              <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
-                {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
-              </button>
             </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:var(--sp-2);">
-              <button type="button" :class="['gx-btn', activePreset === 'today' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showToday">Today</button>
-              <button type="button" :class="['gx-btn', activePreset === 'yesterday' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showYesterday">Yesterday</button>
-              <button type="button" :class="['gx-btn', activePreset === 'week' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showLastWeek">Last 7 days</button>
-              <button type="button" :class="['gx-btn', activePreset === 'all' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="clearFilter">All</button>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
+              <label style="flex:1 1 140px;">
+                <div class="gx-row__desc" style="margin:0 0 4px;">Preset</div>
+                <GalaxySelect class="gx-field gx-field--full" aria-label="Date range preset" :value="activePreset || 'custom'" :disabled="viewerBusy" @change="onPresetChange($event.target.value)">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="week">Last 7 days</option>
+                  <option value="all">All</option>
+                  <option v-if="!activePreset" value="custom" disabled>Custom range</option>
+                </GalaxySelect>
+              </label>
+              <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
+                <i class="bi bi-trash"></i> {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
+              </button>
             </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
             <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
@@ -561,7 +580,9 @@ export const Sentry = {
                     <div>{{ alert.message || 'Sentry alert' }}</div>
                     <div class="gx-row__desc" style="margin:0;">{{ formatWhen(alert.detectedAt) }}</div>
                   </div>
-                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">Delete</button>
+                  <button type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">
+                    <i class="bi bi-trash"></i> Delete
+                  </button>
                 </div>
               </div>
             </template>

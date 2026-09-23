@@ -1,10 +1,10 @@
 // Interactive Sentry event viewer: scrub, step or play through retained events using the images the
-// Galaxy already serves, instead of encoding a video. The parent supplies the events and handles deletes.
+// Galaxy already serves. The parent supplies the events and handles deletes.
 
 const PRELOAD_BEHIND = 3
 const PRELOAD_AHEAD = 8
 const PRELOAD_WAIT_MS = 3000
-// Same log-compressed pacing the MP4 timelapse uses: a burst stays readable, a long lull still pauses.
+// Shares its pacing curve with the timelapse renderer: a burst stays readable, a long lull still pauses.
 const GAP_BASE_S = 0.15
 const GAP_SCALE_S = 0.25
 const GAP_MAX_S = 1.5
@@ -320,7 +320,7 @@ export const SentryScrubber = {
         <div ref="bar" role="slider" aria-label="Event timeline" :aria-valuemin="1" :aria-valuemax="frames.length" :aria-valuenow="index + 1"
           @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp"
           style="position:relative; height:44px; margin:var(--sp-2) 0; touch-action:none; cursor:pointer; user-select:none;">
-          <div style="position:absolute; left:0; right:0; top:50%; height:3px; margin-top:-1px; background:rgba(255,255,255,.25); border-radius:2px;"></div>
+          <div style="position:absolute; left:0; right:0; top:50%; height:3px; margin-top:-1px; background:var(--on-surface-variant); opacity:.5; border-radius:2px;"></div>
           <span v-for="(frame, i) in frames" :key="frame.eventId"
             :style="{ position: 'absolute', left: (positions[i] * 100) + '%', top: '10px', bottom: '10px', width: '3px', marginLeft: '-1px',
               borderRadius: '2px', background: kindColor(frame.kind), opacity: i > index ? 0.4 : 1, pointerEvents: 'none' }"></span>

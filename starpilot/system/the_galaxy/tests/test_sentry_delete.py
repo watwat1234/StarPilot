@@ -10,6 +10,8 @@ import pytest
 from test_dashboard_stats import FakeParams, MODULE_DIR, _install_server_import_stubs
 from test_sentry_push_and_routing import the_galaxy
 
+from openpilot.starpilot.system.the_galaxy import sentry_backend
+
 
 def _iso(hour: int) -> str:
   return datetime(2026, 9, 1, hour, 0, 0, tzinfo=timezone.utc).isoformat()
@@ -29,7 +31,7 @@ class SentryEnv:
       image = directory / "wide.jpg"
       image.write_bytes(b"jpeg")
       image_paths.append(str(image.resolve()))
-    the_galaxy._record_sentry_event({
+    sentry_backend._record_sentry_event({
       "eventId": event_id,
       "kind": "warning",
       "detectedAt": _iso(hour),
@@ -38,11 +40,11 @@ class SentryEnv:
     })
 
   def set_last_event(self, event_id: str) -> None:
-    event = next(event for event in the_galaxy._sentry_event_catalog() if event["eventId"] == event_id)
+    event = next(event for event in sentry_backend._sentry_event_catalog() if event["eventId"] == event_id)
     the_galaxy.params.put("SentryModeLastEvent", json.dumps(event))
 
   def catalog_ids(self) -> list[str]:
-    return [event["eventId"] for event in the_galaxy._load_sentry_event_catalog_unlocked()]
+    return [event["eventId"] for event in sentry_backend._load_sentry_event_catalog_unlocked()]
 
   def last_event_id(self):
     raw = the_galaxy.params.get("SentryModeLastEvent", encoding="utf-8")
@@ -57,7 +59,7 @@ def env(monkeypatch, tmp_path):
   roots = [(tmp_path / "root0").resolve(), (tmp_path / "root1").resolve()]
   for root in roots:
     root.mkdir()
-  monkeypatch.setattr(the_galaxy, "_sentry_event_roots", lambda: tuple(roots))
+  monkeypatch.setattr(sentry_backend, "_sentry_event_roots", lambda: tuple(roots))
 
   app = the_galaxy.Flask(
     f"test_galaxy_delete_{time.monotonic_ns()}",
@@ -192,9 +194,9 @@ def test_single_delete_returns_500_when_storage_removal_fails(env, monkeypatch):
 def test_test_events_are_first_class_timelapse_sources(env):
   env.add_event("test-123-abcd", 1)
   env.add_event("real", 2)
-  events = the_galaxy._sentry_event_catalog()
+  events = sentry_backend._sentry_event_catalog()
 
-  frames = the_galaxy._sentry_timelapse_sources(events, ("wide.jpg",), 600)
+  frames = sentry_backend._sentry_timelapse_sources(events, ("wide.jpg",), 600)
 
   assert len(frames) == 2
 
@@ -203,7 +205,7 @@ def test_timelapse_skips_a_frame_deleted_mid_encode(env, monkeypatch, tmp_path):
   env.add_event("a", 1)
   env.add_event("b", 2)
   env.add_event("c", 3)
-  frames = the_galaxy._sentry_timelapse_sources(the_galaxy._sentry_event_catalog(), ("wide.jpg",), 600)
+  frames = sentry_backend._sentry_timelapse_sources(sentry_backend._sentry_event_catalog(), ("wide.jpg",), 600)
   assert len(frames) == 3
 
   def render(paths, detected_at, kind, gap, index, positions, kinds, output_path):
@@ -226,13 +228,13 @@ def test_timelapse_skips_a_frame_deleted_mid_encode(env, monkeypatch, tmp_path):
 
   warnings = []
   monkeypatch.setattr(the_galaxy.cloudlog, "warning", warnings.append, raising=False)  # the shared stub has no .warning
-  monkeypatch.setattr(the_galaxy, "_render_sentry_timelapse_frame", render)
+  monkeypatch.setattr(sentry_backend, "_render_sentry_timelapse_frame", render)
   monkeypatch.setattr(the_galaxy.subprocess, "run", run)
 
-  data = the_galaxy._encode_sentry_timelapse(frames, [1.0, 1.0, 1.0])
+  data = sentry_backend._encode_sentry_timelapse(frames, [1.0, 1.0, 1.0])
 
   assert data == b"mp4"
-  fps = the_galaxy._SENTRY_TIMELAPSE_OUTPUT_FPS
+  fps = sentry_backend._SENTRY_TIMELAPSE_OUTPUT_FPS
   assert len(encoded) == 2 * fps  # frames a and c, one second each; b was skipped
   assert len(warnings) == 1 and "/b/" in warnings[0]
 
@@ -244,20 +246,20 @@ def test_timelapse_real_encode_skips_a_frame_deleted_mid_encode(env, monkeypatch
   for hour, event_id in enumerate(("a", "b", "c"), start=1):
     env.add_event(event_id, hour)
     Image.new("RGB", (320, 180), (40 * hour, 90, 160)).save(env.roots[0] / event_id / "wide.jpg")
-  frames = the_galaxy._sentry_timelapse_sources(the_galaxy._sentry_event_catalog(), ("wide.jpg",), 600)
+  frames = sentry_backend._sentry_timelapse_sources(sentry_backend._sentry_event_catalog(), ("wide.jpg",), 600)
   assert len(frames) == 3
 
-  real_render = the_galaxy._render_sentry_timelapse_frame
+  real_render = sentry_backend._render_sentry_timelapse_frame
 
   def render_with_delete(paths, detected_at, kind, gap, index, positions, kinds, output_path):
     if index == 1:  # the user deletes the middle event just before its frame is rendered
       shutil.rmtree(paths[0].parent)
     return real_render(paths, detected_at, kind, gap, index, positions, kinds, output_path)
 
-  monkeypatch.setattr(the_galaxy, "_render_sentry_timelapse_frame", render_with_delete)
+  monkeypatch.setattr(sentry_backend, "_render_sentry_timelapse_frame", render_with_delete)
   monkeypatch.setattr(the_galaxy.cloudlog, "warning", lambda *args, **kwargs: None, raising=False)
 
-  data = the_galaxy._encode_sentry_timelapse(frames, [1.0, 1.0, 1.0])
+  data = sentry_backend._encode_sentry_timelapse(frames, [1.0, 1.0, 1.0])
 
   video = tmp_path / "out.mp4"
   video.write_bytes(data)
@@ -268,4 +270,4 @@ def test_timelapse_real_encode_skips_a_frame_deleted_mid_encode(env, monkeypatch
     capture_output=True, text=True,
   )
   assert probe.returncode == 0, probe.stderr
-  assert int(probe.stdout.strip()) == 2 * the_galaxy._SENTRY_TIMELAPSE_OUTPUT_FPS  # frames a and c, one second each
+  assert int(probe.stdout.strip()) == 2 * sentry_backend._SENTRY_TIMELAPSE_OUTPUT_FPS  # frames a and c, one second each

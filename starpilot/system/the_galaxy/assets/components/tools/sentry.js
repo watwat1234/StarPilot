@@ -12,19 +12,14 @@ const state = reactive({
   status: {},
   event: {},
   history: [],
-  historyTotal: 0,
-  historyHasMore: false,
   historyVisible: false,
   historyBusy: false,
-  newEvents: false,
   liveCapture: {},
   testBusy: false,
   liveBusy: false,
   deleteBusy: false,
   pushBusy: false,
 })
-
-const HISTORY_PAGE_SIZE = 10
 
 let pollTimer = null
 
@@ -46,37 +41,22 @@ async function fetchStatus() {
     const payload = await response.json()
     state.status = payload.status || {}
     state.event = payload.lastEvent || {}
-    // Never rebuild the history list from the poll; just flag that it is stale.
-    if (state.historyVisible && state.history.length > 0) {
-      const newestId = String(state.event.eventId || "")
-      if (newestId && newestId !== String(state.history[0].eventId || "")) state.newEvents = true
-    }
+    if (state.historyVisible && !state.historyBusy) fetchHistory()
   } catch (error) {
     console.error("Failed to fetch Sentry status:", error)
   }
 }
 
-async function fetchHistory({ append = false } = {}) {
-  if (state.historyBusy) return
+async function fetchHistory() {
   state.historyBusy = true
   try {
-    const offset = append ? state.history.length : 0
-    const response = await fetch(galaxyPath(`/api/sentry/events?limit=${HISTORY_PAGE_SIZE}&offset=${offset}`), { cache: "no-store" })
+    const response = await fetch(galaxyPath("/api/sentry/events"), { cache: "no-store" })
     const payload = await readJsonResponse(response)
     if (!response.ok) {
       showSnackbar(payload.error || "Failed to load Sentry history.")
       return
     }
-    const events = Array.isArray(payload.events) ? payload.events : []
-    if (append) {
-      const seen = new Set(state.history.map((event) => String(event.eventId || "")))
-      state.history = [...state.history, ...events.filter((event) => !seen.has(String(event.eventId || "")))]
-    } else {
-      state.history = events
-      state.newEvents = false
-    }
-    state.historyTotal = Number.isFinite(payload.total) ? payload.total : state.history.length
-    state.historyHasMore = Boolean(payload.hasMore)
+    state.history = Array.isArray(payload.events) ? payload.events : []
   } catch (error) {
     showSnackbar(error.message || "Failed to load Sentry history.")
   } finally {
@@ -88,19 +68,7 @@ function startPolling() {
   if (pollTimer !== null) return
   fetchParams()
   fetchStatus()
-  pollTimer = window.setInterval(() => {
-    // The router has no unmount hook, so stop once the page has left the DOM.
-    if (!document.querySelector(".sentry-page")) {
-      stopPolling()
-      return
-    }
-    fetchStatus()
-  }, 5000)
-}
-
-function stopPolling() {
-  if (pollTimer !== null) window.clearInterval(pollTimer)
-  pollTimer = null
+  pollTimer = window.setInterval(fetchStatus, 5000)
 }
 
 async function toggleHistory() {
@@ -234,10 +202,7 @@ async function deleteEvent(eventId) {
       showSnackbar(payload.error || "Sentry event deletion failed.")
       return
     }
-    const before = state.history.length
     state.history = state.history.filter((event) => String(event.eventId || "") !== eventId)
-    if (state.history.length < before) state.historyTotal = Math.max(0, state.historyTotal - 1)
-    if (state.history.length === 0 && state.historyHasMore) await fetchHistory()
     if (String(state.event?.eventId || "") === eventId) {
       state.event = {}
       await fetchStatus()
@@ -276,15 +241,12 @@ function renderEvent(event = state.event) {
 
 function renderHistory() {
   if (!state.historyVisible) return ""
-  if (state.historyBusy && state.history.length === 0) return html`<p class="sentry-loading">Loading Sentry history…</p>`
+  if (state.historyBusy) return html`<p class="sentry-loading">Loading Sentry history…</p>`
   if (state.history.length === 0) return html`<p class="sentry-empty">No retained Sentry events.</p>`
 
   return html`
     <div class="sentry-history-list">
-      <p class="sentry-muted">Showing ${state.history.length} of ${state.historyTotal} event${state.historyTotal === 1 ? "" : "s"}. Events stay here until you delete them.</p>
-      ${state.newEvents ? html`
-        <button class="sentry-button sentry-button-secondary" @click="${() => fetchHistory()}" disabled="${() => state.historyBusy}">New event – refresh</button>
-      ` : ""}
+      <p class="sentry-muted">${state.history.length} event${state.history.length === 1 ? "" : "s"} retained. Events stay here until you delete them.</p>
       ${state.history.map((event) => html`
         <article class="sentry-history-event">
           <div class="sentry-history-heading">
@@ -296,11 +258,6 @@ function renderHistory() {
           ${renderEvent(event)}
         </article>
       `)}
-      ${state.historyHasMore ? html`
-        <button class="sentry-button sentry-button-secondary" @click="${() => fetchHistory({ append: true })}" disabled="${() => state.historyBusy}">
-          ${() => state.historyBusy ? "Loading…" : `Load more (${state.history.length} of ${state.historyTotal})`}
-        </button>
-      ` : ""}
     </div>
   `
 }
@@ -460,7 +417,7 @@ export function SentryMode() {
         <div class="sentry-card-heading">
           <div>
             <h3>Latest Event</h3>
-            <p class="sentry-muted">The latest event refreshes every five seconds. History updates when you refresh it.</p>
+            <p class="sentry-muted">Events refresh automatically every five seconds.</p>
           </div>
           <div class="sentry-action-row">
             <button class="sentry-button sentry-button-secondary" @click="${toggleHistory}" disabled="${() => state.historyBusy}">

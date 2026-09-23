@@ -301,12 +301,8 @@ export const api = {
   selectTestingGround(body) { return request("/api/testing_grounds/select", { method: "POST", data: body }) },
 
   getSentryStatus() { return requestOk("/api/sentry/status", { cache: "no-store" }) },
-  getSentryEvents({ limit, offset, since, until } = {}) {
+  getSentryEvents({ since, until } = {}) {
     const query = new URLSearchParams()
-    if (limit) {
-      query.set("limit", limit)
-      query.set("offset", offset || 0)
-    }
     if (since) query.set("since", since)
     if (until) query.set("until", until)
     const qs = query.toString()

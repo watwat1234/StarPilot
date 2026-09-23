@@ -2,6 +2,7 @@ import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySection } from "../components/GalaxySection.js"
+import { GalaxySelect } from "../components/GalaxySelect.js"
 import { GalaxySheet } from "../components/GalaxySheet.js"
 import { SentryScrubber, isCaptureEvent } from "../components/SentryScrubber.js"
 
@@ -22,7 +23,7 @@ function localDay(daysAgo = 0) {
 
 export const Sentry = {
   name: "Sentry",
-  components: { GalaxySection, GalaxySheet, SentryScrubber },
+  components: { GalaxySection, GalaxySelect, GalaxySheet, SentryScrubber },
   data() {
     return {
       loading: true,
@@ -144,6 +145,12 @@ export const Sentry = {
       this.dateFrom = localDay(6)
       this.dateTo = localDay()
       this.applyFilter()
+    },
+    onPresetChange(preset) {
+      if (preset === "today") return this.showToday()
+      if (preset === "yesterday") return this.showYesterday()
+      if (preset === "week") return this.showLastWeek()
+      return this.clearFilter()
     },
     async makeTimelapse() {
       if (this.timelapseBusy) return
@@ -540,11 +547,14 @@ export const Sentry = {
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
             </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:var(--sp-2);">
-              <button type="button" :class="['gx-btn', activePreset === 'today' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showToday">Today</button>
-              <button type="button" :class="['gx-btn', activePreset === 'yesterday' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showYesterday">Yesterday</button>
-              <button type="button" :class="['gx-btn', activePreset === 'week' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="showLastWeek">Last 7 days</button>
-              <button type="button" :class="['gx-btn', activePreset === 'all' ? '' : 'gx-btn--tonal']" :disabled="viewerBusy" @click="clearFilter">All</button>
+            <div style="margin-bottom:var(--sp-2);">
+              <GalaxySelect class="gx-field gx-field--full" aria-label="Date range preset" :value="activePreset || 'custom'" :disabled="viewerBusy" @change="onPresetChange($event.target.value)">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="week">Last 7 days</option>
+                <option value="all">All</option>
+                <option v-if="!activePreset" value="custom" disabled>Custom range</option>
+              </GalaxySelect>
             </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
             <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>

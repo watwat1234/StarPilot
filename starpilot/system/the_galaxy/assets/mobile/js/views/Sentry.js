@@ -204,11 +204,12 @@ export const Sentry = {
       const alerts = this.alertEvents.length
       const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`
       const what = alerts ? `${plural(captures, "capture")} and ${plural(alerts, "alert")}` : plural(total, "Sentry event")
+      const imagesClause = captures ? " and their camera images" : ""
       if (!(await GalaxyConfirm({
         title: scoped ? "Delete events in this range?" : "Delete ALL Sentry events?",
         message: scoped
-          ? `Delete ${what} in this date range and their camera images? This cannot be undone.`
-          : `Delete all ${what} and their camera images? This cannot be undone.`,
+          ? `Delete ${what} in this date range${imagesClause}? This cannot be undone.`
+          : `Delete all ${what}${imagesClause}? This cannot be undone.`,
         confirmLabel: scoped ? "Delete matching" : "Delete all",
         danger: true,
       }))) return

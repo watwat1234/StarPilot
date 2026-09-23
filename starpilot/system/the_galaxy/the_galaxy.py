@@ -9487,28 +9487,11 @@ def setup(app):
       return jsonify({"error": filter_error}), 400
 
     events = _filter_sentry_events_by_time(_sentry_event_catalog(), since, until)
-    total = len(events)
-
-    # Pagination is opt-in so existing callers (mobile UI) still get the full list.
-    if request.args.get("limit") is None:
-      return jsonify({
-        "events": [_public_sentry_event(event) for event in events],
-        "total": total,
-        "hasMore": False,
-      })
-
-    limit = request.args.get("limit", default=10, type=int)
-    offset = request.args.get("offset", default=0, type=int)
-    limit = min(max(limit if limit is not None else 10, 1), 50)
-    offset = max(offset if offset is not None else 0, 0)
-    page = events[offset:offset + limit]
 
     return jsonify({
-      "events": [_public_sentry_event(event) for event in page],
-      "total": total,
-      "offset": offset,
-      "limit": limit,
-      "hasMore": offset + len(page) < total,
+      "events": [_public_sentry_event(event) for event in events],
+      "total": len(events),
+      "hasMore": False,
     })
 
   @app.route("/api/sentry/events", methods=["DELETE"])

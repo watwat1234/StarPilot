@@ -1,10 +1,10 @@
 // Interactive Sentry event viewer: scrub, step or play through retained events using the images the
-// Galaxy already serves, instead of encoding a video. The parent supplies the events and handles deletes.
+// Galaxy already serves. The parent supplies the events and handles deletes.
 
 const PRELOAD_BEHIND = 3
 const PRELOAD_AHEAD = 8
 const PRELOAD_WAIT_MS = 3000
-// Same log-compressed pacing the MP4 timelapse uses: a burst stays readable, a long lull still pauses.
+// Shares its pacing curve with the timelapse renderer: a burst stays readable, a long lull still pauses.
 const GAP_BASE_S = 0.15
 const GAP_SCALE_S = 0.25
 const GAP_MAX_S = 1.5

@@ -361,9 +361,14 @@ export const Sentry = {
     async deleteEvent(eventId) {
       eventId = String(eventId || "")
       if (!eventId || this.deleteBusy) return
+      const matched = this.viewerEvents.find((e) => String(e?.eventId || "") === eventId)
+        || (String(this.event?.eventId || "") === eventId ? this.event : null)
+      const hasImages = Array.isArray(matched?.imageUrls) && matched.imageUrls.length > 0
       if (!(await GalaxyConfirm({
         title: "Delete Sentry event?",
-        message: "Delete this Sentry event and its camera images? This cannot be undone.",
+        message: hasImages
+          ? "Delete this Sentry event and its camera images? This cannot be undone."
+          : "Delete this Sentry event? This cannot be undone.",
         confirmLabel: "Delete",
         danger: true,
       }))) return

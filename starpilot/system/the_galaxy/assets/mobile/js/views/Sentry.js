@@ -556,7 +556,7 @@ export const Sentry = {
                 </GalaxySelect>
               </label>
               <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
-                {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
+                <i class="bi bi-trash"></i> {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
             </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>

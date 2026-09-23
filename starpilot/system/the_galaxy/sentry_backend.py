@@ -338,8 +338,12 @@ def _sentry_timelapse_font(size: int):
     return ImageFont.load_default()
 
 
-def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], max_frames: int) -> list[tuple[datetime, str, list[Path]]]:
-  """Oldest-first (detected_at, kind, image paths) for events that have every requested image, evenly sampled to max_frames."""
+def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], max_frames: int) -> list[tuple[datetime, str, list[Path | None]]]:
+  """Oldest-first (detected_at, kind, image paths) for events that have at least one requested image, evenly
+  sampled to max_frames. A path is None where that event is missing one of the requested cameras (e.g. a
+  driver-only Comma Selfie sampled in "both" mode) — the renderer leaves that camera's tile blank rather
+  than dropping the event.
+  """
   frames = []
   for event in events:
     event_id = str(event.get("eventId") or "")
@@ -347,7 +351,7 @@ def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], ma
     if detected_at is None:
       continue
     paths = [_sentry_image_path(event_id, filename) for filename in filenames]
-    if all(paths):
+    if any(paths):
       frames.append((detected_at, str(event.get("kind") or ""), paths))
   frames.sort(key=lambda frame: frame[0])
   if len(frames) > max_frames:
@@ -355,7 +359,7 @@ def _sentry_timelapse_sources(events: list[dict], filenames: tuple[str, ...], ma
   return frames
 
 
-def _sentry_timelapse_gaps(frames: list[tuple[datetime, str, list[Path]]]) -> list[float | None]:
+def _sentry_timelapse_gaps(frames: list[tuple[datetime, str, list[Path | None]]]) -> list[float | None]:
   """Seconds from each frame to the next one; None for the last frame."""
   return [(frames[i + 1][0] - frames[i][0]).total_seconds() for i in range(len(frames) - 1)] + [None]
 
@@ -397,7 +401,7 @@ def _format_sentry_gap(seconds: float) -> str:
   return f"{days}d {hours}h"
 
 
-def _sentry_timelapse_timeline(frames: list[tuple[datetime, str, list[Path]]]) -> list[float]:
+def _sentry_timelapse_timeline(frames: list[tuple[datetime, str, list[Path | None]]]) -> list[float]:
   """Each frame's position (0..1) along the real time span of the range."""
   start = frames[0][0]
   span = (frames[-1][0] - start).total_seconds()
@@ -407,22 +411,26 @@ def _sentry_timelapse_timeline(frames: list[tuple[datetime, str, list[Path]]]) -
 
 
 def _render_sentry_timelapse_frame(
-  paths: list[Path], detected_at: datetime, kind: str, gap_to_next: float | None,
+  paths: list[Path | None], detected_at: datetime, kind: str, gap_to_next: float | None,
   index: int, positions: list[float], kinds: list[str], output_path: Path,
 ) -> None:
   from PIL import Image, ImageDraw
 
-  tiles = []
-  for path in paths:
+  # Keyed by slot (not appended) so a camera this event is missing (e.g. a driver-only Comma
+  # Selfie in "both" mode) leaves its tile position blank instead of shifting the others over.
+  tiles = {}
+  for slot, path in enumerate(paths):
+    if path is None:
+      continue
     with Image.open(path) as source:
       image = source.convert("RGB")
     height = max(2, round(image.height * _SENTRY_TIMELAPSE_FRAME_WIDTH / image.width) // 2 * 2)
-    tiles.append(image.resize((_SENTRY_TIMELAPSE_FRAME_WIDTH, height)))
+    tiles[slot] = image.resize((_SENTRY_TIMELAPSE_FRAME_WIDTH, height))
 
-  frame_height = max(tile.height for tile in tiles)
-  frame = Image.new("RGB", (_SENTRY_TIMELAPSE_FRAME_WIDTH * len(tiles), frame_height))
-  for tile_index, tile in enumerate(tiles):
-    frame.paste(tile, (tile_index * _SENTRY_TIMELAPSE_FRAME_WIDTH, 0))
+  frame_height = max((tile.height for tile in tiles.values()), default=_SENTRY_TIMELAPSE_FRAME_WIDTH * 3 // 4)
+  frame = Image.new("RGB", (_SENTRY_TIMELAPSE_FRAME_WIDTH * len(paths), frame_height))
+  for slot, tile in tiles.items():
+    frame.paste(tile, (slot * _SENTRY_TIMELAPSE_FRAME_WIDTH, 0))
 
   badge_label, badge_color = _SENTRY_TIMELAPSE_BADGES.get(kind, _SENTRY_TIMELAPSE_DEFAULT_BADGE)
   label = detected_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -467,7 +475,7 @@ def _render_sentry_timelapse_frame(
   frame.save(output_path, "JPEG", quality=88)
 
 
-def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path]]], durations: list[float]) -> bytes:
+def _encode_sentry_timelapse(frames: list[tuple[datetime, str, list[Path | None]]], durations: list[float]) -> bytes:
   """Renders the frames and encodes them to MP4 with ffmpeg, each shown for its duration; raises RuntimeError on failure.
 
   Each rendered frame is repeated (as hard links) to fill its duration at the output frame rate, so ffmpeg only

@@ -543,18 +543,21 @@ export const Sentry = {
                 <input class="gx-field gx-field--full" type="date" :value="dateTo" :min="dateFrom || null"
                   @change="dateTo = $event.target.value; applyFilter()" />
               </label>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
+              <label style="flex:1 1 140px;">
+                <div class="gx-row__desc" style="margin:0 0 4px;">Preset</div>
+                <GalaxySelect class="gx-field gx-field--full" aria-label="Date range preset" :value="activePreset || 'custom'" :disabled="viewerBusy" @change="onPresetChange($event.target.value)">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="week">Last 7 days</option>
+                  <option value="all">All</option>
+                  <option v-if="!activePreset" value="custom" disabled>Custom range</option>
+                </GalaxySelect>
+              </label>
               <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
                 {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
-            </div>
-            <div style="margin-bottom:var(--sp-2);">
-              <GalaxySelect class="gx-field gx-field--full" aria-label="Date range preset" :value="activePreset || 'custom'" :disabled="viewerBusy" @change="onPresetChange($event.target.value)">
-                <option value="today">Today</option>
-                <option value="yesterday">Yesterday</option>
-                <option value="week">Last 7 days</option>
-                <option value="all">All</option>
-                <option v-if="!activePreset" value="custom" disabled>Custom range</option>
-              </GalaxySelect>
             </div>
             <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
             <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
@@ -576,7 +579,9 @@ export const Sentry = {
                     <div>{{ alert.message || 'Sentry alert' }}</div>
                     <div class="gx-row__desc" style="margin:0;">{{ formatWhen(alert.detectedAt) }}</div>
                   </div>
-                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">Delete</button>
+                  <button type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">
+                    <i class="bi bi-trash"></i> Delete
+                  </button>
                 </div>
               </div>
             </template>

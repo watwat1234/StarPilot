@@ -320,7 +320,7 @@ export const SentryScrubber = {
         <div ref="bar" role="slider" aria-label="Event timeline" :aria-valuemin="1" :aria-valuemax="frames.length" :aria-valuenow="index + 1"
           @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp"
           style="position:relative; height:44px; margin:var(--sp-2) 0; touch-action:none; cursor:pointer; user-select:none;">
-          <div style="position:absolute; left:0; right:0; top:50%; height:3px; margin-top:-1px; background:rgba(255,255,255,.25); border-radius:2px;"></div>
+          <div style="position:absolute; left:0; right:0; top:50%; height:3px; margin-top:-1px; background:var(--on-surface-variant); opacity:.5; border-radius:2px;"></div>
           <span v-for="(frame, i) in frames" :key="frame.eventId"
             :style="{ position: 'absolute', left: (positions[i] * 100) + '%', top: '10px', bottom: '10px', width: '3px', marginLeft: '-1px',
               borderRadius: '2px', background: kindColor(frame.kind), opacity: i > index ? 0.4 : 1, pointerEvents: 'none' }"></span>

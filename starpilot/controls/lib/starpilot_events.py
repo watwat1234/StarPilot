@@ -67,7 +67,11 @@ class StarPilotEvents:
     if self.starpilot_planner.starpilot_vcruise.forcing_stop:
       self.events.add(StarPilotEventName.forcingStop)
 
-    if not self.starpilot_planner.tracking_lead and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
+    # tracking_lead freezes pre-stop and is biased False by the time standstill is true (see the
+    # longer note below), so it's not a real traffic-vs-light discriminator here either. The
+    # actual distinction comes from starpilot_cem's own lead-awareness (lead_relevant,
+    # trackable_stop_approach, etc.) in stop_light_detected, so use a live check instead.
+    if not self.starpilot_planner.lead_one.status and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
       if not self.starpilot_planner.model_stopped and self.stopped_for_light and starpilot_toggles.green_light_alert:
         self.events.add(StarPilotEventName.greenLight)
 

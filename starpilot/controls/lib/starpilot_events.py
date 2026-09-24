@@ -78,7 +78,12 @@ class StarPilotEvents:
     if starpilot_toggles.current_holiday_theme != "stock" and "holidayActive" not in self.played_events and self.startup_seen and alerts_empty and len(self.events) == 0:
       self.events.add(StarPilotEventName.holidayActive)
 
-    if self.starpilot_planner.tracking_lead and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
+    # tracking_lead is a smoothed "actively following" signal for longitudinal control and
+    # freezes at whatever value it held when standstill began (starpilot_planner.py only
+    # recomputes it while moving) — it's usually already False by the time the car stops, since
+    # the model's predicted path length shrinks on approach to a stop. Use lead_one.status
+    # instead: it's set unconditionally from radarState every frame, standstill or not.
+    if self.starpilot_planner.lead_one.status and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
       if self.tracked_lead_distance == 0:
         self.tracked_lead_distance = self.starpilot_planner.lead_one.dRel
 

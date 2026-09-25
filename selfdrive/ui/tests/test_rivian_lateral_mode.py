@@ -302,6 +302,7 @@ def test_non_mici_wheel_icon_turns_red_when_brakes_are_pressed(monkeypatch):
   button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
   module.ui_state.sm["carState"].brakePressed = True
+  module.ui_state.sm["carState"].aEgo = -1.5
   button._update_state()
 
   button._render(FakeRectangle(0, 0, 192, 192))
@@ -346,9 +347,15 @@ def test_wheel_pedal_intensity_mapping(monkeypatch):
   f = module.get_wheel_pedal_intensity
 
   assert f(True, False) == 0.0
-  assert f(True, True) == -1.0
-  assert f(False, True, brake_lights=True) == -1.0
-  assert f(False, True, gas_pressed=True) == 1.0
+  assert f(True, True, acceleration=-2.0) == -1.0
+  assert f(False, True, brake_lights=True, acceleration=-2.0) == -1.0
+  assert f(False, True, gas_pressed=True, acceleration=2.0) == 1.0
+  # manual pedals scale with measured accel, with a floor for any press
+  assert f(True, True, acceleration=0.0) == -module.PEDAL_MIN_INTENSITY
+  assert f(False, True, gas_pressed=True, acceleration=-1.0) == module.PEDAL_MIN_INTENSITY
+  assert -1.0 < f(True, True, acceleration=-0.5) < -module.PEDAL_MIN_INTENSITY
+  assert module.PEDAL_MIN_INTENSITY < f(False, True, gas_pressed=True, acceleration=0.5) < 1.0
+  assert f(True, True, acceleration=-0.3) > f(True, True, acceleration=-0.8)
   assert f(False, True) == 0.0
   assert f(False, True, commanded_accel=0.05) == 0.0
   assert f(False, True, commanded_accel=-2.0) == -1.0
@@ -394,6 +401,7 @@ def test_non_mici_wheel_icon_uses_reported_brake_lights(monkeypatch):
   module.ui_state.sm = FakeUiSubMaster(module.ui_state.sm)
   module.ui_state.sm.valid = {"starpilotCarState": True}
   module.ui_state.sm["starpilotCarState"] = SimpleNamespace(brakeLights=True)
+  module.ui_state.sm["carState"].aEgo = -1.5
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
   button._update_state()
 

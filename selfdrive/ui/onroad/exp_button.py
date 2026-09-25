@@ -18,7 +18,12 @@ ACCEL_WHEEL_COLOR = rl.Color(22, 127, 64, 255)
 BRAKE_ACCEL_THRESHOLD = 0.25
 COMMAND_ACCEL_THRESHOLD = 0.05
 FULL_TINT_ACCEL = 1.0  # m/s^2 at which the wheel reaches full red/green
+PEDAL_MIN_INTENSITY = 0.15  # faint tint for any pedal press, even at steady speed
 WHEEL_TINT_TAU = 0.3  # seconds
+
+
+def _accel_magnitude(accel: float) -> float:
+  return min(1.0, max(0.0, (accel - COMMAND_ACCEL_THRESHOLD) / (FULL_TINT_ACCEL - COMMAND_ACCEL_THRESHOLD)))
 
 
 def get_wheel_pedal_intensity(brake_pressed: bool, pedal_feedback_enabled: bool,
@@ -29,9 +34,9 @@ def get_wheel_pedal_intensity(brake_pressed: bool, pedal_feedback_enabled: bool,
   if not pedal_feedback_enabled:
     return 0.0
   if brake_pressed or brake_lights:
-    return -1.0
+    return -max(PEDAL_MIN_INTENSITY, _accel_magnitude(-acceleration))
   if gas_pressed:
-    return 1.0
+    return max(PEDAL_MIN_INTENSITY, _accel_magnitude(acceleration))
 
   if abs(commanded_accel) > COMMAND_ACCEL_THRESHOLD:
     signal = commanded_accel
@@ -42,7 +47,7 @@ def get_wheel_pedal_intensity(brake_pressed: bool, pedal_feedback_enabled: bool,
   if commanded_gas > COMMAND_ACCEL_THRESHOLD:
     signal = max(signal, commanded_gas * FULL_TINT_ACCEL)
 
-  magnitude = min(1.0, max(0.0, (abs(signal) - COMMAND_ACCEL_THRESHOLD) / (FULL_TINT_ACCEL - COMMAND_ACCEL_THRESHOLD)))
+  magnitude = _accel_magnitude(abs(signal))
   return -magnitude if signal < 0 else magnitude
 
 

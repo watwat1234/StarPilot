@@ -64,6 +64,21 @@ that traded a cosmetic turn-blip for reintroducing the steer-fault condition the
 `feature/*` stays reserved for common work landing on `Dom-wat` (per the "Common feature" flow above) — it is not
 part of this car-work class tag.
 
+## Worktrees
+
+Sibling worktrees next to the main checkout. The car-branch worktrees stay on their car branch:
+
+| Worktree | Branch | Rule |
+|---|---|---|
+| `StarPilot-wat-bolt` | `wat-bolt` | Keep on `wat-bolt`. Don't switch it to a `test/*` branch. |
+| `StarPilot-wat-ioniq` | `wat-ioniq` | Keep on `wat-ioniq`. Don't switch it to a `test/*` branch. |
+| `StarPilot-wat-bolt-test` | `test/wat-lead-departing-alert` | Bolt test merges happen here. |
+| `StarPilot-wat-ioniq-test` | `test/wat-ioniq-lead-departing-alert` | Ioniq test merges happen here. |
+
+A branch can only be checked out in one worktree, so parking a `test/*` branch in a car worktree blocks the
+other one and leaves the car worktree off the branch it is named for. Give each `test/*` branch its own
+`<car>-test` worktree instead (`git worktree add ../StarPilot-wat-<car>-test test/<branch>`).
+
 ## Firmware and generated files
 
 `panda/board/obj/**` (built firmware) and `selfdrive/locationd/models/generated/**` are tracked upstream on purpose;

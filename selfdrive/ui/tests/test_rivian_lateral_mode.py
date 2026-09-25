@@ -317,6 +317,7 @@ def test_non_mici_wheel_icon_turns_green_when_accelerating(monkeypatch):
   button = module.ExpButton(192, 144)
   button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
+  module.ui_state.sm["carState"].gasPressed = True
   module.ui_state.sm["carState"].aEgo = 1.0
   button._update_state()
 
@@ -331,6 +332,7 @@ def test_non_mici_wheel_icon_green_is_proportional_to_accel(monkeypatch):
   button = module.ExpButton(192, 144)
   button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
+  module.ui_state.sm["carState"].gasPressed = True
   module.ui_state.sm["carState"].aEgo = 0.4
   button._update_state()
 
@@ -345,23 +347,37 @@ def test_non_mici_wheel_icon_green_is_proportional_to_accel(monkeypatch):
 def test_wheel_pedal_intensity_mapping(monkeypatch):
   module, _ = load_exp_button(monkeypatch)
   f = module.get_wheel_pedal_intensity
+  floor = module.PEDAL_MIN_INTENSITY
 
+  # toggle off
+  assert f(False, True, driver_braking=True, acceleration=-2.0) == 0.0
+  # driver pedals win in both modes and scale with measured accel, with a floor for any press
+  for long_active in (False, True):
+    assert f(True, long_active, driver_braking=True, acceleration=-2.0) == -1.0
+    assert f(True, long_active, gas_pressed=True, acceleration=2.0) == 1.0
+    assert f(True, long_active, driver_braking=True, acceleration=0.0) == -floor
+    assert f(True, long_active, gas_pressed=True, acceleration=-1.0) == floor
+    assert -1.0 < f(True, long_active, driver_braking=True, acceleration=-0.5) < -floor
+    assert floor < f(True, long_active, gas_pressed=True, acceleration=0.5) < 1.0
+    assert f(True, long_active, driver_braking=True, acceleration=-0.3) > f(True, long_active, driver_braking=True, acceleration=-0.8)
+  # brake beats gas, and beats the long command
+  assert f(True, True, driver_braking=True, gas_pressed=True, acceleration=-2.0) == -1.0
+  assert f(True, True, driver_braking=True, acceleration=-2.0, commanded_accel=1.0) == -1.0
+
+  # driver-controlled without a pedal press is neutral, whatever the car is doing
   assert f(True, False) == 0.0
-  assert f(True, True, acceleration=-2.0) == -1.0
-  assert f(False, True, brake_lights=True, acceleration=-2.0) == -1.0
-  assert f(False, True, gas_pressed=True, acceleration=2.0) == 1.0
-  # manual pedals scale with measured accel, with a floor for any press
-  assert f(True, True, acceleration=0.0) == -module.PEDAL_MIN_INTENSITY
-  assert f(False, True, gas_pressed=True, acceleration=-1.0) == module.PEDAL_MIN_INTENSITY
-  assert -1.0 < f(True, True, acceleration=-0.5) < -module.PEDAL_MIN_INTENSITY
-  assert module.PEDAL_MIN_INTENSITY < f(False, True, gas_pressed=True, acceleration=0.5) < 1.0
-  assert f(True, True, acceleration=-0.3) > f(True, True, acceleration=-0.8)
-  assert f(False, True) == 0.0
-  assert f(False, True, commanded_accel=0.05) == 0.0
-  assert f(False, True, commanded_accel=-2.0) == -1.0
-  assert 0.0 < f(False, True, commanded_accel=0.5) < 1.0
-  assert f(False, True, commanded_gas=1.0) == 1.0
-  assert f(False, True, acceleration=0.2) == 0.0
+  assert f(True, False, acceleration=-1.0) == 0.0
+  assert f(True, False, acceleration=1.0) == 0.0
+  assert f(True, False, commanded_accel=-1.0, commanded_gas=1.0) == 0.0
+
+  # long engaged follows the command only
+  assert f(True, True, acceleration=-0.5) == 0.0
+  assert f(True, True, acceleration=1.0) == 0.0
+  assert f(True, True, acceleration=-1.0, commanded_accel=0.05) == 0.0
+  assert f(True, True, commanded_accel=-2.0) == -1.0
+  assert -1.0 < f(True, True, commanded_accel=-0.5) < 0.0
+  assert 0.0 < f(True, True, commanded_accel=0.5) < 1.0
+  assert f(True, True, commanded_gas=1.0) == 1.0
 
 
 def test_wheel_tint_fader_fades_through_mode_tint(monkeypatch):
@@ -391,7 +407,7 @@ def test_wheel_tint_fader_fades_through_mode_tint(monkeypatch):
   assert (tint.r, tint.g, tint.b) == (0x4D, 0x9D, 0xFF)
 
 
-def test_non_mici_wheel_icon_uses_reported_brake_lights(monkeypatch):
+def test_non_mici_wheel_icon_ignores_brake_lights_alone(monkeypatch):
   module, draws = load_exp_button(monkeypatch)
   button = module.ExpButton(192, 144)
   button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
@@ -409,7 +425,7 @@ def test_non_mici_wheel_icon_uses_reported_brake_lights(monkeypatch):
 
   assert len(draws["textures"]) == 1
   texture_color = draws["textures"][0][-1]
-  assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (255, 0, 0, 255)
+  assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (0x4D, 0x9D, 0xFF, 255)
 
 
 def test_non_mici_wheel_icon_brake_tint_is_disabled_by_default(monkeypatch):

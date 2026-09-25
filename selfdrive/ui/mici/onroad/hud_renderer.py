@@ -201,16 +201,15 @@ class HudRenderer(Widget):
     car_control = sm['carControl'] if sm.valid.get('carControl', False) else None
     actuators = getattr(car_control, "actuators", None)
     long_active = bool(getattr(car_control, "longActive", False))
-    starpilot_car_state = sm['starpilotCarState'] if sm.valid.get('starpilotCarState', False) else None
     pedal_feedback_enabled = ui_state.ui_params.get_bool("PedalsOnUI")
     intensity = get_wheel_pedal_intensity(
-      getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
       pedal_feedback_enabled,
-      getattr(starpilot_car_state, "brakeLights", False),
-      getattr(car_state, "aEgo", 0.0),
+      long_active,
+      getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
       getattr(car_state, "gasPressed", False),
-      getattr(actuators, "accel", 0.0) if long_active else 0.0,
-      getattr(actuators, "gas", 0.0) if long_active else 0.0,
+      getattr(car_state, "aEgo", 0.0),
+      getattr(actuators, "accel", 0.0),
+      getattr(actuators, "gas", 0.0),
     )
     self._wheel_tint = self._wheel_tint_fader.update(intensity, rivian_lateral_mode.wheel_tint)
     if ui_state.ui_params.get_bool("BlindSpotIcon", default=True):

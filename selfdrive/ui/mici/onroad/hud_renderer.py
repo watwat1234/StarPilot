@@ -9,7 +9,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.blind_spot_indicators import BlindS
 from openpilot.selfdrive.ui.mici.onroad.speed_limit_utils import resolve_display_speed_limit_ms
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import NavigationCardRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
-from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_tint
+from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_pedal_intensity, WheelTintFader
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.utils import draw_circle_gradient_compat
 from openpilot.system.ui.lib.multilang import tr
@@ -168,6 +168,7 @@ class HudRenderer(Widget):
     self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
     self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
     self._wheel_tint: rl.Color | None = None
+    self._wheel_tint_fader = WheelTintFader(gui_app.target_fps)
 
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
     self._egpu_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
@@ -202,9 +203,8 @@ class HudRenderer(Widget):
     long_active = bool(getattr(car_control, "longActive", False))
     starpilot_car_state = sm['starpilotCarState'] if sm.valid.get('starpilotCarState', False) else None
     pedal_feedback_enabled = ui_state.ui_params.get_bool("PedalsOnUI") or ui_state.ui_params.get_bool("ShowBrakeStatus")
-    self._wheel_tint = get_wheel_tint(
+    intensity = get_wheel_pedal_intensity(
       getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
-      rivian_lateral_mode.wheel_tint,
       pedal_feedback_enabled,
       getattr(starpilot_car_state, "brakeLights", False),
       getattr(car_state, "aEgo", 0.0),
@@ -212,6 +212,7 @@ class HudRenderer(Widget):
       getattr(actuators, "accel", 0.0) if long_active else 0.0,
       getattr(actuators, "gas", 0.0) if long_active else 0.0,
     )
+    self._wheel_tint = self._wheel_tint_fader.update(intensity, rivian_lateral_mode.wheel_tint)
     if ui_state.ui_params.get_bool("BlindSpotIcon", default=True):
       self._blind_spot_indicators.update()
 

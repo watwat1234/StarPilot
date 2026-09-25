@@ -302,6 +302,7 @@ def test_non_mici_wheel_icon_turns_red_when_brakes_are_pressed(monkeypatch):
   button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
   module.ui_state.sm["carState"].brakePressed = True
+  module.ui_state.sm["carState"].aEgo = -1.5
   button._update_state()
 
   button._render(FakeRectangle(0, 0, 192, 192))
@@ -316,13 +317,78 @@ def test_non_mici_wheel_icon_turns_green_when_accelerating(monkeypatch):
   button = module.ExpButton(192, 144)
   button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
-  module.ui_state.sm["carState"].aEgo = 0.4
+  module.ui_state.sm["carState"].aEgo = 1.0
   button._update_state()
 
   button._render(FakeRectangle(0, 0, 192, 192))
 
   texture_color = draws["textures"][0][-1]
   assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (22, 127, 64, 255)
+
+
+def test_non_mici_wheel_icon_green_is_proportional_to_accel(monkeypatch):
+  module, draws = load_exp_button(monkeypatch)
+  button = module.ExpButton(192, 144)
+  button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
+  module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
+  module.ui_state.sm["carState"].aEgo = 0.4
+  button._update_state()
+
+  button._render(FakeRectangle(0, 0, 192, 192))
+
+  texture_color = draws["textures"][0][-1]
+  assert 22 < texture_color.r < 0x4D
+  assert 127 < texture_color.g < 0x9D
+  assert 64 < texture_color.b < 255
+
+
+def test_wheel_pedal_intensity_mapping(monkeypatch):
+  module, _ = load_exp_button(monkeypatch)
+  f = module.get_wheel_pedal_intensity
+
+  assert f(True, False) == 0.0
+  assert f(True, True, acceleration=-2.0) == -1.0
+  assert f(False, True, brake_lights=True, acceleration=-2.0) == -1.0
+  assert f(False, True, gas_pressed=True, acceleration=2.0) == 1.0
+  # manual pedals scale with measured accel, with a floor for any press
+  assert f(True, True, acceleration=0.0) == -module.PEDAL_MIN_INTENSITY
+  assert f(False, True, gas_pressed=True, acceleration=-1.0) == module.PEDAL_MIN_INTENSITY
+  assert -1.0 < f(True, True, acceleration=-0.5) < -module.PEDAL_MIN_INTENSITY
+  assert module.PEDAL_MIN_INTENSITY < f(False, True, gas_pressed=True, acceleration=0.5) < 1.0
+  assert f(True, True, acceleration=-0.3) > f(True, True, acceleration=-0.8)
+  assert f(False, True) == 0.0
+  assert f(False, True, commanded_accel=0.05) == 0.0
+  assert f(False, True, commanded_accel=-2.0) == -1.0
+  assert 0.0 < f(False, True, commanded_accel=0.5) < 1.0
+  assert f(False, True, commanded_gas=1.0) == 1.0
+  assert f(False, True, acceleration=0.2) == 0.0
+
+
+def test_wheel_tint_fader_fades_through_mode_tint(monkeypatch):
+  module, _ = load_exp_button(monkeypatch)
+  fader = module.WheelTintFader(60)
+
+  class RealFilter:
+    def __init__(self):
+      self.x = 0.0
+
+    def update(self, x):
+      self.x += 0.2 * (x - self.x)
+      return self.x
+
+  fader._level = RealFilter()
+  mode = FakeColor(0x4D, 0x9D, 0xFF, 255)
+
+  reds = [fader.update(-1.0, mode).r for _ in range(10)]
+  assert reds == sorted(reds) and 0x4D < reds[0] < reds[-1] < 255
+
+  greens = [fader.update(1.0, mode) for _ in range(40)]
+  assert any((c.r, c.g, c.b) == (0x4D, 0x9D, 0xFF) or c.r < 0x4D for c in greens[:15])
+  assert (greens[-1].r, greens[-1].g) == (22, 127) or greens[-1].g > 120
+
+  for _ in range(60):
+    tint = fader.update(0.0, mode)
+  assert (tint.r, tint.g, tint.b) == (0x4D, 0x9D, 0xFF)
 
 
 def test_non_mici_wheel_icon_uses_reported_brake_lights(monkeypatch):
@@ -335,6 +401,7 @@ def test_non_mici_wheel_icon_uses_reported_brake_lights(monkeypatch):
   module.ui_state.sm = FakeUiSubMaster(module.ui_state.sm)
   module.ui_state.sm.valid = {"starpilotCarState": True}
   module.ui_state.sm["starpilotCarState"] = SimpleNamespace(brakeLights=True)
+  module.ui_state.sm["carState"].aEgo = -1.5
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
   button._update_state()
 

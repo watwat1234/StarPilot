@@ -66,18 +66,21 @@ part of this car-work class tag.
 
 ## Worktrees
 
-Sibling worktrees next to the main checkout. The car-branch worktrees stay on their car branch:
+Sibling worktrees next to the main checkout. The main and car-branch worktrees stay on their own branch:
 
 | Worktree | Branch | Rule |
 |---|---|---|
+| `StarPilot` (main checkout) | `Dom` | Keep on `Dom`. Don't do feature work here; use a `StarPilot-<feature>` worktree. |
 | `StarPilot-wat-bolt` | `wat-bolt` | Keep on `wat-bolt`. Don't switch it to a `test/*` branch. |
 | `StarPilot-wat-ioniq` | `wat-ioniq` | Keep on `wat-ioniq`. Don't switch it to a `test/*` branch. |
 | `StarPilot-wat-bolt-test` | `test/wat-lead-departing-alert` | Bolt test merges happen here. |
 | `StarPilot-wat-ioniq-test` | `test/wat-ioniq-lead-departing-alert` | Ioniq test merges happen here. |
+| `StarPilot-<feature>` | `feature/<feature>` (or `fix/*`) | One worktree per in-flight feature branch, e.g. `StarPilot-wheel-tint-fade`. |
 
-A branch can only be checked out in one worktree, so parking a `test/*` branch in a car worktree blocks the
-other one and leaves the car worktree off the branch it is named for. Give each `test/*` branch its own
-`<car>-test` worktree instead (`git worktree add ../StarPilot-wat-<car>-test test/<branch>`).
+A branch can only be checked out in one worktree, so parking another branch in one of these worktrees blocks
+that branch elsewhere and leaves the worktree off the branch it is named for. Give each `test/*` branch its own
+`<car>-test` worktree (`git worktree add ../StarPilot-wat-<car>-test test/<branch>`) and each feature branch its own
+`StarPilot-<feature>` worktree.
 
 ## Firmware and generated files
 

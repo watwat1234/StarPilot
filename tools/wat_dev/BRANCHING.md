@@ -37,7 +37,12 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
   `opendbc_repo/opendbc/car/{gm,hyundai}/values.py` (platform specs), and `opendbc_repo/opendbc/car/torque_data/*.toml`
   (`CHEVROLET_BOLT_*` / `HYUNDAI_IONIQ_6` rows). A prior upstream Ioniq 6 tune landed badly; don't take one blind.
 - **Common feature:** short-lived branch off `Dom-wat`, merge it back, then merge `Dom-wat` into both car branches.
+  Exemption: doc-only changes (this file, READMEs, etc.) don't need their own branch; commit them directly on `Dom-wat`.
 - **Car work:** short-lived branch off `wat-<car>`, merge it back, named `wat-<car>-<class>-<name>` (see naming below).
+- **Merge messages describe the change.** A merge into `Dom-wat`, `wat-bolt`, `wat-ioniq`, or any `test/*` branch needs
+  a brief description of what is being merged in, not just `Merge branch 'x' into y`. One or two lines in the body is
+  enough (e.g. what the feature/fix does, or for an upstream ingest, the notable incoming changes). Use `git merge -e`
+  (or `--no-ff -m`) so the default auto-message isn't accepted as-is.
 - **One mechanism per feature.** Sentry and blind-spot are not long-lived branches. They landed in `Dom-wat` once;
   further work is a short-lived branch off `Dom-wat`. Do not keep cherry-picked copies of the same feature on several
   branches (that is the duplicate-commit mess this scheme replaced).

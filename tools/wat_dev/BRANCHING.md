@@ -66,23 +66,29 @@ part of this car-work class tag.
 
 ## Worktrees
 
-Sibling worktrees next to the main checkout. The main and car-branch worktrees stay on their own branch:
+Sibling worktrees under `workspace/`. **Rule: the directory name is the branch name with `/` replaced by `-`**
+(no `StarPilot-` prefix). A worktree stays on the branch it is named for.
 
-| Worktree | Branch | Rule |
-|---|---|---|
-| `StarPilot` (main checkout) | `Dom` | Keep on `Dom`. Don't do feature work here; use a `StarPilot-<feature>` worktree. |
-| `StarPilot-Dom-wat` | `Dom-wat` | Keep on `Dom-wat`. Upstream ingest and common-feature merges happen here. |
-| `StarPilot-wat-bolt` | `wat-bolt` | Keep on `wat-bolt`. Don't switch it to a `test/*` branch. |
-| `StarPilot-wat-ioniq` | `wat-ioniq` | Keep on `wat-ioniq`. Don't switch it to a `test/*` branch. |
-| `StarPilot-wat-bolt-test` | `test/wat-lead-departing-alert` | Bolt test merges happen here. |
-| `StarPilot-wat-ioniq-test` | `test/wat-ioniq-lead-departing-alert` | Ioniq test merges happen here. |
-| `StarPilot-wat-dev-notes` | `wat-dev-notes` | Keep on `wat-dev-notes` (orphan notes branch, `<class>/<name>/progress.md`). Never merged into code branches. |
-| `StarPilot-<feature>` | `feature/<feature>` (or `fix/*`) | One worktree per in-flight feature branch, e.g. `StarPilot-wheel-tint-fade`. |
+| Worktree | Branch |
+|---|---|
+| `StarPilot` (main checkout) | `Dom` (keep on `Dom`; no feature work here) |
+| `StarPilot-Dom-wat` | `Dom-wat` (upstream ingest and common-feature merges happen here) |
+| `wat-bolt`, `wat-ioniq` | same-named car branches (never switch to a `test/*` branch) |
+| `wat-dev-notes` | `wat-dev-notes` (orphan notes branch, `<class>/<name>/progress.md`; never merged into code) |
+| `test-wat-lead-departing-alert`, `test-wat-ioniq-lead-departing-alert` | the matching `test/*` branches (test merges happen here) |
+| `feature-<name>`, `fix-<name>`, ... | `feature/<name>`, `fix/<name>`: one worktree per in-flight branch |
+
+Exemptions from the naming rule:
+
+- `StarPilot`: the main checkout; owns the shared `.git` (which `sp-build` mounts).
+- `StarPilot-Dom-wat`: **the `starpilot-dev` container is launched from this worktree**
+  (`tools/wat_dev/docker-compose.yml`, build context `../..`). It is not renamed so the container never has to be
+  restarted for a rename. When debugging environment issues, the live Dockerfile/compose/entrypoint is whatever
+  `Dom-wat` has checked out here. The container bind-mounts all of `DEV_ROOT`, so it sees every other worktree.
 
 A branch can only be checked out in one worktree, so parking another branch in one of these worktrees blocks
-that branch elsewhere and leaves the worktree off the branch it is named for. Give each `test/*` branch its own
-`<car>-test` worktree (`git worktree add ../StarPilot-wat-<car>-test test/<branch>`) and each feature branch its own
-`StarPilot-<feature>` worktree.
+that branch elsewhere and leaves the worktree off the branch it is named for. Give each branch its own worktree:
+`git worktree add ../test-<name> test/<name>` (dir = branch with `/` -> `-`).
 
 ## Firmware and generated files
 

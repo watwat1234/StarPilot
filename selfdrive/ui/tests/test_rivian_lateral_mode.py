@@ -424,3 +424,18 @@ def test_non_mici_wheel_icon_brake_tint_is_disabled_by_default(monkeypatch):
   assert len(draws["textures"]) == 1
   texture_color = draws["textures"][0][-1]
   assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (0x4D, 0x9D, 0xFF, 255)
+
+
+def test_non_mici_wheel_icon_ignores_legacy_show_brake_status(monkeypatch):
+  module, draws = load_exp_button(monkeypatch)
+  module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "ShowBrakeStatus"
+  button = module.ExpButton(192, 144)
+  button.wheel_tint = FakeColor(0x4D, 0x9D, 0xFF, 255)
+  module.ui_state.sm["carState"].brakePressed = True
+  button._update_state()
+
+  button._render(FakeRectangle(0, 0, 192, 192))
+
+  assert len(draws["textures"]) == 1
+  texture_color = draws["textures"][0][-1]
+  assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (0x4D, 0x9D, 0xFF, 255)

@@ -202,7 +202,7 @@ class HudRenderer(Widget):
     actuators = getattr(car_control, "actuators", None)
     long_active = bool(getattr(car_control, "longActive", False))
     starpilot_car_state = sm['starpilotCarState'] if sm.valid.get('starpilotCarState', False) else None
-    pedal_feedback_enabled = ui_state.ui_params.get_bool("PedalsOnUI") or ui_state.ui_params.get_bool("ShowBrakeStatus")
+    pedal_feedback_enabled = ui_state.ui_params.get_bool("PedalsOnUI")
     intensity = get_wheel_pedal_intensity(
       getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
       pedal_feedback_enabled,

@@ -71,10 +71,12 @@ Sibling worktrees next to the main checkout. The main and car-branch worktrees s
 | Worktree | Branch | Rule |
 |---|---|---|
 | `StarPilot` (main checkout) | `Dom` | Keep on `Dom`. Don't do feature work here; use a `StarPilot-<feature>` worktree. |
+| `StarPilot-Dom-wat` | `Dom-wat` | Keep on `Dom-wat`. Upstream ingest and common-feature merges happen here. |
 | `StarPilot-wat-bolt` | `wat-bolt` | Keep on `wat-bolt`. Don't switch it to a `test/*` branch. |
 | `StarPilot-wat-ioniq` | `wat-ioniq` | Keep on `wat-ioniq`. Don't switch it to a `test/*` branch. |
 | `StarPilot-wat-bolt-test` | `test/wat-lead-departing-alert` | Bolt test merges happen here. |
 | `StarPilot-wat-ioniq-test` | `test/wat-ioniq-lead-departing-alert` | Ioniq test merges happen here. |
+| `StarPilot-wat-dev-notes` | `wat-dev-notes` | Keep on `wat-dev-notes` (orphan notes branch, `<class>/<name>/progress.md`). Never merged into code branches. |
 | `StarPilot-<feature>` | `feature/<feature>` (or `fix/*`) | One worktree per in-flight feature branch, e.g. `StarPilot-wheel-tint-fade`. |
 
 A branch can only be checked out in one worktree, so parking another branch in one of these worktrees blocks

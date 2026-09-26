@@ -63,6 +63,18 @@ RECORD_BITRATE = os.getenv("RECORD_BITRATE", "")  # Target bitrate e.g. "2000k" 
 RECORD_SPEED = int(os.getenv("RECORD_SPEED", "1"))  # Speed multiplier
 
 
+def _ffmpeg_binary() -> str:
+  # Same lookup as the Galaxy: prefer the bundled ffmpeg package, then PATH
+  try:
+    import ffmpeg as ffmpeg_package
+    candidate = Path(ffmpeg_package.__file__).parent / "install" / "bin" / "ffmpeg"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+      return str(candidate)
+  except Exception:
+    pass
+  return "ffmpeg"
+
+
 def _screen_recorder_enabled() -> bool:
   try:
     from openpilot.common.params import Params
@@ -963,7 +975,7 @@ class GuiApplication:
     fps = self._full_target_fps or 20
     output_fps = fps * RECORD_SPEED
     ffmpeg_args = [
-      'ffmpeg',
+      _ffmpeg_binary(),
       '-v', 'warning',          # Reduce ffmpeg log spam
       '-nostats',               # Suppress encoding progress
       '-f', 'rawvideo',         # Input format

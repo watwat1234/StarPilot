@@ -79,6 +79,7 @@ from openpilot.starpilot.common.model_lab import (
 )
 from openpilot.starpilot.assets.theme_manager import HOLIDAY_THEME_PATH, THEME_COMPONENT_PARAMS
 from openpilot.starpilot.common import param_profiles
+from openpilot.starpilot.common.screen_recorder import migrate_legacy_recordings
 from openpilot.starpilot.common.car_params_capability import capability_car_params_bytes
 from openpilot.starpilot.system.the_galaxy import version_history, version_install
 from openpilot.starpilot.system.the_galaxy.sentry_backend import register_sentry_routes
@@ -7604,6 +7605,8 @@ def setup(app):
 
   @app.route("/api/screen_recordings/list", methods=["GET"])
   def list_screen_recordings():
+    migrate_legacy_recordings()
+
     def generate():
       recordings = sorted(
         [recording for recording in SCREEN_RECORDINGS_PATH.glob("*.mp4") if not Path(f"{recording}.lock").exists()],

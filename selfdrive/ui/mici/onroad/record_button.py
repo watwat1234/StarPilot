@@ -1,0 +1,89 @@
+import time
+import pyray as rl
+
+from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.starpilot.common.screen_recorder import ScreenRecording
+from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos
+from openpilot.system.ui.widgets import Widget
+
+
+class RecordButton(Widget):
+  """Tap to start/stop an onroad screen recording. Shown when the ScreenRecorder toggle is on."""
+  MARGIN_X = 16  # same anchor as the driver monitoring icon (augmented_road_view set_position)
+  MARGIN_Y = 10
+  RADIUS = 30  # 60 px diameter, same size as DriverStateRenderer.BASE_SIZE
+  TOUCH_PAD = 12
+  MAX_TAP_TRAVEL = 24
+
+  def __init__(self):
+    super().__init__()
+    self._font = gui_app.font(FontWeight.SEMI_BOLD)
+    self._recording = ScreenRecording(gui_app)
+    self._button_rect = rl.Rectangle()
+    self._pressed = False
+    self._press_pos: MousePos | None = None
+    self._interacting = False
+
+  def interacting(self):
+    interacting, self._interacting = self._interacting, False
+    return interacting
+
+  def available(self) -> bool:
+    if not (ui_state.started and gui_app.can_record):
+      return False
+    toggles = getattr(ui_state, "starpilot_toggles", None)
+    if toggles is not None and "screen_recorder" in toggles:
+      return bool(toggles.get("screen_recorder"))
+    return ui_state.ui_params.get_bool("ScreenRecorder")
+
+  def stop_if_recording(self):
+    if self._recording.is_recording:
+      self._recording.stop()
+
+  def _hit(self, pos: MousePos) -> bool:
+    pad = self.TOUCH_PAD
+    r = self._button_rect
+    return rl.check_collision_point_rec(pos, rl.Rectangle(r.x - pad, r.y - pad, r.width + 2 * pad, r.height + 2 * pad))
+
+  def _render(self, rect: rl.Rectangle):
+    if not self.available():
+      self._button_rect = rl.Rectangle()
+      # Never leave a recording running once the button is gone (offroad / toggle off)
+      self.stop_if_recording()
+      return
+
+    d = self.RADIUS * 2
+    self._button_rect = rl.Rectangle(rect.x + self.MARGIN_X, rect.y + self.MARGIN_Y, d, d)
+    # Drawn on the screen after the render texture is presented, so the recording itself
+    # never contains the button or the timer
+    gui_app.queue_screen_overlay(self._draw_overlay)
+
+  def _draw_overlay(self, scale_x: float, scale_y: float, shift_x: float, shift_y: float):
+    r = self._button_rect
+    radius = self.RADIUS * scale_x
+    cx = int(shift_x + (r.x + self.RADIUS) * scale_x)
+    cy = int(shift_y + (r.y + self.RADIUS) * scale_y)
+
+    rl.draw_circle(cx, cy, radius, rl.Color(0, 0, 0, 140))
+    if self._recording.is_recording:
+      pulse = 0.6 + 0.4 * (1 if int(time.monotonic() * 2) % 2 == 0 else 0)
+      rl.draw_circle(cx, cy, radius - 6 * scale_x, rl.Color(230, 40, 40, int(255 * pulse)))
+      elapsed = int(time.monotonic() - self._recording.started_at)
+      text = f"{elapsed // 60}:{elapsed % 60:02d}"
+      rl.draw_text_ex(self._font, text, rl.Vector2(cx + radius + 8 * scale_x, cy - 10 * scale_y), 20 * scale_y, 0, rl.Color(255, 255, 255, 230))
+    else:
+      rl.draw_circle_lines(cx, cy, radius - 6 * scale_x, rl.Color(255, 255, 255, 220))
+
+  def _handle_mouse_press(self, mouse_pos: MousePos):
+    self._pressed = self.available() and self._hit(mouse_pos)
+    if self._pressed:
+      self._press_pos = mouse_pos
+      self._interacting = True
+
+  def _handle_mouse_release(self, mouse_pos: MousePos):
+    if self._pressed and self._press_pos is not None and self._hit(mouse_pos):
+      travel = ((mouse_pos.x - self._press_pos.x) ** 2 + (mouse_pos.y - self._press_pos.y) ** 2) ** 0.5
+      if travel <= self.MAX_TAP_TRAVEL:
+        self._recording.toggle(time.monotonic())
+    self._pressed = False
+    self._press_pos = None

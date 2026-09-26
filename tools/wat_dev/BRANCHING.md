@@ -80,7 +80,7 @@ Sibling worktrees under `workspace/`. **Rule: the directory name is the branch n
 | `StarPilot-Dom-wat` | `Dom-wat` (upstream ingest and common-feature merges happen here) |
 | `wat-bolt`, `wat-ioniq` | same-named car branches (never switch to a `test/*` branch) |
 | `wat-dev-notes` | `wat-dev-notes` (orphan notes branch, `<class>/<name>/progress.md`; never merged into code) |
-| `test-wat-lead-departing-alert`, `test-wat-ioniq-lead-departing-alert` | the matching `test/*` branches (test merges happen here) |
+| `test-<name>` | a temporary `test/<name>` branch, only while a combined on-device test needs one; delete it (and tag the tip `backup/<date>/test-<name>`) once its work is on the feature/fix branches or the car branches |
 | `feature-<name>`, `fix-<name>`, ... | `feature/<name>`, `fix/<name>`: one worktree per in-flight branch |
 
 Exemptions from the naming rule:

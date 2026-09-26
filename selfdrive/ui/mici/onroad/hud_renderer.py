@@ -7,9 +7,10 @@ from openpilot.selfdrive.ui.onroad.starpilot.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.onroad.starpilot.rivian_lateral_mode import rivian_lateral_mode
 from openpilot.selfdrive.ui.onroad.starpilot.blind_spot_indicators import BlindSpotIndicators
 from openpilot.selfdrive.ui.mici.onroad.speed_limit_utils import resolve_display_speed_limit_ms
+from openpilot.selfdrive.ui.lib.speed_limit_pulse import SpeedLimitPulse
 from openpilot.selfdrive.ui.onroad.starpilot.navigation_card import NavigationCardRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
-from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_tint
+from openpilot.selfdrive.ui.onroad.exp_button import get_wheel_pedal_intensity, WheelTintFader
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.utils import draw_circle_gradient_compat
 from openpilot.system.ui.lib.multilang import tr
@@ -134,9 +135,7 @@ class HudRenderer(Widget):
     self._show_speed_limit_offset: bool = False
     self._speed_limit_overridden: bool = False
     self._pending_speed_limit: float = 0.0
-    self._vision_speed_limit_active: bool = False
-    self._last_vision_speed_limit: float = 0.0
-    self._vision_speed_limit_pulse_start: float = -VISION_SPEED_LIMIT_PULSE_SECONDS
+    self._speed_limit_pulse = SpeedLimitPulse()
     self._prompt_visible: bool = False
     self._prompt_card_rect: rl.Rectangle = rl.Rectangle(0, 0, 0, 0)
     self._prompt_sign_rect: rl.Rectangle = rl.Rectangle(0, 0, 0, 0)
@@ -168,6 +167,7 @@ class HudRenderer(Widget):
     self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
     self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
     self._wheel_tint: rl.Color | None = None
+    self._wheel_tint_fader = WheelTintFader(gui_app.target_fps)
 
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
     self._egpu_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
@@ -200,18 +200,17 @@ class HudRenderer(Widget):
     car_control = sm['carControl'] if sm.valid.get('carControl', False) else None
     actuators = getattr(car_control, "actuators", None)
     long_active = bool(getattr(car_control, "longActive", False))
-    starpilot_car_state = sm['starpilotCarState'] if sm.valid.get('starpilotCarState', False) else None
-    pedal_feedback_enabled = ui_state.ui_params.get_bool("PedalsOnUI") or ui_state.ui_params.get_bool("ShowBrakeStatus")
-    self._wheel_tint = get_wheel_tint(
-      getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
-      rivian_lateral_mode.wheel_tint,
+    pedal_feedback_enabled = ui_state.ui_params.get_bool("PedalsOnUI")
+    intensity = get_wheel_pedal_intensity(
       pedal_feedback_enabled,
-      getattr(starpilot_car_state, "brakeLights", False),
-      getattr(car_state, "aEgo", 0.0),
+      long_active,
+      getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
       getattr(car_state, "gasPressed", False),
-      getattr(actuators, "accel", 0.0) if long_active else 0.0,
-      getattr(actuators, "gas", 0.0) if long_active else 0.0,
+      getattr(car_state, "aEgo", 0.0),
+      getattr(actuators, "accel", 0.0),
+      getattr(actuators, "gas", 0.0),
     )
+    self._wheel_tint = self._wheel_tint_fader.update(intensity, rivian_lateral_mode.wheel_tint)
     if ui_state.ui_params.get_bool("BlindSpotIcon", default=True):
       self._blind_spot_indicators.update()
 
@@ -260,12 +259,9 @@ class HudRenderer(Widget):
           primary_priority=primary_priority,
           secondary_priority=secondary_priority,
         )
-        vision_speed_limit_active = starpilot_plan.slcSpeedLimitSource == "Vision" and resolved_speed_limit > 0.0
-        vision_speed_limit_changed = abs(resolved_speed_limit - self._last_vision_speed_limit) >= 0.1
-        if vision_speed_limit_active and (not self._vision_speed_limit_active or vision_speed_limit_changed):
-          self._vision_speed_limit_pulse_start = rl.get_time()
-        self._vision_speed_limit_active = vision_speed_limit_active
-        self._last_vision_speed_limit = resolved_speed_limit if vision_speed_limit_active else 0.0
+        self._speed_limit_pulse.update(
+          starpilot_plan.slcSpeedLimitSource, resolved_speed_limit, speed_conversion, rl.get_time(), ui_state.started_frame,
+        )
 
         display_speed_limit = starpilot_plan.slcOverriddenSpeed if starpilot_plan.slcOverriddenSpeed > 0 else resolved_speed_limit
         self._speed_limit = max(0.0, display_speed_limit * speed_conversion)
@@ -280,8 +276,7 @@ class HudRenderer(Widget):
         self._show_speed_limit_offset = False
         self._speed_limit_overridden = False
         self._pending_speed_limit = 0.0
-        self._vision_speed_limit_active = False
-        self._last_vision_speed_limit = 0.0
+        self._speed_limit_pulse.clear()
       self._prompt_visible = self._pending_speed_limit > 0
     else:
       self._show_speed_limit = False
@@ -290,8 +285,7 @@ class HudRenderer(Widget):
       self._show_speed_limit_offset = False
       self._speed_limit_overridden = False
       self._pending_speed_limit = 0.0
-      self._vision_speed_limit_active = False
-      self._last_vision_speed_limit = 0.0
+      self._speed_limit_pulse.clear()
       self._prompt_visible = False
 
   def prepare(self, rect: rl.Rectangle) -> None:
@@ -524,7 +518,7 @@ class HudRenderer(Widget):
 
   def _speed_limit_pulse_color(self, base_color, alpha: int) -> rl.Color:
     base = rl.Color(base_color.r, base_color.g, base_color.b, alpha)
-    elapsed = rl.get_time() - self._vision_speed_limit_pulse_start
+    elapsed = rl.get_time() - self._speed_limit_pulse.start_time
     if elapsed < 0.0 or elapsed >= VISION_SPEED_LIMIT_PULSE_SECONDS:
       return base
 

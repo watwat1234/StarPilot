@@ -48,6 +48,7 @@ def test_force_stop_jerk_scale_is_platform_specific():
 
 def test_lead_follow_jerk_scale_is_platform_specific():
   assert get_lead_follow_jerk_scale(SimpleNamespace(brand="hyundai", carFingerprint="HYUNDAI_ELANTRA_2021")) == 1.25
+  assert get_lead_follow_jerk_scale(SimpleNamespace(brand="hyundai", carFingerprint="KIA_NIRO_EV")) == 1.5
   assert get_lead_follow_jerk_scale(SimpleNamespace(brand="hyundai", carFingerprint="GENESIS_GV70_ELECTRIFIED_1ST_GEN")) == 1.75
   assert get_lead_follow_jerk_scale(SimpleNamespace(brand="ford", carFingerprint="FORD_F_150_LIGHTNING_MK1")) == 1.35
   assert get_lead_follow_jerk_scale(SimpleNamespace(brand="honda", carFingerprint="HONDA_CRV_5G")) == 1.35
@@ -226,6 +227,28 @@ def test_lateral_resume_delay_ignores_signal_cycles_that_never_slow_enough(monke
 
     assert planner.lateral_check is True
     assert planner.blinker_delay_active is False
+  finally:
+    planner.shutdown()
+
+
+def test_ccm_only_keeps_stop_light_detected_live(monkeypatch):
+  # Regression: the CCM branch used to call starpilot_ccm.update() + starpilot_cem.deactivate()
+  # without ever calling stop_sign_and_light(), and deactivate() doesn't touch
+  # stop_light_detected -- so Green Light Alert would stall whenever a user ran Conditional
+  # Chill Mode without Conditional Experimental Mode.
+  planner = make_planner(monkeypatch)
+
+  try:
+    stop_sign_and_light_calls = []
+    monkeypatch.setattr(planner.starpilot_cem, "stop_sign_and_light", lambda *args, **kwargs: stop_sign_and_light_calls.append(args))
+    monkeypatch.setattr(planner.starpilot_ccm, "update", lambda *args, **kwargs: None)
+
+    toggles = make_toggles(conditional_experimental_mode=False, conditional_chill_mode=True)
+    sm = make_sm(planner, frame=1, v_ego=0.0, left_blinker=False, standstill=True)
+
+    planner.update(0.0, False, sm, toggles)
+
+    assert stop_sign_and_light_calls, "CCM-only path must keep stop_light_detected live via stop_sign_and_light"
   finally:
     planner.shutdown()
 

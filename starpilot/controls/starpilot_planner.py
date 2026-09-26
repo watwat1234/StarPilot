@@ -231,6 +231,9 @@ class StarPilotPlanner:
     elif conditional_tracking_active and bool(getattr(starpilot_toggles, "conditional_chill_mode", False)):
       self.starpilot_ccm.update(v_ego, v_cruise, sm, starpilot_toggles)
       self.starpilot_cem.deactivate()
+      # deactivate() doesn't touch stop_light_detected, and CCM has no equivalent of its own —
+      # keep it live here too, or Green Light Alert stalls whenever CCM is on without CEM.
+      self.starpilot_cem.stop_sign_and_light(v_ego, sm, PLANNER_TIME - 2)
     else:
       self.starpilot_ccm.deactivate()
       self.starpilot_cem.deactivate()

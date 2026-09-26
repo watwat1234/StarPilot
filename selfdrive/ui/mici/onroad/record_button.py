@@ -9,8 +9,9 @@ from openpilot.system.ui.widgets import Widget
 
 class RecordButton(Widget):
   """Tap to start/stop an onroad screen recording. Shown when the ScreenRecorder toggle is on."""
-  MARGIN = 14
-  RADIUS = 16
+  MARGIN_X = 16  # same anchor as the driver monitoring icon (augmented_road_view set_position)
+  MARGIN_Y = 10
+  RADIUS = 30  # 60 px diameter, same size as DriverStateRenderer.BASE_SIZE
   TOUCH_PAD = 12
   MAX_TAP_TRAVEL = 24
 
@@ -52,7 +53,7 @@ class RecordButton(Widget):
       return
 
     d = self.RADIUS * 2
-    self._button_rect = rl.Rectangle(rect.x + self.MARGIN, rect.y + self.MARGIN, d, d)
+    self._button_rect = rl.Rectangle(rect.x + self.MARGIN_X, rect.y + self.MARGIN_Y, d, d)
     # Drawn on the screen after the render texture is presented, so the recording itself
     # never contains the button or the timer
     gui_app.queue_screen_overlay(self._draw_overlay)

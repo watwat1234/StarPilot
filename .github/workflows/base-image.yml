@@ -9,15 +9,6 @@ name: base-image
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]   # change to your default branch
-    paths:
-      - Dockerfile.openpilot_base
-      - pyproject.toml
-      - uv.lock
-      - tools/install_ubuntu_dependencies.sh
-      - tools/install_python_dependencies.sh
-      - .github/workflows/base-image.yml
 
 jobs:
   build:

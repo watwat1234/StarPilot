@@ -45,7 +45,10 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
   branches (that is the duplicate-commit mess this scheme replaced).
 - **Analysis:** nothing flows from an analysis branch back into `Dom-wat` or a car branch. New common tools start on a
   branch off `wat-analysis`. Cherry-pick (never merge) from the car analysis branches.
-- **Upstream PRs:** opportunistic; staging strategy is deferred. wat-only paths to exclude from any PR:
+- **Upstream PRs:** two branches off `Dom` per PR. `pr/<name>-dev` collects the work by cherry-picking commits (not
+  merges) from `Dom-wat` or the feature branch. `pr/<name>` is the staging branch: one squashed commit for upstream.
+  Rebuild staging from scratch whenever the dev branch changes (reset to `Dom`, `git merge --squash pr/<name>-dev`);
+  when `Dom` moves, rebase the dev branch first. wat-only paths to exclude from any PR:
   `tools/wat_dev`, `Dockerfile.wat_*`, `.github/workflows/base-image.yml`, `.forgejo`.
 
 ## Car-work branch naming: `wat-<car>-<class>-<name>`

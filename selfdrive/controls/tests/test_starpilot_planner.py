@@ -230,6 +230,28 @@ def test_lateral_resume_delay_ignores_signal_cycles_that_never_slow_enough(monke
     planner.shutdown()
 
 
+def test_ccm_only_keeps_stop_light_detected_live(monkeypatch):
+  # Regression: the CCM branch used to call starpilot_ccm.update() + starpilot_cem.deactivate()
+  # without ever calling stop_sign_and_light(), and deactivate() doesn't touch
+  # stop_light_detected -- so Green Light Alert would stall whenever a user ran Conditional
+  # Chill Mode without Conditional Experimental Mode.
+  planner = make_planner(monkeypatch)
+
+  try:
+    stop_sign_and_light_calls = []
+    monkeypatch.setattr(planner.starpilot_cem, "stop_sign_and_light", lambda *args, **kwargs: stop_sign_and_light_calls.append(args))
+    monkeypatch.setattr(planner.starpilot_ccm, "update", lambda *args, **kwargs: None)
+
+    toggles = make_toggles(conditional_experimental_mode=False, conditional_chill_mode=True)
+    sm = make_sm(planner, frame=1, v_ego=0.0, left_blinker=False, standstill=True)
+
+    planner.update(0.0, False, sm, toggles)
+
+    assert stop_sign_and_light_calls, "CCM-only path must keep stop_light_detected live via stop_sign_and_light"
+  finally:
+    planner.shutdown()
+
+
 def test_radarless_follow_hold_applies_to_tracked_vision_lead(monkeypatch):
   planner = StarPilotPlanner(Path("/tmp/nonexistent"), DummyThemeManager())
 

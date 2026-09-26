@@ -15,7 +15,6 @@ from openpilot.starpilot.common.experimental_state import (
 
 BRAKE_WHEEL_COLOR = rl.Color(255, 0, 0, 255)
 ACCEL_WHEEL_COLOR = rl.Color(22, 127, 64, 255)
-BRAKE_ACCEL_THRESHOLD = 0.25
 COMMAND_ACCEL_THRESHOLD = 0.05
 FULL_TINT_ACCEL = 1.0  # m/s^2 at which the wheel reaches full red/green
 PEDAL_MIN_INTENSITY = 0.15  # faint tint for any pedal press, even at steady speed
@@ -26,24 +25,25 @@ def _accel_magnitude(accel: float) -> float:
   return min(1.0, max(0.0, (accel - COMMAND_ACCEL_THRESHOLD) / (FULL_TINT_ACCEL - COMMAND_ACCEL_THRESHOLD)))
 
 
-def get_wheel_pedal_intensity(brake_pressed: bool, pedal_feedback_enabled: bool,
-                              brake_lights: bool = False, acceleration: float = 0.0,
-                              gas_pressed: bool = False, commanded_accel: float = 0.0,
+def get_wheel_pedal_intensity(pedal_feedback_enabled: bool, long_active: bool,
+                              driver_braking: bool = False, gas_pressed: bool = False,
+                              acceleration: float = 0.0, commanded_accel: float = 0.0,
                               commanded_gas: float = 0.0) -> float:
-  """Signed pedal intensity in [-1, 1]: negative is braking, positive is accelerating."""
+  """Signed pedal intensity in [-1, 1]: negative is braking, positive is accelerating.
+
+  A driver pedal press always wins and scales with measured accel. Otherwise, only the
+  longitudinal controller's command tints the wheel, so coasting stays neutral.
+  """
   if not pedal_feedback_enabled:
     return 0.0
-  if brake_pressed or brake_lights:
+  if driver_braking:
     return -max(PEDAL_MIN_INTENSITY, _accel_magnitude(-acceleration))
   if gas_pressed:
     return max(PEDAL_MIN_INTENSITY, _accel_magnitude(acceleration))
+  if not long_active:
+    return 0.0
 
-  if abs(commanded_accel) > COMMAND_ACCEL_THRESHOLD:
-    signal = commanded_accel
-  elif abs(acceleration) > BRAKE_ACCEL_THRESHOLD:
-    signal = acceleration
-  else:
-    signal = 0.0
+  signal = commanded_accel if abs(commanded_accel) > COMMAND_ACCEL_THRESHOLD else 0.0
   if commanded_gas > COMMAND_ACCEL_THRESHOLD:
     signal = max(signal, commanded_gas * FULL_TINT_ACCEL)
 
@@ -164,16 +164,15 @@ class ExpButton(Widget):
     car_control = ui_state.sm["carControl"] if getattr(ui_state.sm, "valid", {}).get("carControl", False) else None
     actuators = getattr(car_control, "actuators", None)
     long_active = bool(getattr(car_control, "longActive", False))
-    starpilot_car_state = ui_state.sm["starpilotCarState"] if getattr(ui_state.sm, "valid", {}).get("starpilotCarState", False) else None
-    pedal_feedback_enabled = self._params.get_bool("PedalsOnUI") or self._params.get_bool("ShowBrakeStatus")
+    pedal_feedback_enabled = self._params.get_bool("PedalsOnUI")
     intensity = get_wheel_pedal_intensity(
-      getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
       pedal_feedback_enabled,
-      getattr(starpilot_car_state, "brakeLights", False),
-      getattr(car_state, "aEgo", 0.0),
+      long_active,
+      getattr(car_state, "brakePressed", False) or getattr(car_state, "regenBraking", False),
       getattr(car_state, "gasPressed", False),
-      getattr(actuators, "accel", 0.0) if long_active else 0.0,
-      getattr(actuators, "gas", 0.0) if long_active else 0.0,
+      getattr(car_state, "aEgo", 0.0),
+      getattr(actuators, "accel", 0.0),
+      getattr(actuators, "gas", 0.0),
     )
     wheel_tint = self._tint_fader.update(intensity, self.wheel_tint)
     if wheel_tint is not None:

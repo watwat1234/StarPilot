@@ -20,6 +20,7 @@ from openpilot.selfdrive.ui.mici.onroad.starpilot_status import (
   get_border_color,
 )
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
+from openpilot.selfdrive.ui.mici.onroad.record_button import RecordButton
 from openpilot.selfdrive.ui.onroad.starpilot.pip_sidecam import PipSideCamera
 from openpilot.selfdrive.ui.onroad.starpilot.pulse_glide import get_pulse_glide_border_color
 from openpilot.selfdrive.ui.onroad.starpilot.starpilot_border import get_traffic_border_colors
@@ -594,6 +595,7 @@ class AugmentedRoadView(CameraView):
     self._min_steer_speed_banner = MinSteerSpeedBanner()
     self._standstill_timer = StandstillTimerOverlay()
     self._favorite_slots = self._child(FavoriteSlotsOverlay())
+    self._record_button = self._child(RecordButton())
     self._offroad_label = UnifiedLabel("start the car to\nuse openpilot", 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=rl.GuiTextAlignment.TEXT_ALIGN_CENTER,
@@ -693,7 +695,8 @@ class AugmentedRoadView(CameraView):
     self._sidebar_personality_pressed = False
 
     # Don't trigger click callback if bookmark or HUD widgets consumed the tap.
-    if not self._bookmark_icon.interacting() and not self._hud_renderer.user_interacting() and not self._favorite_slots.interacting():
+    if not self._bookmark_icon.interacting() and not self._hud_renderer.user_interacting() and not self._favorite_slots.interacting() \
+       and not self._record_button.interacting():
       super()._handle_mouse_release(mouse_pos)
 
   def _render(self, _):
@@ -802,6 +805,7 @@ class AugmentedRoadView(CameraView):
       gui_app.mark_progress("mici.onroad.after_sidebar")
     if draw_hud_controls and (camera_view_none or is_driver_stream or not in_reverse):
       self._favorite_slots.render(self._content_rect)
+      self._record_button.render(self._content_rect)
     # Inset by the border so the pill never covers the green/orange status border.
     border = self._get_border_width()
     preview_rect = rl.Rectangle(

@@ -61,6 +61,17 @@ RECORD_OUTPUT = str(Path(os.getenv("RECORD_OUTPUT", "output")).with_suffix(".mp4
 RECORD_QUALITY = int(os.getenv("RECORD_QUALITY", "23"))  # Dynamic bitrate quality level (CRF); 0 is lossless (bigger size), max is 51, default is 23 for x264
 RECORD_BITRATE = os.getenv("RECORD_BITRATE", "")  # Target bitrate e.g. "2000k" (overrides RECORD_QUALITY when set)
 RECORD_SPEED = int(os.getenv("RECORD_SPEED", "1"))  # Speed multiplier
+
+
+def _screen_recorder_enabled() -> bool:
+  try:
+    from openpilot.common.params import Params
+    return Params().get_bool("ScreenRecorder")
+  except Exception:
+    return False
+
+
+SCREEN_RECORDER_ENABLED = _screen_recorder_enabled()  # onroad record button needs the render texture; applies on UI restart
 OFFSCREEN = os.getenv("OFFSCREEN") == "1"  # Disable FPS limiting for fast offline rendering
 
 
@@ -512,6 +523,8 @@ class GuiApplication:
     self._ffmpeg_queue: queue.Queue | None = None
     self._ffmpeg_thread: threading.Thread | None = None
     self._ffmpeg_stop_event: threading.Event | None = None
+    self._recording_dropped_frames = 0
+    self._recording_frames = 0
     self._progress_hook: Callable[[str], None] | None = None
     self._textures: dict[str, rl.Texture] = {}
     self._cached_render_textures: dict[str, rl.RenderTexture] = {}
@@ -632,7 +645,7 @@ class GuiApplication:
 
       # Keep big-UI burn-in movement in final-frame composition. Translating the live EGL
       # camera/widget pass can corrupt the camera presentation instead of shifting the UI.
-      needs_render_texture = ((self._scale != 1.0 and not PC) or BURN_IN_MODE or RECORD or
+      needs_render_texture = ((self._scale != 1.0 and not PC) or BURN_IN_MODE or RECORD or SCREEN_RECORDER_ENABLED or
                               MICI_FORCE_RENDER_TEXTURE or
                               (BURN_IN_PREVENTION and DEVICE_TYPE != "mici") or
                               WHITE_LUMINANCE_CAP < 1.0)
@@ -646,40 +659,11 @@ class GuiApplication:
         self._render_texture = rl.load_render_texture(self._render_texture_width, self._render_texture_height)
         rl.set_texture_filter(self._render_texture.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
 
-      if RECORD:
-        output_fps = fps * RECORD_SPEED
-        ffmpeg_args = [
-          'ffmpeg',
-          '-v', 'warning',          # Reduce ffmpeg log spam
-          '-nostats',               # Suppress encoding progress
-          '-f', 'rawvideo',         # Input format
-          '-pix_fmt', 'rgba',       # Input pixel format
-          '-s', f'{self._render_texture_width}x{self._render_texture_height}',  # Input resolution
-          '-r', str(fps),           # Input frame rate
-          '-i', 'pipe:0',           # Input from stdin
-          '-vf', 'vflip,format=yuv420p',  # Flip vertically and convert to yuv420p
-          '-r', str(output_fps),    # Output frame rate (for speed multiplier)
-          '-c:v', 'libx264',
-          '-preset', 'veryfast',
-          '-crf', str(RECORD_QUALITY)
-        ]
-        if RECORD_BITRATE:
-          # NOTE: custom bitrate overrides crf setting
-          ffmpeg_args += ['-b:v', RECORD_BITRATE, '-maxrate', RECORD_BITRATE, '-bufsize', RECORD_BITRATE]
-        ffmpeg_args += [
-          '-y',                     # Overwrite existing file
-          '-f', 'mp4',              # Output format
-          RECORD_OUTPUT,            # Output file path
-        ]
-        self._ffmpeg_proc = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE)
-        self._ffmpeg_queue = queue.Queue(maxsize=60)  # Buffer up to 60 frames
-        self._ffmpeg_stop_event = threading.Event()
-        self._ffmpeg_thread = threading.Thread(target=self._ffmpeg_writer_thread, daemon=True)
-        self._ffmpeg_thread.start()
-
       rl.set_target_fps(_raylib_target_fps(fps))
 
       self._full_target_fps = fps
+      if RECORD:
+        self.start_recording(RECORD_OUTPUT, wallclock=False)
       self._target_fps = fps
       self._set_styles()
       self._load_fonts()
@@ -963,21 +947,96 @@ class GuiApplication:
     rl.unload_image(image)
     return texture
 
-  def close_ffmpeg(self):
+  @property
+  def can_record(self) -> bool:
+    return self._render_texture is not None
+
+  @property
+  def is_recording(self) -> bool:
+    return self._ffmpeg_proc is not None
+
+  def start_recording(self, output_path: str, wallclock: bool = True) -> bool:
+    """Start encoding the render texture to output_path. Returns False if unavailable or already recording."""
+    if self.is_recording or self._render_texture is None:
+      return False
+
+    fps = self._full_target_fps or 20
+    output_fps = fps * RECORD_SPEED
+    ffmpeg_args = [
+      'ffmpeg',
+      '-v', 'warning',          # Reduce ffmpeg log spam
+      '-nostats',               # Suppress encoding progress
+      '-f', 'rawvideo',         # Input format
+      '-pix_fmt', 'rgba',       # Input pixel format
+      '-s', f'{self._render_texture_width}x{self._render_texture_height}',  # Input resolution
+    ]
+    if wallclock:
+      # Dropped frames must not speed up playback, so stamp frames by arrival time
+      ffmpeg_args += ['-use_wallclock_as_timestamps', '1']
+    else:
+      ffmpeg_args += ['-r', str(fps)]  # Input frame rate
+    ffmpeg_args += [
+      '-i', 'pipe:0',           # Input from stdin
+      '-vf', 'vflip,format=yuv420p',  # Flip vertically and convert to yuv420p
+      '-r', str(output_fps),    # Output frame rate (for speed multiplier)
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', str(RECORD_QUALITY),
+    ]
+    if RECORD_BITRATE:
+      # NOTE: custom bitrate overrides crf setting
+      ffmpeg_args += ['-b:v', RECORD_BITRATE, '-maxrate', RECORD_BITRATE, '-bufsize', RECORD_BITRATE]
+    ffmpeg_args += [
+      '-y',                     # Overwrite existing file
+      '-f', 'mp4',              # Output format
+      output_path,
+    ]
+    try:
+      self._ffmpeg_proc = subprocess.Popen(ffmpeg_args, stdin=subprocess.PIPE)
+    except OSError:
+      cloudlog.exception("failed to start screen recording")
+      return False
+    self._recording_dropped_frames = 0
+    self._recording_frames = 0
+    self._ffmpeg_queue = queue.Queue(maxsize=60)  # Buffer up to 60 frames
+    self._ffmpeg_stop_event = threading.Event()
+    self._ffmpeg_thread = threading.Thread(target=self._ffmpeg_writer_thread, daemon=True)
+    self._ffmpeg_thread.start()
+    return True
+
+  def stop_recording(self) -> int:
+    """Finalize the recording. Returns the number of frames queued for encoding."""
     if self._ffmpeg_thread is not None:
       # Signal thread to stop, send sentinel, then wait for it to drain
       self._ffmpeg_stop_event.set()
-      self._ffmpeg_queue.put(None)
+      try:
+        self._ffmpeg_queue.put(None, timeout=5)
+      except queue.Full:
+        pass
       self._ffmpeg_thread.join(timeout=30)
 
     if self._ffmpeg_proc is not None:
-      self._ffmpeg_proc.stdin.flush()
-      self._ffmpeg_proc.stdin.close()
+      try:
+        self._ffmpeg_proc.stdin.flush()
+        self._ffmpeg_proc.stdin.close()
+      except (OSError, ValueError):
+        pass
       try:
         self._ffmpeg_proc.wait(timeout=30)
       except subprocess.TimeoutExpired:
         self._ffmpeg_proc.terminate()
         self._ffmpeg_proc.wait()
+      if self._recording_dropped_frames:
+        cloudlog.warning(f"screen recording dropped {self._recording_dropped_frames} frames")
+
+    self._ffmpeg_proc = None
+    self._ffmpeg_queue = None
+    self._ffmpeg_thread = None
+    self._ffmpeg_stop_event = None
+    return self._recording_frames
+
+  def close_ffmpeg(self):
+    self.stop_recording()
 
   def close(self):
     if not rl.is_window_ready():
@@ -1138,11 +1197,15 @@ class GuiApplication:
         self._mark_progress("gui_app.after_end_drawing")
         self._populate_render_texture_cache()
 
-        if RECORD:
+        if self.is_recording and self._render_texture is not None:
           image = rl.load_image_from_texture(self._render_texture.texture)
           data_size = image.width * image.height * 4
           data = bytes(rl.ffi.buffer(image.data, data_size))
-          self._ffmpeg_queue.put(data)  # Async write via background thread
+          try:
+            self._ffmpeg_queue.put_nowait(data)  # Async write via background thread
+            self._recording_frames += 1
+          except queue.Full:
+            self._recording_dropped_frames += 1  # never block the render thread
           rl.unload_image(image)
 
         self._monitor_fps()

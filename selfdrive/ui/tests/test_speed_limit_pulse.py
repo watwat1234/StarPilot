@@ -1,5 +1,6 @@
 import math
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pyray as rl
 import pytest
@@ -52,8 +53,9 @@ class FakeParams(dict):
   def get(self, key, encoding=None):
     return super().get(key)
 
-  def get_bool(self, key):
-    return bool(self.get(key))
+  def get_bool(self, key, default=False):
+    value = self.get(key)
+    return default if value is None else bool(value)
 
 
 class FakeSubMaster(dict):
@@ -99,6 +101,8 @@ def renderer(request, monkeypatch):
     hud.set_speed = 100.0
     hud.v_ego_cluster_seen = False
     hud._speed_limit_pulse = pulse
+    hud._wheel_tint_fader = hud_renderer.WheelTintFader(60)
+    hud._blind_spot_indicators = MagicMock()
     update = hud._update_state
 
   return SimpleNamespace(update=update, pulse=pulse, clock=clock, plan=plan, sm=sm, params=params)

@@ -154,7 +154,8 @@ MODELS_PATH = _FP_DATA_ROOT / "models"
 THEME_SAVE_PATH = _FP_DATA_ROOT / "themes"
 
 ERROR_LOGS_PATH = _FP_DATA_ROOT / "error_logs"
-SCREEN_RECORDINGS_PATH = _FP_DATA_ROOT / "media/screen_recordings"
+SCREEN_RECORDINGS_PATH = _FP_DATA_ROOT / "media/0/screen_recordings"
+LEGACY_SCREEN_RECORDINGS_PATH = _FP_DATA_ROOT / "media/screen_recordings"
 VIDEO_CACHE_PATH = _FP_DATA_ROOT / "video_cache"
 
 BACKUP_PATH = _FP_CACHE_ROOT / "on_backup"

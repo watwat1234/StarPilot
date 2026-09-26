@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import shutil
 
 # Matches the default-name check in the_galaxy/utilities.py:process_screen_recording
 FILENAME_FORMAT = "%B_%d_%Y-%I-%M%p"
@@ -13,6 +14,28 @@ def lock_path(video_path: Path) -> Path:
 def _default_directory() -> Path:
   from openpilot.starpilot.common.starpilot_variables import SCREEN_RECORDINGS_PATH
   return SCREEN_RECORDINGS_PATH
+
+
+def migrate_legacy_recordings(directory: Path | None = None, legacy: Path | None = None) -> None:
+  """Move recordings (and thumbnails) from the old media/screen_recordings into media/0/screen_recordings."""
+  if legacy is None:
+    from openpilot.starpilot.common.starpilot_variables import LEGACY_SCREEN_RECORDINGS_PATH
+    legacy = LEGACY_SCREEN_RECORDINGS_PATH
+  directory = directory or _default_directory()
+  if not legacy.is_dir() or legacy == directory:
+    return
+  directory.mkdir(parents=True, exist_ok=True)
+  for item in legacy.iterdir():
+    target = directory / item.name
+    if item.is_file() and not target.exists():
+      try:
+        shutil.move(str(item), str(target))
+      except OSError:
+        pass
+  try:
+    legacy.rmdir()  # only succeeds once empty
+  except OSError:
+    pass
 
 
 def new_recording_path(directory: Path | None = None, now: datetime | None = None) -> Path:
@@ -47,6 +70,8 @@ class ScreenRecording:
   def start(self, now_monotonic: float) -> bool:
     if self.is_recording:
       return False
+    if self._directory is None:
+      migrate_legacy_recordings()
     path = new_recording_path(self._directory)
     lock = lock_path(path)
     lock.touch()

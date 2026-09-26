@@ -93,3 +93,17 @@ def test_recording_with_frames_is_kept(tmp_path):
   path.touch()
   rec.stop()
   assert list(tmp_path.iterdir()) == [path]
+
+
+def test_migrates_legacy_recordings(tmp_path):
+  from openpilot.starpilot.common.screen_recorder import migrate_legacy_recordings
+  legacy, new = tmp_path / "old", tmp_path / "media" / "0" / "rec"
+  legacy.mkdir()
+  (legacy / "a.mp4").write_text("x")
+  (legacy / "a.png").write_text("x")
+  new.mkdir(parents=True)
+  (new / "a.png").write_text("keep")
+  migrate_legacy_recordings(new, legacy)
+  assert (new / "a.mp4").read_text() == "x"
+  assert (new / "a.png").read_text() == "keep"  # never overwrite
+  assert (legacy / "a.png").exists() and legacy.exists()

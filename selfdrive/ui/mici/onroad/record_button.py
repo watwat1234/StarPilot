@@ -53,17 +53,25 @@ class RecordButton(Widget):
 
     d = self.RADIUS * 2
     self._button_rect = rl.Rectangle(rect.x + self.MARGIN, rect.y + self.MARGIN, d, d)
-    cx, cy = int(self._button_rect.x + self.RADIUS), int(self._button_rect.y + self.RADIUS)
+    # Drawn on the screen after the render texture is presented, so the recording itself
+    # never contains the button or the timer
+    gui_app.queue_screen_overlay(self._draw_overlay)
 
-    rl.draw_circle(cx, cy, self.RADIUS, rl.Color(0, 0, 0, 140))
+  def _draw_overlay(self, scale_x: float, scale_y: float, shift_x: float, shift_y: float):
+    r = self._button_rect
+    radius = self.RADIUS * scale_x
+    cx = int(shift_x + (r.x + self.RADIUS) * scale_x)
+    cy = int(shift_y + (r.y + self.RADIUS) * scale_y)
+
+    rl.draw_circle(cx, cy, radius, rl.Color(0, 0, 0, 140))
     if self._recording.is_recording:
       pulse = 0.6 + 0.4 * (1 if int(time.monotonic() * 2) % 2 == 0 else 0)
-      rl.draw_circle(cx, cy, self.RADIUS - 6, rl.Color(230, 40, 40, int(255 * pulse)))
+      rl.draw_circle(cx, cy, radius - 6 * scale_x, rl.Color(230, 40, 40, int(255 * pulse)))
       elapsed = int(time.monotonic() - self._recording.started_at)
       text = f"{elapsed // 60}:{elapsed % 60:02d}"
-      rl.draw_text_ex(self._font, text, rl.Vector2(self._button_rect.x + d + 8, cy - 10), 20, 0, rl.Color(255, 255, 255, 230))
+      rl.draw_text_ex(self._font, text, rl.Vector2(cx + radius + 8 * scale_x, cy - 10 * scale_y), 20 * scale_y, 0, rl.Color(255, 255, 255, 230))
     else:
-      rl.draw_circle_lines(cx, cy, self.RADIUS - 6, rl.Color(255, 255, 255, 220))
+      rl.draw_circle_lines(cx, cy, radius - 6 * scale_x, rl.Color(255, 255, 255, 220))
 
   def _handle_mouse_press(self, mouse_pos: MousePos):
     self._pressed = self.available() and self._hit(mouse_pos)

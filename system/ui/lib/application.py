@@ -529,6 +529,7 @@ class GuiApplication:
     self._render_texture_height = self._scaled_height
 
     self._render_texture: rl.RenderTexture | None = None
+    self._screen_overlays: list[Callable[[float, float, float, float], None]] = []
     self._burn_in_shader: rl.Shader | None = None
     self._white_luminance_shader: rl.Shader | None = None
     self._ffmpeg_proc: subprocess.Popen | None = None
@@ -959,6 +960,12 @@ class GuiApplication:
     rl.unload_image(image)
     return texture
 
+  def queue_screen_overlay(self, draw: Callable[[float, float, float, float], None]) -> None:
+    """Draw on the screen for this frame only, after the render texture is presented.
+    Not part of the render texture, so it never appears in a screen recording.
+    draw(scale_x, scale_y, shift_x, shift_y) converts render-texture coordinates to screen coordinates."""
+    self._screen_overlays.append(draw)
+
   @property
   def can_record(self) -> bool:
     return self._render_texture is not None
@@ -1194,6 +1201,12 @@ class GuiApplication:
             else:
               rl.draw_texture_pro(texture, src_rect, dst_rect, rl.Vector2(0, 0), 0.0, rl.WHITE)
             self._mark_progress("gui_app.after_present_draw_texture")
+            if self._screen_overlays:
+              scale_x = dst_rect.width / self._render_texture_width
+              scale_y = dst_rect.height / self._render_texture_height
+              for draw in self._screen_overlays:
+                draw(scale_x, scale_y, shift_x, shift_y)
+        self._screen_overlays.clear()
 
         if self._show_fps:
           rl.draw_fps(10, 10)

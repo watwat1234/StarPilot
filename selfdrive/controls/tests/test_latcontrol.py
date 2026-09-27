@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import (
   get_honda_crv_5g_pid_output,
 )
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
+  IONIQ_6_FRICTION_CENTER_FADE_MAX,
   clear_flm_runtime_overrides,
   get_flm_runtime_overrides,
   get_hkg_canfd_base_friction_threshold,
@@ -1554,7 +1555,7 @@ class TestLatControl:
     # fades friction near zero lateral accel at highway speed, inactive at city speed and in turns
     assert get_ioniq_6_friction_center_fade_scale(0.0, 30.0) < get_ioniq_6_friction_center_fade_scale(0.0, 8.0)
     assert get_ioniq_6_friction_center_fade_scale(0.0, 30.0) < get_ioniq_6_friction_center_fade_scale(0.5, 30.0)
-    assert get_ioniq_6_friction_center_fade_scale(0.0, 30.0) >= 0.5
+    assert get_ioniq_6_friction_center_fade_scale(0.0, 30.0) >= 1.0 - IONIQ_6_FRICTION_CENTER_FADE_MAX - 0.01
     assert get_ioniq_6_friction_center_fade_scale(0.5, 30.0) > 0.95
     assert get_ioniq_6_friction_center_fade_scale(-0.5, 30.0) > 0.95
     assert get_ioniq_6_friction_center_fade_scale(0.0, 8.0) > 0.95

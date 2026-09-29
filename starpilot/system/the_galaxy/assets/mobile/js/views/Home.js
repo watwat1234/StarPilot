@@ -294,7 +294,8 @@ export const Home = {
       const status = batteryStatus(battery.voltage, onroad)
       return {
         label: "12V battery",
-        value: `${toNum(battery.voltage).toFixed(2)} V${battery.live ? "" : " (last recorded)"}`,
+        value: `${toNum(battery.voltage).toFixed(2)} V`,
+        note: battery.live ? "" : "last recorded",
         status,
         link: "/battery",
       }
@@ -564,7 +565,7 @@ export const Home = {
             <div class="dh-list">
               <template v-for="v in vitalsList" :key="v.label">
                 <button v-if="v.link" type="button" class="gx-row dh-row--link" @click="openLink(v.link)">
-                  <span class="gx-row__label">{{ v.label }}</span>
+                  <span class="gx-row__label">{{ v.label }}<small v-if="v.note" class="dh-row__note">{{ v.note }}</small></span>
                   <span class="gx-row__value">
                     <span v-if="v.status" class="gx-battery__status" :class="'is-' + v.status.level"><i class="bi" :class="v.status.icon"></i>{{ v.status.label }}</span>
                     {{ v.value }} <i class="bi bi-chevron-right" aria-hidden="true"></i>

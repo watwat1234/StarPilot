@@ -2502,12 +2502,12 @@ button.gx-chip:hover {
    light slot 3 is under 3:1, so every chart also has a table view. */
 .gx-battery, .dh-row--link {
   --vc-1: #3987e5; --vc-2: #d95926; --vc-3: #199e70;
-  --vc-grid: rgba(255, 255, 255, 0.07); --vc-axis: #8b88a8; --vc-ref: #c3c2b7; --vc-span: rgba(255, 255, 255, 0.05);
+  --vc-grid: rgba(255, 255, 255, 0.07); --vc-axis: #8b88a8; --vc-ref: #c3c2b7; --vc-span: rgba(255, 255, 255, 0.09); --vc-surface: #15122a;
   --status-good: #0ca30c; --status-warning: #fab219; --status-critical: #d03b3b;
 }
 [data-theme="light"] .gx-battery, [data-theme="light"] .dh-row--link {
   --vc-1: #2a78d6; --vc-2: #eb6834; --vc-3: #1baf7a;
-  --vc-grid: rgba(23, 21, 38, 0.08); --vc-axis: #6f6a8f; --vc-ref: #52514e; --vc-span: rgba(120, 73, 232, 0.07);
+  --vc-grid: rgba(23, 21, 38, 0.08); --vc-axis: #6f6a8f; --vc-ref: #52514e; --vc-span: rgba(120, 73, 232, 0.08); --vc-surface: #fbfbfe;
 }
 .gx-battery__now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; padding: var(--sp-4); margin-bottom: var(--sp-4); }
 .gx-battery__now small { flex-basis: 100%; color: var(--text-muted); }
@@ -2526,22 +2526,24 @@ button.gx-chip:hover {
 .gx-battery__scroll th, .gx-battery__scroll td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--outline); white-space: nowrap; }
 .gx-battery__scroll th { color: var(--text-muted); font-weight: var(--fw-medium); }
 .gx-battery__scroll small { color: var(--text-muted); }
+.gx-battery__more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-top: var(--sp-3); }
+.gx-battery__more small { color: var(--text-muted); }
 
 .gx-vchart { position: relative; min-width: 0; }
 .gx-vchart__legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: var(--fs-sm); color: var(--on-surface-variant); margin-bottom: 6px; }
 .gx-vchart__legend span { display: inline-flex; align-items: center; gap: 6px; }
 .gx-vchart__legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.gx-vchart__legend i.gx-vchart__span-swatch { border-radius: 2px; background: var(--vc-span); outline: 1px solid var(--vc-grid); }
+.gx-vchart__legend i.gx-vchart__span-swatch { border-radius: 2px; background: var(--vc-span); outline: 1px solid var(--vc-axis); }
 .gx-vchart__plot { position: relative; }
 .gx-vchart svg { display: block; touch-action: pan-y; }
 .gx-vchart__grid line { stroke: var(--vc-grid); stroke-width: 1; }
 .gx-vchart__axis text { fill: var(--vc-axis); font-size: 11px; font-variant-numeric: tabular-nums; }
 .gx-vchart__ref line { stroke: var(--vc-ref); stroke-width: 1; stroke-dasharray: 4 4; }
-.gx-vchart__ref text { fill: var(--vc-axis); font-size: 11px; }
+.gx-vchart__ref text { fill: var(--vc-axis); font-size: 11px; paint-order: stroke; stroke: var(--vc-surface); stroke-width: 4px; stroke-linejoin: round; }
 .gx-vchart__span { fill: var(--vc-span); }
 .gx-vchart__line { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .gx-vchart__band { fill: currentColor; opacity: 0.18; stroke: none; }
-.gx-vchart__dot { fill: currentColor; stroke: var(--background); stroke-width: 2; }
+.gx-vchart__dot { fill: currentColor; stroke: var(--vc-surface); stroke-width: 2; }
 .gx-vchart__end { fill: var(--on-surface-variant); font-size: 11px; }
 .gx-vchart__crosshair { stroke: var(--vc-axis); stroke-width: 1; }
 .gx-vchart__empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: var(--fs-sm); pointer-events: none; }
@@ -2553,4 +2555,6 @@ button.gx-chip:hover {
 
 .dh-row--link { width: 100%; background: none; border-left: 0; border-right: 0; border-bottom: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .dh-row--link:hover { background: var(--glass-bg-hover); }
-.dh-row--link .gx-row__value { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.dh-row--link .gx-row__value { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; white-space: nowrap; }
+.dh-row--link .gx-battery__status { white-space: nowrap; }
+.dh-row__note { display: block; font-size: var(--fs-xs); color: var(--text-muted); font-weight: normal; }

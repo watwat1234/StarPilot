@@ -7,6 +7,8 @@ const TABS = { trend: "Trend", detail: "Detail" }
 const TREND_RANGES = [30, 90, 365]
 const DETAIL_RANGES = [1, 7, 30]
 const MIN_DRIVE_S = 300
+const PARK_ROWS = 50
+const SAMPLE_ROWS = 200
 
 const END_REASONS = {
   ignition: "Drove",
@@ -50,7 +52,7 @@ export const Battery = {
   name: "Battery",
   components: { GalaxyTabs, VoltageChart },
   data() {
-    return { TABS, TREND_RANGES, DETAIL_RANGES, tab: "trend", trendDays: 90, detailDays: 7, data: null, loading: false, error: "", showTable: false }
+    return { TABS, TREND_RANGES, DETAIL_RANGES, tab: "trend", trendDays: 90, detailDays: 7, data: null, loading: false, error: "", showTable: false, parkLimit: PARK_ROWS, sampleLimit: SAMPLE_ROWS }
   },
   computed: {
     days() { return this.tab === "trend" ? this.trendDays : this.detailDays },
@@ -109,8 +111,9 @@ export const Battery = {
       }
       return spans
     },
+    rangeParks() { return this.parks.filter((p) => p.end_ts >= this.t0) },
     parkRows() {
-      return this.parks.filter((p) => p.end_ts >= this.t0).slice().reverse().slice(0, 50).map((p) => ({
+      return this.rangeParks.slice().reverse().slice(0, this.parkLimit).map((p) => ({
         key: p.id,
         start: fmtDate(p.start_ts),
         duration: fmtDuration(p.duration),
@@ -121,8 +124,9 @@ export const Battery = {
         note: p.fromBoot ? "timed from device start" : "",
       }))
     },
+    rangeSamples() { return (this.data?.samples || []).filter((s) => s.ts_end >= this.t0) },
     sampleRows() {
-      return (this.data?.samples || []).filter((s) => s.ts_end >= this.t0).slice().reverse().slice(0, 200).map((s) => ({
+      return this.rangeSamples.slice().reverse().slice(0, this.sampleLimit).map((s) => ({
         key: s.ts_start, time: fmtDate(s.ts_start), mean: fmtV(s.v_mean), min: fmtV(s.v_min), max: fmtV(s.v_max), state: s.onroad ? "Driving" : "Parked",
       }))
     },
@@ -130,8 +134,8 @@ export const Battery = {
   },
   watch: {
     tab() { this.load() },
-    trendDays() { this.load() },
-    detailDays() { this.load() },
+    trendDays() { this.parkLimit = PARK_ROWS; this.load() },
+    detailDays() { this.sampleLimit = SAMPLE_ROWS; this.load() },
   },
   methods: {
     async load() {
@@ -185,7 +189,7 @@ export const Battery = {
         <section class="gx-card gx-battery__chart">
           <h3>While driving</h3>
           <p class="gx-note">Average voltage per drive. A drop here points at charging (DC-DC converter) rather than the battery.</p>
-          <VoltageChart :series="driveSeries" :t0="t0" :t1="now" :height="180" aria-label="Average voltage per drive" />
+          <VoltageChart :series="driveSeries" :t0="t0" :t1="now" :height="180" gutter aria-label="Average voltage per drive" />
         </section>
 
         <section class="gx-card gx-battery__table">
@@ -203,6 +207,10 @@ export const Battery = {
                 <tr v-if="!parkRows.length"><td colspan="8" class="gx-empty">No parks recorded in this range.</td></tr>
               </tbody>
             </table>
+          </div>
+          <div v-if="showTable && rangeParks.length > parkRows.length" class="gx-battery__more">
+            <small>Showing the newest {{ parkRows.length }} of {{ rangeParks.length }} parks</small>
+            <button type="button" class="gx-btn gx-btn--text" @click="parkLimit += ${PARK_ROWS}">Show more</button>
           </div>
         </section>
       </template>
@@ -231,6 +239,10 @@ export const Battery = {
                 <tr v-if="!sampleRows.length"><td colspan="5" class="gx-empty">No samples in this range.</td></tr>
               </tbody>
             </table>
+          </div>
+          <div v-if="showTable && rangeSamples.length > sampleRows.length" class="gx-battery__more">
+            <small>Showing the newest {{ sampleRows.length }} of {{ rangeSamples.length }} samples</small>
+            <button type="button" class="gx-btn gx-btn--text" @click="sampleLimit += ${SAMPLE_ROWS}">Show more</button>
           </div>
         </section>
       </template>

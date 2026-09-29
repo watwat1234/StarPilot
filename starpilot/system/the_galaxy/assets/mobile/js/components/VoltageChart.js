@@ -4,6 +4,9 @@
 
 const PAD = { l: 44, r: 16, t: 14, b: 28 }
 const DAY = 86400
+const END_LABEL_MIN_W = 640   // narrower charts rely on the legend alone
+const END_LABEL_GUTTER = 120  // right gutter the end labels sit in, clear of the data
+const MIN_DOT_SPACING = 12    // px per point below which markers crowd; draw the line and the last point only
 
 const fmtV = (v) => (v == null ? "—" : `${Number(v).toFixed(2)} V`)
 const fmtTime = (t, span) => new Date(t * 1000).toLocaleString("en-US", span > 2 * DAY
@@ -44,6 +47,8 @@ export const VoltageChart = {
     gapS: { type: Number, default: 0 },
     height: { type: Number, default: 220 },
     ariaLabel: { type: String, default: "Voltage over time" },
+    // reserve the end-label gutter even without end labels, so stacked charts share an x axis
+    gutter: { type: Boolean, default: false },
   },
   data() { return { width: 600, hover: null } },
   mounted() {
@@ -52,7 +57,10 @@ export const VoltageChart = {
   },
   beforeUnmount() { this.observer?.disconnect() },
   computed: {
-    plotW() { return this.width - PAD.l - PAD.r },
+    endLabels() { return this.series.length > 1 && this.width >= END_LABEL_MIN_W },
+    padR() { return this.endLabels || (this.gutter && this.width >= END_LABEL_MIN_W) ? END_LABEL_GUTTER : PAD.r },
+    plotR() { return this.width - this.padR },
+    plotW() { return this.plotR - PAD.l },
     plotH() { return this.height - PAD.t - PAD.b },
     empty() { return !this.series.some((s) => s.points.length) },
     yDomain() {
@@ -94,7 +102,7 @@ export const VoltageChart = {
       return ticks.map((tick) => ({ ...tick, x: this.x(tick.t) }))
     },
     drawn() {
-      return this.series.map((s) => {
+      const drawn = this.series.map((s) => {
         const segs = segments(s.points, this.gapS)
         const line = segs.map((seg) => seg.map((p, i) => `${i ? "L" : "M"}${this.x(p.t).toFixed(1)},${this.y(p.v).toFixed(1)}`).join("")).join("")
         const band = s.band ? segs.map((seg) => {
@@ -103,14 +111,23 @@ export const VoltageChart = {
           return `${top}${bottom}Z`
         }).join("") : ""
         const last = s.points[s.points.length - 1]
+        const sparse = s.points.length <= 1 || this.plotW / s.points.length >= MIN_DOT_SPACING
+        const dotted = s.dots ? (sparse ? s.points : [last]) : []
         return {
           ...s,
-          line: s.dots && segs.every((seg) => seg.length === 1) ? "" : line,
+          line: s.dots && sparse && segs.every((seg) => seg.length === 1) ? "" : line,
           bandPath: band,
-          dotsXY: s.dots ? s.points.map((p) => ({ x: this.x(p.t), y: this.y(p.v) })) : [],
-          endLabel: last && this.series.length > 1 ? { x: Math.min(this.x(last.t) + 6, this.width - PAD.r), y: this.y(last.v) } : null,
+          dotsXY: dotted.map((p) => ({ x: this.x(p.t), y: this.y(p.v) })),
+          endLabel: last && this.endLabels ? { x: this.plotR + 10, y: this.y(last.v) + 4 } : null,
         }
       })
+      // keep end labels at least a line apart, in their series' vertical order
+      const labelled = drawn.filter((s) => s.endLabel).sort((a, b) => a.endLabel.y - b.endLabel.y)
+      for (let i = 1; i < labelled.length; i++) {
+        const prev = labelled[i - 1].endLabel
+        labelled[i].endLabel.y = Math.max(labelled[i].endLabel.y, prev.y + 14)
+      }
+      return drawn
     },
     spanRects() {
       return this.spans.map((s) => {
@@ -161,22 +178,22 @@ export const VoltageChart = {
         <svg :width="width" :height="height" role="img" :aria-label="ariaLabel" @pointermove="onMove" @pointerleave="hover = null">
           <rect v-for="(r, i) in spanRects" :key="'s' + i" :x="r.x" :y="${PAD.t}" :width="r.w" :height="plotH" class="gx-vchart__span" />
           <g class="gx-vchart__grid">
-            <line v-for="tick in yTicks" :key="'y' + tick.v" :x1="${PAD.l}" :x2="width - ${PAD.r}" :y1="tick.y" :y2="tick.y" />
+            <line v-for="tick in yTicks" :key="'y' + tick.v" :x1="${PAD.l}" :x2="plotR" :y1="tick.y" :y2="tick.y" />
           </g>
           <g class="gx-vchart__axis">
             <text v-for="tick in yTicks" :key="'yl' + tick.v" :x="${PAD.l - 6}" :y="tick.y + 4" text-anchor="end">{{ tick.label }}</text>
             <text v-for="tick in xTicks" :key="'xl' + tick.t" :x="tick.x" :y="height - 8" text-anchor="middle">{{ tick.label }}</text>
           </g>
           <g v-if="cutoffY != null" class="gx-vchart__ref">
-            <line :x1="${PAD.l}" :x2="width - ${PAD.r}" :y1="cutoffY" :y2="cutoffY" />
-            <text :x="width - ${PAD.r}" :y="cutoffY - 5" text-anchor="end">{{ cutoffLabel }} {{ cutoff.toFixed(1) }} V</text>
+            <line :x1="${PAD.l}" :x2="plotR" :y1="cutoffY" :y2="cutoffY" />
+            <text :x="plotR" :y="cutoffY - 5" text-anchor="end">{{ cutoffLabel }} {{ cutoff.toFixed(1) }} V</text>
           </g>
           <g v-for="s in drawn" :key="s.key" :style="{ color: s.color }">
             <path v-if="s.bandPath" :d="s.bandPath" class="gx-vchart__band" />
             <path v-if="s.line" :d="s.line" class="gx-vchart__line" />
             <circle v-for="(d, i) in s.dotsXY" :key="i" :cx="d.x" :cy="d.y" r="4" class="gx-vchart__dot" />
-            <text v-if="s.endLabel" :x="s.endLabel.x" :y="s.endLabel.y - 8" text-anchor="end" class="gx-vchart__end">{{ s.label }}</text>
           </g>
+          <text v-for="s in drawn.filter((d) => d.endLabel)" :key="'e' + s.key" :x="s.endLabel.x" :y="s.endLabel.y" class="gx-vchart__end">{{ s.label }}</text>
           <line v-if="hover" :x1="hover.x" :x2="hover.x" :y1="${PAD.t}" :y2="${PAD.t} + plotH" class="gx-vchart__crosshair" />
         </svg>
         <div v-if="empty" class="gx-vchart__empty">No data in this range yet.</div>

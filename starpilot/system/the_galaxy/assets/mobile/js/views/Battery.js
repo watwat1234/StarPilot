@@ -82,7 +82,7 @@ export const Battery = {
     healthParks() { return this.parks.filter((p) => !p.fromBoot && p.start_ts >= this.t0) },
     trendSeries() {
       const series = (key, label, color, field) => ({
-        key, label, color, dots: true,
+        key, label, color,
         points: this.healthParks.filter((p) => p[field] != null).map((p) => ({ t: p.start_ts, v: p[field], note: `parked ${fmtDuration(p.duration)}` })),
       })
       return [
@@ -94,7 +94,7 @@ export const Battery = {
       const points = this.sessions
         .filter((s) => s.kind === "drive" && s.v_mean != null && s.end_ts - s.start_ts >= MIN_DRIVE_S && s.start_ts >= this.t0)
         .map((s) => ({ t: s.start_ts, v: s.v_mean, note: `drive ${fmtDuration(s.end_ts - s.start_ts)} · min ${fmtV(s.v_min)}` }))
-      return [{ key: "drive", label: "Average while driving", color: "var(--vc-3)", dots: true, points }]
+      return [{ key: "drive", label: "Average while driving", color: "var(--vc-3)", points }]
     },
     detailSeries() {
       const points = (this.data?.samples || []).filter((s) => s.ts_end >= this.t0)

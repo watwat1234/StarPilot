@@ -6,7 +6,6 @@ const PAD = { l: 44, r: 16, t: 14, b: 28 }
 const DAY = 86400
 const END_LABEL_MIN_W = 640   // narrower charts rely on the legend alone
 const END_LABEL_GUTTER = 120  // right gutter the end labels sit in, clear of the data
-const MIN_DOT_SPACING = 12    // px per point below which markers crowd; draw the line and the last point only
 
 const fmtV = (v) => (v == null ? "—" : `${Number(v).toFixed(2)} V`)
 const fmtTime = (t, span) => new Date(t * 1000).toLocaleString("en-US", span > 2 * DAY
@@ -36,7 +35,7 @@ function segments(points, gapS) {
 export const VoltageChart = {
   name: "VoltageChart",
   props: {
-    // [{ key, label, color (CSS var), points: [{ t, v, lo?, hi?, note? }], band: bool, dots: bool }]
+    // [{ key, label, color (CSS var), points: [{ t, v, lo?, hi?, note? }], band: bool }]
     series: { type: Array, required: true },
     t0: { type: Number, required: true },
     t1: { type: Number, required: true },
@@ -111,13 +110,13 @@ export const VoltageChart = {
           return `${top}${bottom}Z`
         }).join("") : ""
         const last = s.points[s.points.length - 1]
-        const sparse = s.points.length <= 1 || this.plotW / s.points.length >= MIN_DOT_SPACING
-        const dotted = s.dots ? (sparse ? s.points : [last]) : []
+        // a lone point between gaps has no line to sit on; mark it so it isn't lost
+        const lone = segs.filter((seg) => seg.length === 1).map(([p]) => p)
         return {
           ...s,
-          line: s.dots && sparse && segs.every((seg) => seg.length === 1) ? "" : line,
+          line,
           bandPath: band,
-          dotsXY: dotted.map((p) => ({ x: this.x(p.t), y: this.y(p.v) })),
+          dotsXY: lone.map((p) => ({ x: this.x(p.t), y: this.y(p.v) })),
           endLabel: last && this.endLabels ? { x: this.plotR + 10, y: this.y(last.v) + 4 } : null,
         }
       })

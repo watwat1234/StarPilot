@@ -82,6 +82,7 @@ export const api = {
 
   getDeviceStatus() { return requestOk("/api/device/status") },
   getStats() { return requestOk("/api/stats") },
+  getBatteryHistory(days, samples = true) { return request(`/api/battery/history?days=${days}&samples=${samples ? 1 : 0}`, { cache: "no-store" }) },
   setDriveStats(action, routeNames) { return request(`/api/stats/${action}_drive`, { method: "POST", data: { routeNames } }) },
 
   async getRoutesStream({ onProgress, onRoutes, signal } = {}) {

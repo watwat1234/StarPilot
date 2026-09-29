@@ -2498,3 +2498,59 @@ button.gx-chip:hover {
   color: var(--secondary);
   text-shadow: 0 0 10px var(--secondary-glow);
 }
+/* 12V battery page + voltage chart. Series slots validated (dataviz validator) against the card surfaces;
+   light slot 3 is under 3:1, so every chart also has a table view. */
+.gx-battery, .dh-row--link {
+  --vc-1: #3987e5; --vc-2: #d95926; --vc-3: #199e70;
+  --vc-grid: rgba(255, 255, 255, 0.07); --vc-axis: #8b88a8; --vc-ref: #c3c2b7; --vc-span: rgba(255, 255, 255, 0.05);
+  --status-good: #0ca30c; --status-warning: #fab219; --status-critical: #d03b3b;
+}
+[data-theme="light"] .gx-battery, [data-theme="light"] .dh-row--link {
+  --vc-1: #2a78d6; --vc-2: #eb6834; --vc-3: #1baf7a;
+  --vc-grid: rgba(23, 21, 38, 0.08); --vc-axis: #6f6a8f; --vc-ref: #52514e; --vc-span: rgba(120, 73, 232, 0.07);
+}
+.gx-battery__now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; padding: var(--sp-4); margin-bottom: var(--sp-4); }
+.gx-battery__now small { flex-basis: 100%; color: var(--text-muted); }
+.gx-battery__value { font-size: var(--fs-xxl); font-weight: var(--fw-bold); color: var(--on-surface); }
+.gx-battery__status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--on-surface); margin-right: 6px; }
+.gx-battery__status.is-good i { color: var(--status-good); }
+.gx-battery__status.is-warning i { color: var(--status-warning); }
+.gx-battery__status.is-critical i { color: var(--status-critical); }
+.gx-battery__ranges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--sp-3); }
+.gx-battery__chart, .gx-battery__table { padding: var(--sp-4); margin-bottom: var(--sp-4); min-width: 0; }
+.gx-battery__chart h3, .gx-battery__table h3 { margin: 0 0 4px; font-size: var(--fs-base); }
+.gx-battery__chart .gx-note { margin: 0 0 var(--sp-3); }
+.gx-battery__table-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.gx-battery__scroll { overflow-x: auto; margin-top: var(--sp-3); }
+.gx-battery__scroll table { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.gx-battery__scroll th, .gx-battery__scroll td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--outline); white-space: nowrap; }
+.gx-battery__scroll th { color: var(--text-muted); font-weight: var(--fw-medium); }
+.gx-battery__scroll small { color: var(--text-muted); }
+
+.gx-vchart { position: relative; min-width: 0; }
+.gx-vchart__legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: var(--fs-sm); color: var(--on-surface-variant); margin-bottom: 6px; }
+.gx-vchart__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.gx-vchart__legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.gx-vchart__legend i.gx-vchart__span-swatch { border-radius: 2px; background: var(--vc-span); outline: 1px solid var(--vc-grid); }
+.gx-vchart__plot { position: relative; }
+.gx-vchart svg { display: block; touch-action: pan-y; }
+.gx-vchart__grid line { stroke: var(--vc-grid); stroke-width: 1; }
+.gx-vchart__axis text { fill: var(--vc-axis); font-size: 11px; font-variant-numeric: tabular-nums; }
+.gx-vchart__ref line { stroke: var(--vc-ref); stroke-width: 1; stroke-dasharray: 4 4; }
+.gx-vchart__ref text { fill: var(--vc-axis); font-size: 11px; }
+.gx-vchart__span { fill: var(--vc-span); }
+.gx-vchart__line { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.gx-vchart__band { fill: currentColor; opacity: 0.18; stroke: none; }
+.gx-vchart__dot { fill: currentColor; stroke: var(--background); stroke-width: 2; }
+.gx-vchart__end { fill: var(--on-surface-variant); font-size: 11px; }
+.gx-vchart__crosshair { stroke: var(--vc-axis); stroke-width: 1; }
+.gx-vchart__empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: var(--fs-sm); pointer-events: none; }
+.gx-vchart__tip { position: absolute; top: 8px; min-width: 160px; max-width: 220px; padding: 8px 10px; border-radius: var(--radius-xs); background: var(--card-scroll-bg); border: 1px solid var(--glass-border); box-shadow: var(--elev-2); font-size: var(--fs-sm); color: var(--on-surface); pointer-events: none; }
+.gx-vchart__tip strong { display: block; margin-bottom: 4px; }
+.gx-vchart__tip div { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.gx-vchart__tip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.gx-vchart__tip small { flex-basis: 100%; color: var(--text-muted); }
+
+.dh-row--link { width: 100%; background: none; border-left: 0; border-right: 0; border-bottom: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dh-row--link:hover { background: var(--glass-bg-hover); }
+.dh-row--link .gx-row__value { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }

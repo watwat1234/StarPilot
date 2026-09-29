@@ -2912,6 +2912,70 @@ def _read_gpu_temp_c(thermal_root=None):
   return _read_component_temp_c("gpu", thermal_root)
 
 
+LIVE_BATTERY_IDLE_S = 60.0     # stop the subscriber after this long without requests
+LIVE_BATTERY_MAX_AGE_S = 5.0
+LIVE_BATTERY_FIRST_WAIT_S = 0.8
+_LIVE_BATTERY_LOCK = threading.Lock()
+_LIVE_BATTERY_STATE = {"voltage": None, "updated_at": 0.0, "last_request": 0.0, "thread": None}
+
+
+def _live_battery_worker():
+  try:
+    import cereal.messaging as messaging
+    from cereal import log
+    sm = messaging.SubMaster(["peripheralState"])
+  except Exception:
+    with _LIVE_BATTERY_LOCK:
+      _LIVE_BATTERY_STATE["thread"] = None
+    return
+
+  while True:
+    with _LIVE_BATTERY_LOCK:
+      if time.monotonic() - _LIVE_BATTERY_STATE["last_request"] > LIVE_BATTERY_IDLE_S:
+        _LIVE_BATTERY_STATE["thread"] = None
+        return
+    sm.update(1000)
+    state = sm["peripheralState"]
+    if sm.updated["peripheralState"] and state.pandaType != log.PandaState.PandaType.unknown and state.voltage > 0:
+      with _LIVE_BATTERY_LOCK:
+        _LIVE_BATTERY_STATE["voltage"] = state.voltage / 1000.0
+        _LIVE_BATTERY_STATE["updated_at"] = time.monotonic()
+
+
+def _live_battery_voltage():
+  """Latest panda 12V reading in volts, or None. Starts a short-lived peripheralState subscriber on demand."""
+  with _LIVE_BATTERY_LOCK:
+    _LIVE_BATTERY_STATE["last_request"] = time.monotonic()
+    started = _LIVE_BATTERY_STATE["thread"] is None
+    if started:
+      _LIVE_BATTERY_STATE["thread"] = threading.Thread(target=_live_battery_worker, name="galaxy-live-battery", daemon=True)
+      _LIVE_BATTERY_STATE["thread"].start()
+
+  deadline = time.monotonic() + (LIVE_BATTERY_FIRST_WAIT_S if started else 0.0)
+  while True:
+    with _LIVE_BATTERY_LOCK:
+      if time.monotonic() - _LIVE_BATTERY_STATE["updated_at"] <= LIVE_BATTERY_MAX_AGE_S:
+        return _LIVE_BATTERY_STATE["voltage"]
+    if time.monotonic() >= deadline:
+      return None
+    time.sleep(0.05)
+
+
+def _read_battery_summary():
+  """Live 12V reading, falling back to the last recorded 10-minute bucket."""
+  try:
+    voltage = _live_battery_voltage()
+    if voltage is not None:
+      return {"voltage": round(voltage, 2), "live": True, "updatedAt": None}
+    from openpilot.starpilot.system.battery_monitor import latest_sample
+    latest = latest_sample()
+    if latest is not None:
+      return {"voltage": latest["voltage"], "live": False, "updatedAt": latest["ts"], "onroad": latest["onroad"]}
+  except Exception:
+    pass
+  return None
+
+
 def _build_device_summary(params_obj):
   is_onroad = _params_get_bool(params_obj, "IsOnroad")
   uptime_seconds = _read_uptime_seconds()
@@ -2925,6 +2989,7 @@ def _build_device_summary(params_obj):
     "uptimeSeconds": uptime_seconds,
     "cpuTempC": cpu_temp_c,
     "gpuTempC": gpu_temp_c,
+    "battery": _read_battery_summary(),
     "lanIp": lan_ip,
     "networkName": network_name,
   }

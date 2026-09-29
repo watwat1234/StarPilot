@@ -41,6 +41,7 @@ from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
 
 from openpilot.starpilot.assets.model_manager import selected_chestnut_artifacts_ready
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
+from openpilot.starpilot.system.battery_monitor import BatteryMonitor
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -343,6 +344,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   params = Params()
   power_monitor = PowerMonitoring()
+  battery_monitor = BatteryMonitor()
   chestnut = Chestnut() if AGNOS else None
   chestnut_status = ChestnutStatus() if AGNOS else None
 
@@ -576,6 +578,12 @@ def hardware_thread(end_event, hw_queue) -> None:
     statlog.sample("power_draw", current_power_draw)
     msg.deviceState.powerDrawW = current_power_draw
 
+    # 12V battery history for the Galaxy (must never take hardwared down)
+    try:
+      battery_monitor.update(time.monotonic(), voltage, onroad_conditions["ignition"], current_power_draw)
+    except Exception:
+      cloudlog.exception("battery_monitor update failed")
+
     som_power_draw = HARDWARE.get_som_power_draw()
     statlog.sample("som_power_draw", som_power_draw)
     msg.deviceState.somPowerDrawW = som_power_draw
@@ -593,6 +601,10 @@ def hardware_thread(end_event, hw_queue) -> None:
       if params.get_bool("SentryModeEnabled") and not sentry_power_off_notified:
         sentry_power_off_notified = True
         notify_sentry_power_off(shutdown_reason, power_monitor)
+      try:
+        battery_monitor.close(shutdown_reason)  # no-op after the first call
+      except Exception:
+        cloudlog.exception("battery_monitor close failed")
       params.put_bool("DoShutdown", True)
     else:
       sentry_power_off_notified = False

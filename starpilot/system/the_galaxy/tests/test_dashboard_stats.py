@@ -1163,12 +1163,28 @@ def test_device_summary_includes_network_name(monkeypatch):
   monkeypatch.setattr(utilities, "_read_gpu_temp_c", lambda: 42)
   monkeypatch.setattr(utilities, "get_current_lan_ip", lambda: "192.168.1.10")
   monkeypatch.setattr(utilities, "get_current_network_name", lambda: "Home Network")
+  monkeypatch.setattr(utilities, "_read_battery_summary", lambda: {"voltage": 12.41, "live": True, "updatedAt": None})
 
   summary = utilities._build_device_summary(FakeParams({"IsOnroad": False}))
 
   assert summary["networkName"] == "Home Network"
   assert summary["lanIp"] == "192.168.1.10"
   assert summary["gpuTempC"] == 42
+  assert summary["battery"]["voltage"] == 12.41
+
+
+def test_battery_summary_prefers_live_then_falls_back_to_recorded(monkeypatch):
+  from openpilot.starpilot.system import battery_monitor
+
+  monkeypatch.setattr(utilities, "_live_battery_voltage", lambda: 12.456)
+  assert utilities._read_battery_summary() == {"voltage": 12.46, "live": True, "updatedAt": None}
+
+  monkeypatch.setattr(utilities, "_live_battery_voltage", lambda: None)
+  monkeypatch.setattr(battery_monitor, "latest_sample", lambda: {"ts": 1_790_000_000.0, "voltage": 12.3, "onroad": False})
+  assert utilities._read_battery_summary() == {"voltage": 12.3, "live": False, "updatedAt": 1_790_000_000.0, "onroad": False}
+
+  monkeypatch.setattr(battery_monitor, "latest_sample", lambda: None)
+  assert utilities._read_battery_summary() is None
 
 
 def test_persistent_loader_accepts_decoded_param_dict():
@@ -2082,6 +2098,45 @@ def test_clear_generated_build_state_preserves_prebuilts_and_user_data(tmp_path)
   assert not (tmp_path / "cereal" / "gen").exists()
   assert prebuilt.read_text() == "test"
   assert user_model.read_text() == "test"
+
+
+def test_battery_history_endpoint(monkeypatch, tmp_path):
+  from openpilot.starpilot.system import battery_monitor
+
+  server = _load_server_module()
+  assert server._import_galaxy_web_symbols()
+
+  from datetime import UTC, datetime
+
+  db_path = str(tmp_path / "battery.db")
+  wall_start = datetime.now(UTC).timestamp() - 3600
+  monitor = battery_monitor.BatteryMonitor(db_path=db_path, clock_valid=lambda: True, wall_time=lambda: wall_start + 600)
+  for i in range(1202):  # just over one 10-minute bucket, parked
+    monitor.update(i * 0.5, 12400, False, 2.0)
+  monkeypatch.setattr(battery_monitor, "default_db_path", lambda: db_path)
+
+  class BatteryParams(FakeParams):
+    def get_float(self, key):
+      return float(self.values.get(key, 0.0))
+
+  app = server.Flask("battery_history_test", template_folder=str(MODULE_DIR / "templates"), static_folder=str(MODULE_DIR / "assets"))
+  server.setup(app)
+  monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 11.9}))
+  monkeypatch.setattr(server.utilities, "_read_battery_summary", lambda: None)
+  client = app.test_client()
+
+  payload = client.get("/api/battery/history?days=3650").get_json()
+  assert payload["days"] == 400.0
+  assert payload["cutoffV"] == 11.9
+  assert len(payload["samples"]) == 1
+  assert payload["samples"][0]["v_mean"] == pytest.approx(12.4)
+  assert [s["kind"] for s in payload["sessions"]] == ["park"]
+
+  assert client.get("/api/battery/history?days=30&samples=0").get_json()["samples"] == []
+  assert client.get("/api/battery/history?days=abc").status_code == 400
+
+  monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": False, "LowVoltageShutdown": 12.2}))
+  assert client.get("/api/battery/history").get_json()["cutoffV"] == 11.8
 
 
 def test_maps_status_uses_cache_without_scanning_legacy_storage(monkeypatch):

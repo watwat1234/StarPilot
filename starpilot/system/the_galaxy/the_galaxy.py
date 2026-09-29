@@ -8503,6 +8503,34 @@ def setup(app):
       "networkName": utilities.get_current_network_name(),
     }), 200
 
+  @app.route("/api/battery/history", methods=["GET"])
+  def battery_history():
+    from openpilot.starpilot.system import battery_monitor
+
+    try:
+      days = min(max(float(request.args.get("days", 30)), 1.0), 400.0)
+    except ValueError:
+      return jsonify({"error": "days must be a number."}), 400
+
+    cutoff = params.get_float("LowVoltageShutdown") if params.get_bool("DeviceManagement") else 0.0
+    try:
+      history = battery_monitor.read_history(days)
+    except Exception as exception:
+      return jsonify({"error": f"Battery history unavailable: {exception}"}), 500
+    if request.args.get("samples") == "0":
+      history["samples"] = []
+
+    return jsonify({
+      **history,
+      "days": days,
+      "now": time.time(),  # noqa: TID251 (rows are wall-clock stamped)
+      "cutoffV": cutoff if cutoff > 0 else battery_monitor.DEFAULT_CUTOFF_V,
+      "sampleIntervalS": battery_monitor.SAMPLE_INTERVAL_S,
+      "sampleRetentionDays": battery_monitor.SAMPLE_RETENTION_S / 86400,
+      "live": utilities._read_battery_summary(),
+      "onroad": params.get_bool("IsOnroad"),
+    }), 200
+
   @app.route("/api/stats/ignore_drive", methods=["POST"])
   def ignore_drive_stats():
     request_data = request.get_json() or {}

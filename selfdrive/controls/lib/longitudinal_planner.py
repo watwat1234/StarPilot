@@ -38,8 +38,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   is_toyota_rav4_tss2_radar_follow_lead,
   get_toyota_sienna_post_departure_restop_cap,
   get_untracked_slow_lead_decel_scale,
-  get_toyota_prius_stopped_lead_obstacle_bias,
-  get_honda_crv_5g_stopped_lead_obstacle_bias,
+  get_stopped_lead_obstacle_bias,
   get_honda_crv_5g_low_speed_stopped_lead_cap,
   allow_honda_crv_5g_vision_gap_settle,
   get_honda_crv_5g_early_radar_follow_cap,
@@ -2363,17 +2362,13 @@ class LongitudinalPlanner:
 
     stopped_lead_obstacle_bias = (0.0, 0.0)
     if (
-      self.mode == 'acc' and
       not bool(getattr(sm['modelV2'].action, 'shouldStop', False)) and
       not bool(getattr(sm['starpilotPlan'], 'redLight', False)) and
       not bool(getattr(sm['starpilotPlan'], 'forcingStop', False)) and
       not bool(getattr(sm['carState'], 'standstill', False))
     ):
       stopped_lead_obstacle_bias = tuple(
-        max(
-          get_toyota_prius_stopped_lead_obstacle_bias(self.CP, lead, scene_v_ego),
-          get_honda_crv_5g_stopped_lead_obstacle_bias(self.CP, lead, scene_v_ego),
-        )
+        get_stopped_lead_obstacle_bias(self.CP, lead, scene_v_ego, self.mode)
         for lead in (self.lead_one, self.lead_two)
       )
 

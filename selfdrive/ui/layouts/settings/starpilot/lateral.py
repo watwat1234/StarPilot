@@ -118,6 +118,13 @@ class StarPilotLateralLayout(_SettingsPage):
     # ── 1. Steering Behavior ──
     self._behavior_rows = [
       SettingRow(
+        "TeslaAOLDisengageOnBrake", "toggle", tr_noop("Disengage AOL on Brake"),
+        subtitle=tr_noop("Keep steering off after pressing the brake until openpilot is engaged again."),
+        get_state=lambda: p.get_bool("TeslaAOLDisengageOnBrake"),
+        set_state=lambda s: p.put_bool("TeslaAOLDisengageOnBrake", s),
+        visible=lambda: aol_on() and cs.isTesla,
+      ),
+      SettingRow(
         "PauseAOLOnBrake", "value", tr_noop("Pause AOL On Brake"),
         subtitle=tr_noop("Pause AOL below this speed while brake is pressed."),
         get_value=lambda: f"{p.get_int('PauseAOLOnBrake')} mph",

@@ -15,9 +15,6 @@ master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebu
 | `wat-bolt` | exactly `Dom-wat` (the Bolt 2022/2023 tune is upstream's own). Carries upstream's stock firmware. | Bolt (devices track `github` `wat-bolt`) |
 | `wat-ioniq` | `Dom-wat` + CAN/SBU wake + GPIOC11 bootkick, custom Ioniq 6 tune, Ioniq 6 torqued changes. It is the only branch that regenerates panda firmware, and that commit is added separately (see the rule below). | Ioniq (`github` `wat-ioniq`), only when the rule below is met |
 | `wat-analysis*` | analyzers, notes, plans, route scripts. Never deployed. | nothing |
-| `bolt-ff-experiments` | parked Bolt FF/ringdown tuning work (2026-09-16..18); not canonical, merged into nothing | nothing |
-| `wat-reorg-notes` | orphan branch: runbook and working files from the 2026-09-20 reorganization, history only | nothing |
-| `wat-reorg-open-items` | orphan branch: follow-ups from the reorganization (pending work, open decisions, known issues); living, never merged | nothing |
 
 ## Rule: `wat-ioniq` is deployed only with firmware built from its own panda source
 
@@ -48,7 +45,10 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
   branches (that is the duplicate-commit mess this scheme replaced).
 - **Analysis:** nothing flows from an analysis branch back into `Dom-wat` or a car branch. New common tools start on a
   branch off `wat-analysis`. Cherry-pick (never merge) from the car analysis branches.
-- **Upstream PRs:** opportunistic; staging strategy is deferred. wat-only paths to exclude from any PR:
+- **Upstream PRs:** two branches off `Dom` per PR. `pr/<name>-dev` collects the work by cherry-picking commits (not
+  merges) from `Dom-wat` or the feature branch. `pr/<name>` is the staging branch: one squashed commit for upstream.
+  Rebuild staging from scratch whenever the dev branch changes (reset to `Dom`, `git merge --squash pr/<name>-dev`);
+  when `Dom` moves, rebase the dev branch first. wat-only paths to exclude from any PR:
   `tools/wat_dev`, `Dockerfile.wat_*`, `.github/workflows/base-image.yml`, `.forgejo`.
 
 ## Car-work branch naming: `wat-<car>-<class>-<name>`
@@ -61,7 +61,7 @@ anyone opens the diff:
 - **`tune`** — deliberate parameter/behavior tradeoff, backed by data (e.g. an offline A/B replay with a before/after
   metric). Expect a commit message with the numbers, not just the change.
 - **`experiment`** — open-ended, may be abandoned, not merged until it proves out. Parking a dead-end experiment
-  (like `bolt-ff-experiments`) is fine; don't invent a `fix` or `tune` story to justify it.
+  is fine; don't invent a `fix` or `tune` story to justify it.
 
 Example: `wat-ioniq-fix-restore-torque-clear` (class `fix`) reverted an undocumented Ioniq 6 torque-zeroing removal
 that traded a cosmetic turn-blip for reintroducing the steer-fault condition the zeroing existed to prevent.
@@ -111,15 +111,14 @@ tracked files and binaries conflict on every merge. Policy:
   `DEV-unknown-DEBUG` (compiled in and signed, so it cannot be repaired afterwards). `sp-build` patches temporary copies
   of those scripts to mount the main repo's git dir, aborts if upstream's versions no longer match the patch, and fails
   on an `unknown` stamp. Run it as the user that owns the checkout (`docker exec -u batman`), not root, or git rejects the
-  repo as dubious-ownership. A rebuilt dev image puts both commands on `PATH`; until then use `tools/wat_dev/bin/`.
+  repo as dubious-ownership. The dev image puts both commands on `PATH`; outside it use `tools/wat_dev/bin/`.
 
 ## Setup
 
-Hooks and config are per clone. Run once in each clone: `./tools/wat_dev/bin/wat-setup` (or `git wat-setup` once the
-alias exists). It sets `core.hooksPath=tools/wat_dev/git-hooks` and `rerere.enabled=true`. The dev container's image
-registers the `git wat-setup` alias and its entrypoint runs it for every clone under `REPOS_DIR` (needs an image rebuild
-to take effect).
+Hooks and config are per clone. Run once in each clone: `./tools/wat_dev/bin/wat-setup` (or `git wat-setup`).
+It sets `core.hooksPath=tools/wat_dev/git-hooks` and `rerere.enabled=true`. The dev container's image registers the
+`git wat-setup` alias and its entrypoint runs it for every clone under `REPOS_DIR`.
 
 ## Open items and known issues
 
-Not tracked here, so this file stays policy. See `OPEN_ITEMS.md` on branch `wat-reorg-open-items`.
+Not tracked here, so this file stays policy. See `_general/open-items/progress.md` on `wat-dev-notes`.

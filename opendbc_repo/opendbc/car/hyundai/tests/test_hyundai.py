@@ -1086,6 +1086,31 @@ class TestHyundaiFingerprint:
 
     assert not (FPCP.flags & HyundaiStarPilotFlags.HAS_LKAS12)
 
+  @pytest.mark.parametrize("length, expected", ((6, True), (8, False)))
+  def test_stinger_only_replaces_six_byte_lkas12(self, length, expected):
+    fingerprint = gen_empty_fingerprint()
+    fingerprint[2][0x53E] = length
+    CP = CarInterface.get_params(CAR.KIA_STINGER_2022, fingerprint, [], True, False, False, None)
+    FPCP = CarInterface.get_starpilot_params(CAR.KIA_STINGER_2022, fingerprint, [], CP, get_test_toggles())
+
+    assert bool(FPCP.flags & HyundaiStarPilotFlags.HAS_LKAS12) is expected
+
+  @pytest.mark.parametrize("alpha_long, main_aol, expected", (
+    (True, True, True), (True, False, True), (False, True, False),
+  ))
+  def test_stinger_aol_latches_lkas_after_long_engagement(self, alpha_long, main_aol, expected):
+    toggles = get_test_toggles()
+    toggles.always_on_lateral_main = main_aol
+    fingerprint = gen_empty_fingerprint()
+    CP = CarInterface.get_params(CAR.KIA_STINGER_2022, fingerprint, [], alpha_long, False, False, toggles)
+    FPCP = CarInterface.get_starpilot_params(CAR.KIA_STINGER_2022, fingerprint, [], CP, toggles)
+
+    assert bool(FPCP.safetyConfigs[-1].safetyParam & HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE) is expected
+
+    sonata_cp = CarInterface.get_params(CAR.HYUNDAI_SONATA, fingerprint, [], alpha_long, False, False, toggles)
+    sonata_fpcp = CarInterface.get_starpilot_params(CAR.HYUNDAI_SONATA, fingerprint, [], sonata_cp, toggles)
+    assert not (sonata_fpcp.safetyConfigs[-1].safetyParam & HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE)
+
   def test_ray_ev_does_not_treat_eight_byte_485_as_lfa(self):
     fingerprint = gen_empty_fingerprint()
     fingerprint[2][0x485] = 8

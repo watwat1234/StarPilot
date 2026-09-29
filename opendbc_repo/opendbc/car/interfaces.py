@@ -244,7 +244,8 @@ class CarInterfaceBase(ABC):
           if 0x1FA in fingerprint[CAN.ECAN]:
             fp_ret.flags |= HyundaiStarPilotFlags.SPEED_LIMIT_AVAILABLE.value
 
-        if candidate != HYUNDAI.KIA_RAY_EV and not (CP.flags & HyundaiFlags.CANFD) and 0x53E in fingerprint[2]:
+        if candidate != HYUNDAI.KIA_RAY_EV and not (CP.flags & HyundaiFlags.CANFD) and 0x53E in fingerprint[2] and \
+            (candidate != HYUNDAI.KIA_STINGER_2022 or fingerprint[2][0x53E] == 6):
           fp_ret.flags |= HyundaiStarPilotFlags.HAS_LKAS12.value
 
         fp_ret.redneckCruiseAvailable = (bool(CP.flags & HyundaiFlags.NON_SCC) and
@@ -274,6 +275,9 @@ class CarInterfaceBase(ABC):
           fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.AOL_MAIN_LKAS_ON_ENGAGE.value
           if candidate == HYUNDAI.HYUNDAI_SONATA_HYBRID:
             fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE.value
+
+        if candidate == HYUNDAI.KIA_STINGER_2022 and CP.openpilotLongitudinalControl:
+          fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE.value
 
         # The refresh Elantra's safety mapping comes from the resolved Galaxy
         # toggle above, not from this legacy persisted-parameter fallback.

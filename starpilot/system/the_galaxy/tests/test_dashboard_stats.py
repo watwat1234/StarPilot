@@ -2113,6 +2113,7 @@ def test_battery_history_endpoint(monkeypatch, tmp_path):
   monitor = battery_monitor.BatteryMonitor(db_path=db_path, clock_valid=lambda: True, wall_time=lambda: wall_start + 600)
   for i in range(1202):  # just over one 10-minute bucket, parked
     monitor.update(i * 0.5, 12400, False, 2.0)
+  assert monitor.drain(timeout=5)
   monkeypatch.setattr(battery_monitor, "default_db_path", lambda: db_path)
 
   class BatteryParams(FakeParams):

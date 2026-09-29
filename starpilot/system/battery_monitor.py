@@ -1,7 +1,8 @@
 """12V battery history: 10-minute voltage buckets plus one summary row per drive or park.
 
-hardwared feeds BatteryMonitor.update() with the panda's instant voltage at 2 Hz. The Galaxy reads the
-database through read_history() and latest_sample().
+hardwared feeds BatteryMonitor.update() with the panda's instant voltage at 2 Hz. update() only does in-memory
+work; SQLite writes happen on a background writer thread, so a slow disk can never stall hardwared's loop.
+The Galaxy reads the database through read_history() and latest_sample().
 
 The device is off for most of a parked car's life (it shuts down DeviceShutdown hours after parking), so the
 long-term signal is the per-park summary: the smoothed voltage 1/3/6 hours after parking, with the device's own
@@ -9,7 +10,9 @@ load included, plus the parked drop rate. Raw buckets are only kept for SAMPLE_R
 """
 import math
 import os
+import queue
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +32,7 @@ PARK_OFFSETS_H = (1, 3, 6)
 SMOOTHING_TAU_S = 45.                  # matches PowerMonitoring's car voltage filter
 MAX_PENDING_BUCKETS = 24 * 3600 // SAMPLE_INTERVAL_S  # buckets held in memory while the clock is invalid
 DEFAULT_CUTOFF_V = 11.8                # PowerMonitoring's VBATT_PAUSE_CHARGING, without importing it into the Galaxy
+CLOSE_TIMEOUT_S = 2.0                  # how long close() waits for the writer before a shutdown
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -101,6 +105,7 @@ class _Session:
   start: float          # monotonic
   last: float
   start_flag: str       # "clean" (ignition edge), "ign_on_at_boot" or "ign_off_at_boot"
+  seq: int = 0          # identifies the session to the writer, which owns its database id
   v_start: float | None = None
   v_end: float | None = None
   v_min: float = math.inf
@@ -108,7 +113,6 @@ class _Session:
   v_sum: float = 0.
   n: int = 0
   v_at: dict = field(default_factory=dict)
-  id: int | None = None
   end_reason: str | None = None
 
   def add(self, now: float, v: float, smoothed: float):
@@ -151,31 +155,31 @@ class BatteryMonitor:
     self._clock_valid = clock_valid
     self._wall_time = wall_time
     self._filter = FirstOrderFilter(0., SMOOTHING_TAU_S, DT_HW, initialized=False)
-    self._db: sqlite3.Connection | None = None
+    self._writer = _Writer(self.db_path)
     self._offset: float | None = None   # wall time minus monotonic time, fixed once the clock is valid
-    self._pending: list[_Bucket] = []
+    self._pending: list[_Bucket] = []   # finished buckets not yet handed to the writer
     self._bucket: _Bucket | None = None
     self._session: _Session | None = None
-    self._ended: list[_Session] = []    # finished sessions not yet written
-    self._reconciled = False
-    self._last_trim: float | None = None
+    self._ended: list[_Session] = []    # finished sessions not yet handed to the writer
+    self._seq = 0
     self._closed = False
 
   def update(self, now: float, voltage_mv: float | None, ignition: bool, power_draw_w: float = 0.):
     """Feed one reading. now is time.monotonic(); voltage_mv is the panda's instant voltage."""
     if self._closed or not voltage_mv or voltage_mv <= 0:
       return
+    self._apply_resume()
     v = voltage_mv / 1000.
     smoothed = self._filter.update(v)
 
     kind = "drive" if ignition else "park"
     edge = False
     if self._session is None:
-      self._session = _Session(kind, now, now, "ign_on_at_boot" if ignition else "ign_off_at_boot")
+      self._session = self._new_session(kind, now, "ign_on_at_boot" if ignition else "ign_off_at_boot")
     elif self._session.kind != kind:
       self._end_bucket()
       self._end_session("ignition")
-      self._session = _Session(kind, now, now, "clean")
+      self._session = self._new_session(kind, now, "clean")
       edge = True
 
     if self._bucket is None:
@@ -190,7 +194,8 @@ class BatteryMonitor:
       self._flush(now)
 
   def close(self, reason: str, now: float | None = None):
-    """End the open session (e.g. reason="low_voltage" before a shutdown) and write everything out."""
+    """End the open session (e.g. reason="low_voltage" before a shutdown) and write everything out.
+    Waits up to CLOSE_TIMEOUT_S for the writer, so the data is on disk before the device powers off."""
     if self._closed:
       return
     now = time.monotonic() if now is None else now
@@ -199,6 +204,24 @@ class BatteryMonitor:
       self._end_session(reason)
     self._flush(now)
     self._closed = True
+    self._writer.drain(CLOSE_TIMEOUT_S)
+
+  def drain(self, timeout: float | None = None) -> bool:
+    """Wait until everything handed to the writer so far is processed. For tests and shutdown."""
+    return self._writer.drain(timeout)
+
+  def _new_session(self, kind: str, now: float, start_flag: str) -> _Session:
+    self._seq += 1
+    return _Session(kind, now, now, start_flag, seq=self._seq)
+
+  def _apply_resume(self):
+    # The writer found that this run continues a session the previous run left open: adopt its start, so
+    # v_at_Nh is measured from the real start of the park
+    resumed = self._writer.resumed()
+    if resumed is None or self._session is None or self._session.seq != resumed["seq"]:
+      return
+    self._session.start = resumed["start_ts"] - self._offset
+    self._session.v_at.update(resumed["v_at"])
 
   def _end_bucket(self):
     if self._bucket is not None and self._bucket.n:
@@ -218,33 +241,106 @@ class BatteryMonitor:
       self._offset = self._wall_time() - now
 
     sessions = self._ended + ([self._session] if self._session is not None else [])
+    self._writer.submit(_Snapshot(
+      rows=[b.row(self._offset) for b in self._pending],
+      sessions=[(s.seq, s.values(self._offset)) for s in sessions],
+      wall_now=now + self._offset,
+    ))
+    self._pending.clear()
+    self._ended.clear()
+
+
+@dataclass
+class _Snapshot:
+  rows: list[tuple]                 # finished buckets
+  sessions: list[tuple[int, dict]]  # (seq, column values), oldest first; the open session last
+  wall_now: float
+
+
+class _Writer:
+  """Owns the SQLite connection and does every write on its own thread. Data from a failed write is kept and
+  retried with the next snapshot."""
+  def __init__(self, db_path: str):
+    self.db_path = db_path
+    self._queue: queue.Queue = queue.Queue()
+    self._resumed: queue.Queue = queue.Queue()
+    self._thread: threading.Thread | None = None
+    self._db: sqlite3.Connection | None = None
+    self._rows: list[tuple] = []        # not yet written
+    self._sessions: dict[int, dict] = {}  # seq -> latest values, not yet written
+    self._ids: dict[int, int] = {}      # seq -> sessions.id
+    self._base: dict[int, dict] = {}    # seq -> the row a resumed session continues
+    self._reconciled = False
+    self._last_trim: float | None = None
+
+  def submit(self, snapshot: _Snapshot):
+    if self._thread is None:
+      self._thread = threading.Thread(target=self._run, name="battery-monitor-writer", daemon=True)
+      self._thread.start()
+    self._queue.put(snapshot)
+
+  def drain(self, timeout: float | None = None) -> bool:
+    if self._thread is None:
+      return True
+    done = threading.Event()
+    self._queue.put(done)
+    return done.wait(timeout)
+
+  def resumed(self) -> dict | None:
+    try:
+      return self._resumed.get_nowait()
+    except queue.Empty:
+      return None
+
+  def _run(self):
+    while True:
+      item = self._queue.get()
+      if isinstance(item, threading.Event):
+        item.set()
+        continue
+      try:
+        self._write(item)
+      except Exception:
+        cloudlog.exception("battery_monitor: writer failed")
+
+  def _write(self, snapshot: _Snapshot):
+    self._rows += snapshot.rows
+    del self._rows[:-MAX_PENDING_BUCKETS]
+    for seq, values in snapshot.sessions:
+      self._sessions[seq] = values
+
+    inserted: list[int] = []
     try:
       db = self._connect()
       if not self._reconciled:
-        self._reconcile(db, sessions)
+        self._reconcile(db)
         self._reconciled = True
 
-      inserted = [session for session in sessions if session.id is None]
-      trim = self._last_trim is None or now - self._last_trim >= TRIM_INTERVAL_S
+      trim = self._last_trim is None or snapshot.wall_now - self._last_trim >= TRIM_INTERVAL_S
       try:
         with db:
-          db.executemany("INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?, ?)", [b.row(self._offset) for b in self._pending])
-          for session in sessions:
-            self._write_session(db, session)
+          db.executemany("INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?, ?)", self._rows)
+          for seq, values in self._sessions.items():
+            if self._write_session(db, seq, self._merged(seq, values)):
+              inserted.append(seq)
           if trim:
-            db.execute("DELETE FROM samples WHERE ts_end < ?", (now + self._offset - SAMPLE_RETENTION_S,))
+            db.execute("DELETE FROM samples WHERE ts_end < ?", (snapshot.wall_now - SAMPLE_RETENTION_S,))
       except sqlite3.Error:
-        for session in inserted:  # rolled back, so insert them again next time
-          session.id = None
+        for seq in inserted:  # rolled back, so insert them again next time
+          del self._ids[seq]
         raise
     except (sqlite3.Error, OSError):
       cloudlog.exception("battery_monitor: write failed")
       return
 
     if trim:
-      self._last_trim = now
-    self._pending.clear()
-    self._ended.clear()
+      self._last_trim = snapshot.wall_now
+    for seq, values in self._sessions.items():
+      if values["end_reason"] is not None:  # finished; it won't be sent again
+        self._ids.pop(seq, None)
+        self._base.pop(seq, None)
+    self._rows.clear()
+    self._sessions.clear()
 
   def _connect(self) -> sqlite3.Connection:
     if self._db is None:
@@ -256,46 +352,58 @@ class BatteryMonitor:
       self._db = db
     return self._db
 
-  def _reconcile(self, db: sqlite3.Connection, sessions: list[_Session]):
+  def _reconcile(self, db: sqlite3.Connection):
     """Close sessions a previous run left open, or continue one if this run started right where it stopped."""
     columns = "id, kind, start_ts, end_ts, v_start, v_min, v_max, v_mean, n, v_at_1h, v_at_3h, v_at_6h, start_flag"
     rows = db.execute(f"SELECT {columns} FROM sessions WHERE end_reason IS NULL ORDER BY end_ts").fetchall()
     if not rows:
       return
-    first = sessions[0] if sessions else None
+    seq, first = next(iter(self._sessions.items()), (None, None))
     *stale, last = rows
     sid, kind, start_ts, end_ts, v_start, v_min, v_max, v_mean, n, *v_at, start_flag = last
-    resume = first is not None and first.start_flag != "clean" and first.kind == kind and \
-             0 <= first.start + self._offset - end_ts <= RESUME_GAP_S
+    resume = first is not None and first["start_flag"] != "clean" and first["kind"] == kind and \
+             0 <= first["start_ts"] - end_ts <= RESUME_GAP_S
     if not resume:
       stale.append(last)
     with db:
       db.executemany("UPDATE sessions SET end_reason = 'unknown' WHERE id = ?", [(row[0],) for row in stale])
 
-    # Merge only after the commit, so a failed write can't leave the in-memory session half-merged
+    # Record the merge only after the commit, so a failed write can't leave it half done
     if resume:
-      first.id = sid
-      first.start = start_ts - self._offset
-      first.start_flag = start_flag
-      first.v_start = v_start if v_start is not None else first.v_start
-      if n:
-        first.v_min = min(first.v_min, v_min)
-        first.v_max = max(first.v_max, v_max)
-        first.v_sum += v_mean * n
-        first.n += n
-      for hours, value in zip(PARK_OFFSETS_H, v_at, strict=True):
-        if value is not None:
-          first.v_at[hours] = value
+      self._ids[seq] = sid
+      at = {hours: value for hours, value in zip(PARK_OFFSETS_H, v_at, strict=True) if value is not None}
+      self._base[seq] = {"start_ts": start_ts, "start_flag": start_flag, "v_start": v_start, "v_min": v_min,
+                         "v_max": v_max, "v_mean": v_mean, "n": n, "v_at": at}
+      self._resumed.put({"seq": seq, "start_ts": start_ts, "v_at": at})
 
-  def _write_session(self, db: sqlite3.Connection, session: _Session):
-    values = session.values(self._offset)
-    if session.id is None:
+  def _merged(self, seq: int, values: dict) -> dict:
+    base = self._base.get(seq)
+    if base is None:
+      return values
+    merged = {**values, "start_ts": base["start_ts"], "start_flag": base["start_flag"]}
+    if base["v_start"] is not None:
+      merged["v_start"] = base["v_start"]
+    if base["n"]:
+      n = values["n"] + base["n"]
+      merged["n"] = n
+      merged["v_min"] = min(v for v in (values["v_min"], base["v_min"]) if v is not None)
+      merged["v_max"] = max(v for v in (values["v_max"], base["v_max"]) if v is not None)
+      merged["v_mean"] = _r(((values["v_mean"] or 0.) * values["n"] + base["v_mean"] * base["n"]) / n)
+    for hours, value in base["v_at"].items():
+      merged[f"v_at_{hours}h"] = value
+    return merged
+
+  def _write_session(self, db: sqlite3.Connection, seq: int, values: dict) -> bool:
+    """Insert or update one session row; True when it was inserted."""
+    sid = self._ids.get(seq)
+    if sid is None:
       columns = ", ".join(values)
       cursor = db.execute(f"INSERT INTO sessions ({columns}) VALUES ({', '.join('?' * len(values))})", tuple(values.values()))
-      session.id = cursor.lastrowid
-    else:
-      assignments = ", ".join(f"{column} = ?" for column in values)
-      db.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", (*values.values(), session.id))
+      self._ids[seq] = cursor.lastrowid
+      return True
+    assignments = ", ".join(f"{column} = ?" for column in values)
+    db.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", (*values.values(), sid))
+    return False
 
 
 def _read_connection(db_path: str) -> sqlite3.Connection | None:

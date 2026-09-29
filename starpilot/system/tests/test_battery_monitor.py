@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -18,12 +20,13 @@ make_monitor.now = 0.0
 
 
 def feed(monitor, start, seconds, voltage_mv, ignition, draw_w=2.0):
-  """Feed 2 Hz readings from start for seconds; returns the time after the last reading."""
+  """Feed 2 Hz readings from start for seconds, then wait for the writer; returns the time after the last reading."""
   t = start
   for _ in range(int(seconds / DT)):
     make_monitor.now = t
     monitor.update(t, voltage_mv, ignition, draw_w)
     t += DT
+  assert monitor.drain(timeout=5)
   return t
 
 
@@ -154,6 +157,51 @@ def test_restart_within_gap_resumes_session(db_path):
   assert park["n"] == 2402 + 1201
   assert park["v_start"] == pytest.approx(12.5)
   assert park["v_min"] == pytest.approx(12.3)
+
+
+def test_update_does_not_wait_for_a_slow_write(db_path, monkeypatch):
+  gate = threading.Event()
+  write = bm._Writer._write
+
+  def slow_write(self, snapshot):
+    gate.wait(5)
+    write(self, snapshot)
+
+  monkeypatch.setattr(bm._Writer, "_write", slow_write)
+  monitor = make_monitor(db_path)
+  t = 0.0
+  started = time.monotonic()
+  for _ in range(int(2 * 601 / DT)):  # two bucket flushes while the writer is stuck
+    make_monitor.now = t
+    monitor.update(t, 12400, False, 2.0)
+    t += DT
+  assert time.monotonic() - started < 1.0
+  assert not os.path.exists(db_path)
+
+  gate.set()
+  assert monitor.drain(timeout=5)
+  assert len(rows(db_path, "samples")) == 2
+
+
+def test_failed_write_is_retried(db_path, monkeypatch):
+  fail = {"on": True}
+  connect = bm._Writer._connect
+
+  def flaky_connect(self):
+    if fail["on"]:
+      raise sqlite3.OperationalError("disk I/O error")
+    return connect(self)
+
+  monkeypatch.setattr(bm._Writer, "_connect", flaky_connect)
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 601, 12400, False)
+  assert not os.path.exists(db_path)
+
+  fail["on"] = False
+  feed(monitor, t, 601, 12400, False)
+  assert len(rows(db_path, "samples")) == 2
+  (park,) = rows(db_path, "sessions")
+  assert park["n"] == 2402  # every reading up to the second flush, including those from the failed one
 
 
 def test_retention_trims_old_samples(db_path, monkeypatch):

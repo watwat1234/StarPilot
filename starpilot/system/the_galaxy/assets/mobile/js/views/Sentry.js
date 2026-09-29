@@ -31,26 +31,26 @@ export const Sentry = {
       params: {},
       status: {},
       event: {},
+      history: [],
       dateFrom: "",
       dateTo: "",
       historyVisible: false,
+      historyBusy: false,
+      historyKey: 0,
       newEvents: false,
+      viewerCamera: "both",
+      timelapseBusy: false,
       liveCapture: {},
       testBusy: false,
       liveBusy: false,
       deleteBusy: false,
-      viewerBusy: false,
-      viewerEvents: [],
-      viewerKey: 0,
-      viewerCamera: "both",
-      timelapseBusy: false,
       pushBusy: false,
       selectedImage: null,
     }
   },
   created() {
-    this.viewerRequestId = 0
-    this.viewerLatestId = ""
+    this.historyRequestId = 0
+    this.historyLatestId = ""
     this.poll = usePolling(() => this.loadStatus(), { interval: 5000 })
     this.poll.start()
   },
@@ -66,8 +66,8 @@ export const Sentry = {
     window.removeEventListener("keydown", this._onKeydown)
   },
   computed: {
-    captureEvents() { return this.viewerEvents.filter(isCaptureEvent) },
-    alertEvents() { return this.viewerEvents.filter((e) => !isCaptureEvent(e)) },
+    captureEvents() { return this.history.filter(isCaptureEvent) },
+    alertEvents() { return this.history.filter((e) => !isCaptureEvent(e)) },
     statusText() { return String(this.status?.state || "unknown") },
     hasEvent() { return !!(this.event && this.event.eventId) },
     filterActive() { return !!(this.dateFrom || this.dateTo) },
@@ -79,7 +79,7 @@ export const Sentry = {
       if (this.dateFrom === localDay(6)) return "week"
       return ""
     },
-    // A new event can only show up in the viewer if the range still reaches today.
+    // A new event can only show up in the history if the range still reaches today.
     rangeIncludesNow() { return !this.dateTo || this.dateTo >= localDay() },
   },
   methods: {
@@ -97,10 +97,10 @@ export const Sentry = {
         const payload = await api.getSentryStatus()
         this.status = payload?.status || {}
         this.event = payload?.lastEvent || {}
-        // Never rebuild the viewer from the poll; just flag that it is stale. Compare against the
-        // latest event seen when the viewer last loaded, so an empty or past range does not false-flag.
+        // Never rebuild the scrubber from the poll; just flag that it is stale. Compare against the
+        // latest event seen when history last loaded, so an empty or past range does not false-flag.
         if (this.historyVisible && this.rangeIncludesNow && this.hasEvent
-          && String(this.event.eventId) !== this.viewerLatestId) {
+          && String(this.event.eventId) !== this.historyLatestId) {
           this.newEvents = true
         }
       } catch (e) {
@@ -118,39 +118,37 @@ export const Sentry = {
       }
       return range
     },
+    // jumpToNewest remounts the scrubber with the new list so it opens on the newest capture; a plain
+    // reload (after a delete) keeps the selected event instead.
+    async loadHistory({ jumpToNewest = false } = {}) {
+      const requestId = ++this.historyRequestId
+      this.historyBusy = true
+      try {
+        const payload = await api.getSentryEvents(this.historyRange())
+        if (requestId !== this.historyRequestId) return
+        this.history = Array.isArray(payload?.events) ? payload.events : []
+        if (jumpToNewest) this.historyKey += 1
+        this.newEvents = false
+        this.historyLatestId = String(this.event?.eventId || "")
+      } catch (e) {
+        if (requestId !== this.historyRequestId) return
+        showSnackbar("Failed to load Sentry history.", "error")
+      } finally {
+        if (requestId === this.historyRequestId) this.historyBusy = false
+      }
+    },
     applyFilter() {
       if (this.dateFrom && this.dateTo && this.dateFrom > this.dateTo) {
         showSnackbar("The start date is after the end date.", "error")
         return
       }
-      this.viewerKey += 1
-      this.loadViewerEvents()
-    },
-    clearFilter() {
-      this.dateFrom = ""
-      this.dateTo = ""
-      this.applyFilter()
-    },
-    showToday() {
-      this.dateFrom = localDay()
-      this.dateTo = localDay()
-      this.applyFilter()
-    },
-    showYesterday() {
-      this.dateFrom = localDay(1)
-      this.dateTo = localDay(1)
-      this.applyFilter()
-    },
-    showLastWeek() {
-      this.dateFrom = localDay(6)
-      this.dateTo = localDay()
-      this.applyFilter()
+      this.loadHistory({ jumpToNewest: true })
     },
     onPresetChange(preset) {
-      if (preset === "today") return this.showToday()
-      if (preset === "yesterday") return this.showYesterday()
-      if (preset === "week") return this.showLastWeek()
-      return this.clearFilter()
+      const days = { today: [0, 0], yesterday: [1, 1], week: [6, 0] }[preset]
+      this.dateFrom = days ? localDay(days[0]) : ""
+      this.dateTo = days ? localDay(days[1]) : ""
+      this.applyFilter()
     },
     async makeTimelapse() {
       if (this.timelapseBusy) return
@@ -174,29 +172,8 @@ export const Sentry = {
         this.timelapseBusy = false
       }
     },
-    // The viewer needs every event in range (not one page), so it asks for the unpaginated list.
-    // The default range is today, which keeps this small.
-    async loadViewerEvents() {
-      const requestId = ++this.viewerRequestId
-      this.viewerBusy = true
-      try {
-        const payload = await api.getSentryEvents(this.historyRange())
-        if (requestId !== this.viewerRequestId) return
-        this.viewerEvents = Array.isArray(payload?.events) ? payload.events : []
-        this.newEvents = false
-        this.viewerLatestId = String(this.event?.eventId || "")
-      } catch (e) {
-        if (requestId !== this.viewerRequestId) return
-        showSnackbar("Failed to load Sentry events for the viewer.", "error")
-      } finally {
-        if (requestId === this.viewerRequestId) this.viewerBusy = false
-      }
-    },
-    refreshAll() {
-      this.loadViewerEvents()
-    },
     async deleteAllHistory() {
-      const total = this.viewerEvents.length
+      const total = this.history.length
       if (this.deleteBusy || !total) return
       const range = this.historyRange()
       const scoped = this.filterActive
@@ -218,7 +195,7 @@ export const Sentry = {
         const result = await api.deleteSentryEvents({ ...range, all: !scoped })
         const failed = result?.failed ? ` ${result.failed} could not be removed.` : ""
         showSnackbar(`Deleted ${result?.deleted ?? 0} Sentry event${result?.deleted === 1 ? "" : "s"}.${failed}`)
-        await this.loadViewerEvents()
+        await this.loadHistory()
         this.loadStatus()
       } catch (e) {
         showSnackbar(e?.data?.error || e?.message || "Sentry event deletion failed.", "error")
@@ -232,9 +209,8 @@ export const Sentry = {
       if (!this.historyVisible) return
       this.dateFrom = localDay()
       this.dateTo = localDay()
-      this.viewerEvents = []
-      this.viewerKey += 1
-      this.loadViewerEvents()
+      this.history = []
+      this.loadHistory({ jumpToNewest: true })
     },
     numeric(key, fallback) {
       const n = Number(this.params[key])
@@ -369,7 +345,7 @@ export const Sentry = {
     async deleteEvent(eventId) {
       eventId = String(eventId || "")
       if (!eventId || this.deleteBusy) return
-      const matched = this.viewerEvents.find((e) => String(e?.eventId || "") === eventId)
+      const matched = this.history.find((e) => String(e?.eventId || "") === eventId)
         || (String(this.event?.eventId || "") === eventId ? this.event : null)
       const hasImages = Array.isArray(matched?.imageUrls) && matched.imageUrls.length > 0
       if (!(await GalaxyConfirm({
@@ -383,7 +359,7 @@ export const Sentry = {
       this.deleteBusy = true
       try {
         await api.deleteSentryEvent(eventId)
-        this.viewerEvents = this.viewerEvents.filter((e) => String(e?.eventId || "") !== eventId)
+        this.history = this.history.filter((e) => String(e?.eventId || "") !== eventId)
         if (String(this.event?.eventId || "") === eventId) {
           this.event = {}
           this.loadStatus()
@@ -501,8 +477,8 @@ export const Sentry = {
       <GalaxySection title="Latest Event" icon="bi-shield-exclamation" :collapsible="false">
         <div style="padding: var(--sp-3);">
           <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:var(--sp-2);">
-            <button type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" @click="toggleHistory">
-              {{ viewerBusy && !historyVisible ? 'Loading...' : (historyVisible ? 'Hide history' : 'View history') }}
+            <button type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" @click="toggleHistory">
+              {{ historyBusy && !historyVisible ? 'Loading...' : (historyVisible ? 'Hide history' : 'View history') }}
             </button>
             <button type="button" class="gx-btn gx-btn--tonal" :disabled="testBusy" @click="sendTestEvent">
               {{ testBusy ? 'Capturing...' : 'Send test capture' }}
@@ -548,7 +524,7 @@ export const Sentry = {
             <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:var(--sp-2);">
               <label style="flex:1 1 140px;">
                 <div class="gx-row__desc" style="margin:0 0 4px;">Preset</div>
-                <GalaxySelect class="gx-field gx-field--full" aria-label="Date range preset" :value="activePreset || 'custom'" :disabled="viewerBusy" @change="onPresetChange($event.target.value)">
+                <GalaxySelect class="gx-field gx-field--full" aria-label="Date range preset" :value="activePreset || 'custom'" :disabled="historyBusy" @change="onPresetChange($event.target.value)">
                   <option value="today">Today</option>
                   <option value="yesterday">Yesterday</option>
                   <option value="week">Last 7 days</option>
@@ -556,14 +532,14 @@ export const Sentry = {
                   <option v-if="!activePreset" value="custom" disabled>Custom range</option>
                 </GalaxySelect>
               </label>
-              <button v-if="viewerEvents.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || viewerBusy" @click="deleteAllHistory">
+              <button v-if="history.length" type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy || historyBusy" @click="deleteAllHistory">
                 <i class="bi bi-trash"></i> {{ deleteBusy ? 'Deleting...' : (filterActive ? 'Delete matching' : 'Delete all') }}
               </button>
             </div>
-            <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="viewerBusy" style="margin-bottom:var(--sp-2);" @click="refreshAll">New event - refresh</button>
-            <div v-if="viewerBusy && !viewerEvents.length" class="gx-loading">Loading Sentry events...</div>
-            <template v-else-if="viewerEvents.length">
-              <SentryScrubber v-if="captureEvents.length" :key="viewerKey" :events="viewerEvents" :delete-busy="deleteBusy" v-model:camera="viewerCamera" @delete="deleteEvent" @close="toggleHistory" @open-image="openImage">
+            <button v-if="newEvents" type="button" class="gx-btn gx-btn--tonal" :disabled="historyBusy" style="margin-bottom:var(--sp-2);" @click="loadHistory({ jumpToNewest: true })">New event - refresh</button>
+            <div v-if="historyBusy && !history.length" class="gx-loading">Loading Sentry history...</div>
+            <template v-else-if="history.length">
+              <SentryScrubber v-if="captureEvents.length" :key="historyKey" :events="history" :delete-busy="deleteBusy" v-model:camera="viewerCamera" @delete="deleteEvent" @close="toggleHistory" @open-image="openImage">
                 <template #actions>
                   <button type="button" class="gx-btn gx-btn--tonal" :disabled="timelapseBusy || deleteBusy"
                     title="Create a timelapse video of the events in the selected date range" aria-label="Create timelapse video" @click="makeTimelapse">
@@ -580,15 +556,13 @@ export const Sentry = {
                     <div>{{ alert.message || 'Sentry alert' }}</div>
                     <div class="gx-row__desc" style="margin:0;">{{ formatWhen(alert.detectedAt) }}</div>
                   </div>
-                  <button type="button" class="gx-btn gx-btn--danger" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)">
-                    <i class="bi bi-trash"></i> Delete
+                  <button type="button" class="gx-icon-btn" :disabled="deleteBusy" @click="deleteEvent(alert.eventId)" title="Delete event" aria-label="Delete event" style="color:var(--error);">
+                    <i class="bi bi-trash"></i>
                   </button>
                 </div>
               </div>
             </template>
-            <div v-else>
-              <p class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No retained Sentry events.' }}</p>
-            </div>
+            <p v-else class="gx-empty">{{ filterActive ? 'No Sentry events in this date range.' : 'No Sentry events found.' }}</p>
           </div>
         </div>
       </GalaxySection>

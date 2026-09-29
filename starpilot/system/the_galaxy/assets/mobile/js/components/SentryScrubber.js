@@ -347,8 +347,8 @@ export const SentryScrubber = {
           <button type="button" class="gx-btn gx-btn--tonal" :disabled="!hasKind(-1, 'alarm')" @click="jumpKind(-1, 'alarm')">Prev alarm</button>
           <button type="button" class="gx-btn gx-btn--tonal" :disabled="!hasKind(1, 'alarm')" @click="jumpKind(1, 'alarm')">Next alarm</button>
           <slot name="actions"></slot>
-          <button type="button" class="gx-btn gx-btn--danger" style="margin-left:auto;" :disabled="deleteBusy" @click="$emit('delete', current.eventId)">
-            <i class="bi bi-trash"></i> Delete
+          <button type="button" class="gx-icon-btn" style="margin-left:auto; color:var(--error);" :disabled="deleteBusy" @click="$emit('delete', current.eventId)" title="Delete event" aria-label="Delete event">
+            <i class="bi bi-trash"></i>
           </button>
         </div>
         <p class="gx-note">Tap or drag the timeline to jump by real time. Arrow keys step, Home/End jump, Space plays.</p>

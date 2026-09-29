@@ -586,16 +586,45 @@ def test_ui_cameras_hub_vasm_and_pip_native_no_embed():
     assert method in api, f"api.js should expose {method}"
 
 
-def test_ui_sentry_history_opens_the_scrubber_on_today():
-  """View history opens the scrubber directly (no paginated card list), seeded to the current day."""
+def test_ui_sentry_history_opens_on_today_with_range_controls():
+  """View history is seeded to the current day, with presets and a range-scoped bulk delete."""
   sentry = _read("js/views/Sentry.js")
-  for gone in ("HISTORY_PAGE_SIZE", "observeSentinel", "loadHistory", "historyHasMore", "openViewer"):
-    assert gone not in sentry, f"old paginated history list should be removed: {gone}"
-  assert "<SentryScrubber" in sentry
   toggle = sentry[sentry.index("toggleHistory() {"):]
   toggle = toggle[:toggle.index("\n    },")]
   assert "this.dateFrom = localDay()" in toggle and "this.dateTo = localDay()" in toggle
-  assert "loadViewerEvents()" in toggle
+  assert "getSentryEvents(this.historyRange())" in sentry
+  for preset in ('value="today"', 'value="yesterday"', 'value="week"', 'value="all"'):
+    assert preset in sentry
+  assert "api.deleteSentryEvents({ ...range, all: !scoped })" in sentry
+  api = _read("js/api.js")
+  assert 'query.set("all", "1")' in api
+
+
+def test_ui_sentry_history_uses_the_scrubber_and_does_not_rebuild_it_from_the_poll():
+  """History renders in the scrubber; the 5 s status poll only flags new events instead of reloading it."""
+  sentry = _read("js/views/Sentry.js")
+  assert "<SentryScrubber" in sentry and "<article v-for=\"ev in history\"" not in sentry
+  status = sentry[sentry.index("async loadStatus() {"):]
+  status = status[:status.index("\n    },")]
+  assert "loadHistory()" not in status and "this.newEvents = true" in status
+
+
+def test_ui_sentry_new_event_refresh_and_range_changes_jump_to_the_newest_capture():
+  """The scrubber is remounted only after the new list arrives, so it opens on the newest capture; a
+  plain reload (after a delete) keeps the selected event."""
+  sentry = _read("js/views/Sentry.js")
+  load = sentry[sentry.index("async loadHistory("):]
+  load = load[:load.index("\n    },")]
+  assert load.index("this.history = ") < load.index("if (jumpToNewest) this.historyKey += 1")
+  assert sentry.count("this.historyKey += 1") == 1
+  assert '@click="loadHistory({ jumpToNewest: true })">New event - refresh' in sentry
+  for method in ("applyFilter() {", "toggleHistory() {"):
+    body = sentry[sentry.index(method):]
+    body = body[:body.index("\n    },")]
+    assert "this.loadHistory({ jumpToNewest: true })" in body, method
+  delete_all = sentry[sentry.index("async deleteAllHistory() {"):]
+  delete_all = delete_all[:delete_all.index("\n    },")]
+  assert "await this.loadHistory()" in delete_all
 
 
 def test_ui_sentry_history_separates_photo_less_alerts():

@@ -151,6 +151,17 @@
         "settings_tier": "simple"
       },
       {
+        "key": "TeslaAOLDisengageOnBrake",
+        "label": "Disengage AOL on Brake",
+        "description": "Pressing the brake fully turns off Always On Lateral. Steering stays off after the brake is released until openpilot is engaged again or AOL is manually toggled back on.",
+        "picker_description": "Keep steering off after pressing the brake until you deliberately re-engage it.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AlwaysOnLateral",
+        "vehicle_makes": ["Tesla"],
+        "settings_tier": "simple"
+      },
+      {
         "key": "LaneChanges",
         "label": "Lane Changes",
         "description": "Allow openpilot to change lanes.",

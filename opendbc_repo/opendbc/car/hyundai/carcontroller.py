@@ -834,7 +834,7 @@ class CarController(CarControllerBase):
                       not CS.out.gasPressed and not CS.out.brakePressed)
       if pedal_active:
         set_speed = hud_control.setSpeed
-        if not np.isfinite(set_speed) or not 1.0 <= set_speed <= 40.0:
+        if not np.isfinite(set_speed) or set_speed < 1.0:
           self._ray_pedal_gas_last = 0.0
         else:
           speed_error = set_speed - CS.out.vEgo

@@ -2914,7 +2914,6 @@ def _read_gpu_temp_c(thermal_root=None):
 
 LIVE_BATTERY_IDLE_S = 60.0     # stop the subscriber after this long without requests
 LIVE_BATTERY_MAX_AGE_S = 5.0
-LIVE_BATTERY_FIRST_WAIT_S = 0.8
 _LIVE_BATTERY_LOCK = threading.Lock()
 _LIVE_BATTERY_STATE = {"voltage": None, "updated_at": 0.0, "last_request": 0.0, "thread": None}
 
@@ -2943,22 +2942,17 @@ def _live_battery_worker():
 
 
 def _live_battery_voltage():
-  """Latest panda 12V reading in volts, or None. Starts a short-lived peripheralState subscriber on demand."""
+  """Latest panda 12V reading in volts, or None. Starts a short-lived peripheralState subscriber on demand and
+  never waits for it (this runs under the stats lock): the first request after an idle spell returns None."""
   with _LIVE_BATTERY_LOCK:
-    _LIVE_BATTERY_STATE["last_request"] = time.monotonic()
-    started = _LIVE_BATTERY_STATE["thread"] is None
-    if started:
+    now = time.monotonic()
+    _LIVE_BATTERY_STATE["last_request"] = now
+    if _LIVE_BATTERY_STATE["thread"] is None:
       _LIVE_BATTERY_STATE["thread"] = threading.Thread(target=_live_battery_worker, name="galaxy-live-battery", daemon=True)
       _LIVE_BATTERY_STATE["thread"].start()
-
-  deadline = time.monotonic() + (LIVE_BATTERY_FIRST_WAIT_S if started else 0.0)
-  while True:
-    with _LIVE_BATTERY_LOCK:
-      if time.monotonic() - _LIVE_BATTERY_STATE["updated_at"] <= LIVE_BATTERY_MAX_AGE_S:
-        return _LIVE_BATTERY_STATE["voltage"]
-    if time.monotonic() >= deadline:
-      return None
-    time.sleep(0.05)
+    if now - _LIVE_BATTERY_STATE["updated_at"] <= LIVE_BATTERY_MAX_AGE_S:
+      return _LIVE_BATTERY_STATE["voltage"]
+  return None
 
 
 def _read_battery_summary():

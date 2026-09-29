@@ -112,6 +112,71 @@ def test_close_ends_session_and_stops_recording(db_path):
   assert len(rows(db_path, "samples")) == 1
 
 
+def test_stop_writes_open_bucket_and_leaves_session_open(db_path):
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 120, 12400, False)
+  assert monitor.stop(now=t - DT, timeout=5)
+  feed(monitor, t, 900, 12000, False)  # ignored after stop
+
+  (sample,) = rows(db_path, "samples")
+  assert sample["v_mean"] == pytest.approx(12.4)
+  (park,) = rows(db_path, "sessions")
+  assert park["end_reason"] is None  # the next run resumes it or closes it as unknown
+  assert park["n"] == 240
+
+
+def test_close_does_not_wait_for_the_writer(db_path, monkeypatch):
+  gate = threading.Event()
+  write = bm._Writer._write
+
+  def slow_write(self, snapshot):
+    gate.wait(5)
+    write(self, snapshot)
+
+  monkeypatch.setattr(bm._Writer, "_write", slow_write)
+  monitor = make_monitor(db_path)
+  t = 0.0
+  for _ in range(240):
+    make_monitor.now = t
+    monitor.update(t, 12400, False, 2.0)
+    t += DT
+  started = time.monotonic()
+  monitor.close("low_voltage", now=t)
+  assert time.monotonic() - started < 0.5
+  gate.set()
+  assert monitor.stop(timeout=5)
+  (park,) = rows(db_path, "sessions")
+  assert park["end_reason"] == "low_voltage"
+
+
+def test_resume_leaves_marks_in_the_off_gap_empty(db_path):
+  first = make_monitor(db_path)
+  t = feed(first, 0.0, 3000, 12500, False)  # parked 50 min
+  first.stop(now=t - DT, timeout=5)
+
+  # back 12 min later: the 1 h mark fell while the device was off
+  second = make_monitor(db_path, wall_base=WALL0 + t - DT + 720)
+  t = feed(second, 0.0, 601, 12300, False)  # the first flush finds the open session; drained, so the resume lands now
+  feed(second, t, 2.5 * 3600, 12300, False)
+
+  (park,) = rows(db_path, "sessions")
+  assert park["start_ts"] == pytest.approx(WALL0)
+  assert park["v_at_1h"] is None
+  assert park["v_at_3h"] == pytest.approx(12.3, abs=0.01)
+
+
+def test_wall_clock_step_moves_later_rows(db_path):
+  wall = {"base": WALL0}
+  monitor = BatteryMonitor(db_path=db_path, clock_valid=lambda: True, wall_time=lambda: wall["base"] + make_monitor.now)
+  t = feed(monitor, 0.0, 601, 12400, False)
+  wall["base"] += 3600  # NTP correction after the first flush
+  feed(monitor, t, 601, 12400, False)
+
+  first, second = rows(db_path, "samples")
+  assert first["ts_start"] == pytest.approx(WALL0)
+  assert second["ts_start"] == pytest.approx(WALL0 + 3600 + t - DT)  # the second bucket starts at the last reading fed
+
+
 def test_invalid_clock_buffers_until_valid(db_path):
   valid = {"ok": False}
   monitor = make_monitor(db_path, clock_valid=lambda: valid["ok"])

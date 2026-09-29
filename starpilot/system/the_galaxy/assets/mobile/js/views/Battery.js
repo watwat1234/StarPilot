@@ -104,7 +104,7 @@ export const Battery = {
     drivingSpans() {
       const spans = []
       for (const s of this.data?.samples || []) {
-        if (!s.onroad) continue
+        if (!s.onroad || s.ts_end < this.t0) continue
         const last = spans[spans.length - 1]
         if (last && s.ts_start - last.t1 < 60) last.t1 = s.ts_end
         else spans.push({ t0: s.ts_start, t1: s.ts_end })
@@ -139,18 +139,23 @@ export const Battery = {
   },
   methods: {
     async load() {
+      // a quick tab or range switch can leave an older request still running: only the latest one counts
+      const request = ++this.requestId
       this.loading = true
       this.error = ""
       try {
-        this.data = await api.getBatteryHistory(this.days, this.tab === "detail")
+        const data = await api.getBatteryHistory(this.days, this.tab === "detail")
+        if (request === this.requestId) this.data = data
       } catch (err) {
+        if (request !== this.requestId) return
         this.error = err?.message || String(err)
         if (this.data) showSnackbar("Couldn't refresh battery history.", "error")
       } finally {
-        this.loading = false
+        if (request === this.requestId) this.loading = false
       }
     },
   },
+  created() { this.requestId = 0 },
   mounted() { this.load() },
   template: `
     <div class="gx-battery">

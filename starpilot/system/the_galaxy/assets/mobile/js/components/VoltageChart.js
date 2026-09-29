@@ -62,21 +62,23 @@ export const VoltageChart = {
     plotW() { return this.plotR - PAD.l },
     plotH() { return this.height - PAD.t - PAD.b },
     empty() { return !this.series.some((s) => s.points.length) },
-    yDomain() {
+    // the tick step is picked once, from the data range; recomputing it from the rounded domain could pick another
+    yAxis() {
       const values = []
       for (const s of this.series) for (const p of s.points) values.push(p.lo ?? p.v, p.hi ?? p.v)
       if (this.cutoff != null) values.push(this.cutoff)
       const finite = values.filter((v) => Number.isFinite(v))
-      if (!finite.length) return [11.5, 13]
+      if (!finite.length) return { lo: 11.5, hi: 13, step: 0.5 }
       let lo = Math.min(...finite) - 0.1
       let hi = Math.max(...finite) + 0.1
       if (hi - lo < 0.6) { const mid = (hi + lo) / 2; lo = mid - 0.3; hi = mid + 0.3 }
       const step = niceStep(hi - lo)
-      return [Math.floor(lo / step) * step, Math.ceil(hi / step) * step]
+      const round = (v) => Math.round(v * 100) / 100
+      return { lo: round(Math.floor(lo / step) * step), hi: round(Math.ceil(hi / step) * step), step }
     },
+    yDomain() { return [this.yAxis.lo, this.yAxis.hi] },
     yTicks() {
-      const [lo, hi] = this.yDomain
-      const step = niceStep(hi - lo)
+      const { lo, hi, step } = this.yAxis
       const ticks = []
       for (let v = lo; v <= hi + 1e-9; v += step) ticks.push(Math.round(v * 100) / 100)
       return ticks.map((v) => ({ v, y: this.y(v), label: v.toFixed(1) }))
@@ -98,7 +100,8 @@ export const VoltageChart = {
           ticks.push({ t, label: new Date(t * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }) })
         }
       }
-      return ticks.map((tick) => ({ ...tick, x: this.x(tick.t) }))
+      // the hourly start is t0's hour rounded, which can fall before t0 and over the y labels
+      return ticks.filter((tick) => tick.t >= this.t0).map((tick) => ({ ...tick, x: this.x(tick.t) }))
     },
     drawn() {
       const drawn = this.series.map((s) => {
@@ -129,11 +132,12 @@ export const VoltageChart = {
       return drawn
     },
     spanRects() {
-      return this.spans.map((s) => {
+      // drop spans outside the range before the 1 px minimum, or they draw as slivers at the edge
+      return this.spans.filter((s) => s.t1 > this.t0 && s.t0 < this.t1).map((s) => {
         const x0 = this.x(Math.max(s.t0, this.t0))
         const x1 = this.x(Math.min(s.t1, this.t1))
         return { x: x0, w: Math.max(1, x1 - x0) }
-      }).filter((r) => r.w > 0)
+      })
     },
     cutoffY() { return this.cutoff == null ? null : this.y(this.cutoff) },
     tooltip() {

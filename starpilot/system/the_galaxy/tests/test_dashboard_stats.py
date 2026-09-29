@@ -2,6 +2,8 @@ import importlib.util
 import json
 import os
 import sys
+import threading
+import time
 
 import pytest
 
@@ -1187,6 +1189,20 @@ def test_battery_summary_prefers_live_then_falls_back_to_recorded(monkeypatch):
   assert utilities._read_battery_summary() is None
 
 
+def test_live_battery_voltage_never_waits_for_the_subscriber(monkeypatch):
+  started = threading.Event()
+  monkeypatch.setattr(utilities, "_live_battery_worker", started.set)
+  monkeypatch.setattr(utilities, "_LIVE_BATTERY_STATE", {"voltage": None, "updated_at": -1e9, "last_request": 0.0, "thread": None})
+
+  begin = time.monotonic()
+  assert utilities._live_battery_voltage() is None  # it runs under the stats lock, so no waiting for a first reading
+  assert time.monotonic() - begin < 0.2
+  assert started.wait(1)
+
+  utilities._LIVE_BATTERY_STATE.update(voltage=12.5, updated_at=time.monotonic())
+  assert utilities._live_battery_voltage() == 12.5
+
+
 def test_persistent_loader_accepts_decoded_param_dict():
   params = FakeParams({
     utilities.DASHBOARD_PERSISTENT_STATS_PARAM: {
@@ -2135,8 +2151,16 @@ def test_battery_history_endpoint(monkeypatch, tmp_path):
 
   assert client.get("/api/battery/history?days=30&samples=0").get_json()["samples"] == []
   assert client.get("/api/battery/history?days=abc").status_code == 400
+  assert client.get("/api/battery/history?days=nan").status_code == 400
+  assert client.get("/api/battery/history?days=inf").status_code == 400
 
   monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": False, "LowVoltageShutdown": 12.2}))
+  assert client.get("/api/battery/history").get_json()["cutoffV"] == 11.8
+
+  # clamped to the toggle's range
+  monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 14.0}))
+  assert client.get("/api/battery/history").get_json()["cutoffV"] == 12.5
+  monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 0.0}))
   assert client.get("/api/battery/history").get_json()["cutoffV"] == 11.8
 
 

@@ -32,8 +32,7 @@ PARK_OFFSETS_H = (1, 3, 6)
 SMOOTHING_TAU_S = 45.                  # matches PowerMonitoring's car voltage filter
 MAX_PENDING_BUCKETS = 24 * 3600 // SAMPLE_INTERVAL_S  # buckets held in memory while the clock is invalid
 DEFAULT_CUTOFF_V = 11.8                # PowerMonitoring's VBATT_PAUSE_CHARGING, without importing it into the Galaxy
-CLOSE_TIMEOUT_S = 2.0                  # how long close() waits for the writer before a shutdown
-
+STOP_TIMEOUT_S = 2.0                   # how long stop() waits for the writer; manager SIGKILLs hardwared after 5 s
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
   ts_start REAL NOT NULL,
@@ -156,7 +155,7 @@ class BatteryMonitor:
     self._wall_time = wall_time
     self._filter = FirstOrderFilter(0., SMOOTHING_TAU_S, DT_HW, initialized=False)
     self._writer = _Writer(self.db_path)
-    self._offset: float | None = None   # wall time minus monotonic time, fixed once the clock is valid
+    self._offset: float | None = None   # wall time minus monotonic time, measured at each flush once the clock is valid
     self._pending: list[_Bucket] = []   # finished buckets not yet handed to the writer
     self._bucket: _Bucket | None = None
     self._session: _Session | None = None
@@ -168,7 +167,7 @@ class BatteryMonitor:
     """Feed one reading. now is time.monotonic(); voltage_mv is the panda's instant voltage."""
     if self._closed or not voltage_mv or voltage_mv <= 0:
       return
-    self._apply_resume()
+    self._apply_resume(now)
     v = voltage_mv / 1000.
     smoothed = self._filter.update(v)
 
@@ -194,34 +193,52 @@ class BatteryMonitor:
       self._flush(now)
 
   def close(self, reason: str, now: float | None = None):
-    """End the open session (e.g. reason="low_voltage" before a shutdown) and write everything out.
-    Waits up to CLOSE_TIMEOUT_S for the writer, so the data is on disk before the device powers off."""
+    """End the open session (e.g. reason="low_voltage" when hardwared decides to shut down) and hand everything
+    to the writer. Doesn't wait for it; stop() does that once hardwared's loop exits."""
     if self._closed:
       return
     now = time.monotonic() if now is None else now
     self._end_bucket()
     if self._session is not None:
       self._end_session(reason)
-    self._flush(now)
+    self._flush(now, final=True)
     self._closed = True
-    self._writer.drain(CLOSE_TIMEOUT_S)
+
+  def stop(self, now: float | None = None, timeout: float | None = STOP_TIMEOUT_S) -> bool:
+    """hardwared is exiting: hand off the open bucket and session, then wait up to timeout for the writer.
+    The session is left open, so the next run resumes it or closes it as "unknown"."""
+    if not self._closed:
+      now = time.monotonic() if now is None else now
+      self._end_bucket()
+      self._flush(now, final=True)
+      self._closed = True
+    return self._writer.drain(timeout)
 
   def drain(self, timeout: float | None = None) -> bool:
-    """Wait until everything handed to the writer so far is processed. For tests and shutdown."""
+    """Wait until everything handed to the writer so far is processed."""
     return self._writer.drain(timeout)
 
   def _new_session(self, kind: str, now: float, start_flag: str) -> _Session:
     self._seq += 1
     return _Session(kind, now, now, start_flag, seq=self._seq)
 
-  def _apply_resume(self):
+  def _apply_resume(self, now: float):
     # The writer found that this run continues a session the previous run left open: adopt its start, so
     # v_at_Nh is measured from the real start of the park
     resumed = self._writer.resumed()
     if resumed is None or self._session is None or self._session.seq != resumed["seq"]:
       return
-    self._session.start = resumed["start_ts"] - self._offset
-    self._session.v_at.update(resumed["v_at"])
+    session = self._session
+    session.start = resumed["start_ts"] - self._offset
+    v_at = {}
+    for hours in PARK_OFFSETS_H:
+      if hours in resumed["v_at"]:
+        v_at[hours] = resumed["v_at"][hours]
+      elif session.start + hours * 3600 <= now:
+        # the mark fell while the device was off (or earlier in this run, timed from the wrong start): there is
+        # no reading from then, so leave it empty rather than store a later one
+        v_at[hours] = None
+    session.v_at = v_at
 
   def _end_bucket(self):
     if self._bucket is not None and self._bucket.n:
@@ -234,11 +251,14 @@ class BatteryMonitor:
     self._ended.append(self._session)
     self._session = None
 
-  def _flush(self, now: float):
-    if self._offset is None:
-      if not self._clock_valid():
-        return
+  def _flush(self, now: float, final: bool = False):
+    # Measured again at every flush, so a later NTP/GPS correction also moves the rows stamped after it
+    if self._clock_valid():
       self._offset = self._wall_time() - now
+    elif self._offset is None:
+      if final:
+        cloudlog.warning(f"battery_monitor: wall clock never became valid, dropping {len(self._pending)} buckets")
+      return
 
     sessions = self._ended + ([self._session] if self._session is not None else [])
     self._writer.submit(_Snapshot(
@@ -415,7 +435,7 @@ def _read_connection(db_path: str) -> sqlite3.Connection | None:
   return db
 
 
-def read_history(days: float, db_path: str | None = None, now: float | None = None) -> dict:
+def read_history(days: float, db_path: str | None = None, now: float | None = None, include_samples: bool = True) -> dict:
   """Samples and sessions that ended within the last `days` days (open sessions included), oldest first."""
   now = time.time() if now is None else now  # noqa: TID251
   since = now - days * 86400
@@ -423,8 +443,10 @@ def read_history(days: float, db_path: str | None = None, now: float | None = No
   if db is None:
     return {"samples": [], "sessions": []}
   try:
-    samples = db.execute("SELECT ts_start, ts_end, v_min, v_mean, v_max, onroad, draw_w FROM samples WHERE ts_end >= ? ORDER BY ts_start",
-                         (since,)).fetchall()
+    samples = []
+    if include_samples:
+      samples = db.execute("SELECT ts_start, ts_end, v_min, v_mean, v_max, onroad, draw_w FROM samples WHERE ts_end >= ? ORDER BY ts_start",
+                           (since,)).fetchall()
     sessions = db.execute("SELECT * FROM sessions WHERE end_ts >= ? OR end_reason IS NULL ORDER BY start_ts", (since,)).fetchall()
   finally:
     db.close()

@@ -8508,23 +8508,27 @@ def setup(app):
     from openpilot.starpilot.system import battery_monitor
 
     try:
-      days = min(max(float(request.args.get("days", 30)), 1.0), 400.0)
+      days = float(request.args.get("days", 30))
     except ValueError:
+      days = math.nan
+    if not math.isfinite(days):
       return jsonify({"error": "days must be a number."}), 400
+    days = min(max(days, 1.0), 400.0)
 
-    cutoff = params.get_float("LowVoltageShutdown") if params.get_bool("DeviceManagement") else 0.0
+    # Same range as the toggle (starpilot_variables: low_voltage_shutdown)
+    cutoff = battery_monitor.DEFAULT_CUTOFF_V
+    if params.get_bool("DeviceManagement"):
+      cutoff = min(max(params.get_float("LowVoltageShutdown"), battery_monitor.DEFAULT_CUTOFF_V), 12.5)
     try:
-      history = battery_monitor.read_history(days)
+      history = battery_monitor.read_history(days, include_samples=request.args.get("samples") != "0")
     except Exception as exception:
       return jsonify({"error": f"Battery history unavailable: {exception}"}), 500
-    if request.args.get("samples") == "0":
-      history["samples"] = []
 
     return jsonify({
       **history,
       "days": days,
       "now": time.time(),  # noqa: TID251 (rows are wall-clock stamped)
-      "cutoffV": cutoff if cutoff > 0 else battery_monitor.DEFAULT_CUTOFF_V,
+      "cutoffV": cutoff,
       "sampleIntervalS": battery_monitor.SAMPLE_INTERVAL_S,
       "sampleRetentionDays": battery_monitor.SAMPLE_RETENTION_S / 86400,
       "live": utilities._read_battery_summary(),

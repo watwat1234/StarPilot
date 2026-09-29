@@ -699,6 +699,12 @@ def hardware_thread(end_event, hw_queue) -> None:
     # StarPilot variables
     starpilot_toggles = get_starpilot_toggles(sm, read_persisted_force_params=True)
 
+  # manager stops hardwared (SIGINT) on every reboot, shutdown and update: write out the last readings
+  try:
+    battery_monitor.stop()
+  except Exception:
+    cloudlog.exception("battery_monitor stop failed")
+
 
 def main():
   hw_queue = queue.Queue(maxsize=1)

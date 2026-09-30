@@ -11,6 +11,7 @@ const DETAIL_RANGES = [1, 7, 30]
 const MIN_DRIVE_S = 300
 const PARK_ROWS = 50
 const SAMPLE_ROWS = 200
+const LIVE_RETRY_MS = 2500
 // fallbacks until the first response; the server sends the device's values
 const THERMAL_DEFAULTS = { dangerC: 85, overheatedC: 100, parkedFanCapPct: 30 }
 
@@ -36,11 +37,12 @@ export function batteryStatus(voltage, onroad) {
   return { level: "critical", icon: "bi-x-octagon-fill", label: "Very low" }
 }
 
-// Parked device temperature against hardwared's limits: above dangerC offroad it won't start a drive
-export function parkedTempStatus(tempC, thermal = THERMAL_DEFAULTS) {
-  if (tempC == null) return null
-  if (tempC >= thermal.overheatedC) return { level: "critical", icon: "bi-x-octagon-fill", label: "Overheated" }
-  if (tempC >= thermal.dangerC) return { level: "warning", icon: "bi-exclamation-triangle-fill", label: "Too hot to drive" }
+// Parked device temperature against hardwared's limits. hotS is the time hardwared itself held the device over the
+// parked limit (offroad 5 min and above dangerC, filtered), when it won't start a drive
+export function parkedTempStatus(peakC, hotS, thermal = THERMAL_DEFAULTS) {
+  if (peakC == null) return null
+  if (peakC >= thermal.overheatedC) return { level: "critical", icon: "bi-x-octagon-fill", label: "Overheated" }
+  if (hotS > 0) return { level: "warning", icon: "bi-exclamation-triangle-fill", label: "Too hot to drive" }
   return { level: "good", icon: "bi-check-circle-fill", label: "OK" }
 }
 
@@ -169,10 +171,11 @@ export const DeviceHistory = {
       const parks = this.thermalParks
       if (!parks.length) return null
       const peak = maxOf(parks.map((p) => p.soc_max))
+      const hot = parks.reduce((sum, p) => sum + (p.s_hot || 0), 0)
       return [
-        { label: "Hottest while parked", value: fmtC(peak), status: parkedTempStatus(peak, this.thermal) },
+        { label: "Hottest while parked", value: fmtC(peak), status: parkedTempStatus(peak, hot, this.thermal) },
         { label: "Hottest cabin air", value: fmtC(maxOf(parks.map((p) => p.intake_max))), note: "at the device's fan intake" },
-        { label: `Parked at ${this.thermal.dangerC} °C or more`, value: fmtHot(parks.reduce((sum, p) => sum + (p.s_hot || 0), 0)), note: `over ${parks.length} parks` },
+        { label: "Over the parked limit", value: fmtHot(hot), note: `${this.thermal.dangerC} °C, over ${parks.length} parks` },
       ]
     },
     parkTempSeries() {
@@ -189,7 +192,7 @@ export const DeviceHistory = {
     parkHotSeries() {
       const points = this.thermalParks.filter((p) => p.s_hot != null && p.start_ts >= this.t0)
         .map((p) => ({ t: p.start_ts, v: p.s_hot / 3600, note: `parked ${fmtDuration(p.duration)} · peak ${fmtC(p.soc_max)}` }))
-      return [{ key: "hot", label: `Time at ${this.thermal.dangerC} °C or more`, color: "var(--vc-2)", points }]
+      return [{ key: "hot", label: "Time over the parked limit", color: "var(--vc-2)", points }]
     },
     driveTempSeries() {
       const points = this.drives.filter((s) => s.soc_max != null)
@@ -250,7 +253,14 @@ export const DeviceHistory = {
       this.error = ""
       try {
         const response = await api.getDeviceHistory(this.days, this.tab === "detail", this.metric)
-        if (request === this.requestId) this.response = response
+        if (request !== this.requestId) return
+        this.response = response
+        // the Galaxy's live 12V subscriber starts on request and isn't waited for: ask once more when it has a reading
+        if (this.metric === "battery" && !response?.live?.live && !this.liveRetried) {
+          this.liveRetried = true
+          clearTimeout(this.liveTimer)
+          this.liveTimer = setTimeout(() => this.load(), LIVE_RETRY_MS)
+        }
       } catch (err) {
         if (request !== this.requestId) return
         this.error = err?.message || String(err)
@@ -262,9 +272,15 @@ export const DeviceHistory = {
   },
   created() {
     this.requestId = 0
-    // the page used to be /battery
-    if (store.route === "/battery") window.location.replace("#/history")
+    this.liveRetried = false
+    // the page used to be /battery: replace it, in the Galaxy's own back stack too, so Back leaves the page
+    if (store.route === "/battery") {
+      const i = store.history.lastIndexOf("/battery")
+      if (i >= 0) store.history.splice(i, 1)
+      window.location.replace("#/history")
+    }
   },
+  beforeUnmount() { clearTimeout(this.liveTimer) },
   mounted() { this.load() },
   template: `
     <div class="gx-history">
@@ -350,14 +366,14 @@ export const DeviceHistory = {
         <template v-else>
           <section class="gx-card gx-history__chart">
             <h3>Parked temperatures</h3>
-            <p class="gx-note">One point per park: the device's peak (hottest of CPU, GPU, memory and power chips) and the cabin air at its fan intake. While parked, the fan is capped at {{ thermal.parkedFanCapPct }}% and nothing shuts the device down for heat; above {{ thermal.dangerC }} °C it won't start a drive until it cools.</p>
+            <p class="gx-note">One point per park: the device's peak (hottest of CPU, GPU, memory and power chips) and the cabin air at its fan intake. While parked, the fan is capped at {{ thermal.parkedFanCapPct }}% and nothing shuts the device down for heat; after 5 minutes above {{ thermal.dangerC }} °C (the parked limit) it won't start a drive until it cools.</p>
             <HistoryChart unit="°C" :series="parkTempSeries" :t0="t0" :t1="now" :ref-lines="tempLines" aria-label="Peak device and cabin temperature per park" />
           </section>
 
           <section class="gx-card gx-history__chart">
-            <h3>Time at {{ thermal.dangerC }} °C or more</h3>
-            <p class="gx-note">Hours per park with the device at or above the parked limit.</p>
-            <HistoryChart unit="h" :series="parkHotSeries" :t0="t0" :t1="now" :height="160" gutter :aria-label="'Hours at ' + thermal.dangerC + ' °C or more, per park'" />
+            <h3>Time over the parked limit</h3>
+            <p class="gx-note">Hours per park the device spent over {{ thermal.dangerC }} °C by the device's own count, unable to start a drive.</p>
+            <HistoryChart unit="h" :series="parkHotSeries" :t0="t0" :t1="now" :height="160" gutter aria-label="Hours over the parked limit, per park" />
           </section>
 
           <section class="gx-card gx-history__chart">
@@ -373,7 +389,7 @@ export const DeviceHistory = {
             </div>
             <div v-if="showTable" class="gx-history__scroll" tabindex="0" aria-label="Park temperature table">
               <table>
-                <thead><tr><th>Parked</th><th>Length</th><th>Cabin at start</th><th>Cabin peak</th><th>Device peak</th><th>Device avg</th><th>Over cabin</th><th>Fan</th><th>At {{ thermal.dangerC }} °C+</th><th>Ended</th></tr></thead>
+                <thead><tr><th>Parked</th><th>Length</th><th>Cabin at start</th><th>Cabin peak</th><th>Device peak</th><th>Device avg</th><th>Over cabin</th><th>Fan</th><th>Over limit</th><th>Ended</th></tr></thead>
                 <tbody>
                   <tr v-for="row in parkTempRows" :key="row.key">
                     <td>{{ row.start }}<small v-if="row.note"> ({{ row.note }})</small></td><td>{{ row.duration }}</td><td>{{ row.cabinStart }}</td><td>{{ row.cabinPeak }}</td><td>{{ row.peak }}</td><td>{{ row.mean }}</td><td>{{ row.overCabin }}</td><td>{{ row.fan }}</td><td>{{ row.hot }}</td><td>{{ row.reason }}</td>
@@ -443,7 +459,7 @@ export const DeviceHistory = {
             </div>
             <div v-if="showTable" class="gx-history__scroll" tabindex="0" aria-label="Temperature samples table">
               <table>
-                <thead><tr><th>Time</th><th>Device avg</th><th>Device peak</th><th>CPU peak</th><th>GPU peak</th><th>Cabin</th><th>Exhaust</th><th>Fan</th><th>At {{ thermal.dangerC }} °C+</th><th>State</th></tr></thead>
+                <thead><tr><th>Time</th><th>Device avg</th><th>Device peak</th><th>CPU peak</th><th>GPU peak</th><th>Cabin</th><th>Exhaust</th><th>Fan</th><th>Over limit</th><th>State</th></tr></thead>
                 <tbody>
                   <tr v-for="row in sampleTempRows" :key="row.key"><td>{{ row.time }}</td><td>{{ row.mean }}</td><td>{{ row.peak }}</td><td>{{ row.cpu }}</td><td>{{ row.gpu }}</td><td>{{ row.cabin }}</td><td>{{ row.exhaust }}</td><td>{{ row.fan }}</td><td>{{ row.hot }}</td><td>{{ row.state }}</td></tr>
                   <tr v-if="!sampleTempRows.length"><td colspan="10" class="gx-empty">No samples in this range.</td></tr>

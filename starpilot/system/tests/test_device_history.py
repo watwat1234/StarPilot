@@ -308,7 +308,7 @@ def test_read_history_and_latest(db_path):
   assert latest["voltage"] == pytest.approx(14.0)
 
 
-HOT = Thermal(soc=90.0, cpu=88.0, gpu=90.0, mem=80.0, intake=50.0, exhaust=60.0, fan_pct=30, fan_rpm=2500, overheated=True)
+HOT = Thermal(soc=90.0, cpu=88.0, gpu=90.0, mem=80.0, intake=50.0, exhaust=60.0, fan_pct=30, fan_rpm=2500, hot=True, overheated=True)
 WARM = Thermal(soc=70.0, cpu=68.0, gpu=70.0, mem=65.0, intake=40.0, exhaust=50.0, fan_pct=20, fan_rpm=1500)
 
 
@@ -462,13 +462,14 @@ def test_read_history_selects_metric_columns(db_path):
     read_history(1, db_path=db_path, now=now, metric="nope")
 
 
-def test_thresholds_match_hardwared_on_mici():
+@pytest.mark.parametrize("device_type", ["mici", "tizi"])
+def test_thermal_limits_match_hardwared(device_type):
   # hardwared and fan_controller pick their thresholds at import, from the device type: check them in a fresh
-  # interpreter with the type patched to mici, instead of reloading them in this one
-  code = """
+  # interpreter with the type patched, instead of reloading them in this one
+  code = f"""
 from unittest import mock
 import openpilot.system.hardware as hw
-with mock.patch.object(hw.HARDWARE, "get_device_type", return_value="mici"):
+with mock.patch.object(hw.HARDWARE, "get_device_type", return_value="{device_type}"):
   from openpilot.system.hardware import hardwared, fan_controller
 bands = hardwared.THERMAL_BANDS
 fan = fan_controller.TiciFanController()
@@ -476,4 +477,44 @@ print(hardwared.OFFROAD_DANGER_TEMP, bands[hardwared.ThermalStatus.ok].max_temp,
       max(fan.update(110.0, False) for _ in range(200)))
 """
   out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True).stdout.split()
-  assert [float(x) for x in out] == [dh.DANGER_TEMP_C, dh.OVERHEATED_TEMP_C, dh.PARKED_FAN_CAP_PCT]
+  limits = dh.thermal_limits(device_type)
+  assert [float(x) for x in out] == [limits["dangerC"], limits["overheatedC"], limits["parkedFanCapPct"]]
+
+
+def test_boot_session_is_handed_over_at_once(db_path):
+  monitor = make_monitor(db_path)
+  feed(monitor, 0.0, 1, 12500, False)  # well before the first bucket closes
+  (park,) = rows(db_path, "sessions")
+  assert park["start_flag"] == "ign_off_at_boot"
+  assert rows(db_path, "samples") == []
+
+
+def test_resume_keeps_a_mark_that_fell_in_this_run(db_path):
+  first = make_monitor(db_path)
+  t = feed(first, 0.0, 3000, 12500, False)  # parked 50 min, then a reboot
+  first.stop(now=t - DT, timeout=5)
+
+  # back 5 min later: the 1 h mark falls 5 min into this run, before its first bucket closes
+  second = make_monitor(db_path, wall_base=WALL0 + t - DT + 300)
+  t = feed(second, 0.0, DT, 12300, False)  # one reading hands the session over; drained, so the resume lands next
+  feed(second, t, 601, 12300, False)
+
+  (park,) = rows(db_path, "sessions")
+  assert park["start_ts"] == pytest.approx(WALL0)
+  assert park["v_at_1h"] == pytest.approx(12.3, abs=0.01)
+
+
+def test_readers_use_the_legacy_database_until_it_moves(tmp_path, monkeypatch):
+  legacy = tmp_path / "battery_monitor" / "battery.db"
+  legacy.parent.mkdir()
+  old_schema_db(str(legacy)).close()
+  monkeypatch.setattr(dh, "_legacy_db_path", lambda: str(legacy))
+  monkeypatch.setattr(dh, "default_db_path", lambda: str(tmp_path / "device_history" / "device.db"))
+
+  battery = read_history(1, now=WALL0)
+  assert len(battery["samples"]) == 1
+  assert battery["sessions"][0]["end_reason"] == "ignition"
+  thermal = read_history(1, now=WALL0, metric="thermal")  # no temperature columns in the old schema
+  assert thermal["samples"] == []
+  assert len(thermal["sessions"]) == 1
+  assert latest_sample()["voltage"] == pytest.approx(12.2)

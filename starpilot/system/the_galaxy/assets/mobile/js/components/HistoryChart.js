@@ -214,14 +214,17 @@ export const HistoryChart = {
             <text v-for="tick in yTicks" :key="'yl' + tick.v" :x="${PAD.l - 6}" :y="tick.y + 4" text-anchor="end">{{ tick.label }}</text>
             <text v-for="tick in xTicks" :key="'xl' + tick.t" :x="tick.x" :y="height - 8" text-anchor="middle">{{ tick.label }}</text>
           </g>
-          <g v-for="r in refsDrawn" :key="'r' + r.value" class="gx-vchart__ref">
-            <line :x1="${PAD.l}" :x2="plotR" :y1="r.y" :y2="r.y" />
-            <text :x="plotR" :y="r.labelY" text-anchor="end">{{ r.text }}</text>
+          <g class="gx-vchart__ref">
+            <line v-for="r in refsDrawn" :key="'r' + r.value" :x1="${PAD.l}" :x2="plotR" :y1="r.y" :y2="r.y" />
           </g>
           <g v-for="s in drawn" :key="s.key" :style="{ color: s.color }">
             <path v-if="s.bandPath" :d="s.bandPath" class="gx-vchart__band" />
             <path v-if="s.line" :d="s.line" class="gx-vchart__line" />
             <circle v-for="(d, i) in s.dotsXY" :key="i" :cx="d.x" :cy="d.y" r="4" class="gx-vchart__dot" />
+          </g>
+          <!-- labels over the data, on their surface-coloured halo, so a line crossing one can't hide it -->
+          <g class="gx-vchart__ref">
+            <text v-for="r in refsDrawn" :key="'rl' + r.value" :x="plotR" :y="r.labelY" text-anchor="end">{{ r.text }}</text>
           </g>
           <text v-for="s in drawn.filter((d) => d.endLabel)" :key="'e' + s.key" :x="s.endLabel.x" :y="s.endLabel.y" class="gx-vchart__end">{{ s.label }}</text>
           <line v-if="hover" :x1="hover.x" :x2="hover.x" :y1="${PAD.t}" :y2="${PAD.t} + plotH" class="gx-vchart__crosshair" />

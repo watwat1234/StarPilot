@@ -2140,7 +2140,8 @@ def test_device_history_endpoint(monkeypatch, tmp_path):
   app = server.Flask("device_history_test", template_folder=str(MODULE_DIR / "templates"), static_folder=str(MODULE_DIR / "assets"))
   server.setup(app)
   monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 11.9}))
-  monkeypatch.setattr(server.utilities, "_read_battery_summary", lambda: None)
+  monkeypatch.setattr(server.utilities, "_read_battery_summary", lambda: {"voltage": 12.4, "live": True, "updatedAt": None})
+  monkeypatch.setattr(server.HARDWARE, "get_device_type", lambda: "mici")
   client = app.test_client()
 
   payload = client.get("/api/device-history?days=3650").get_json()
@@ -2148,6 +2149,7 @@ def test_device_history_endpoint(monkeypatch, tmp_path):
   assert payload["metric"] == "battery"
   assert payload["cutoffV"] == 11.9
   assert payload["thermal"] == {"dangerC": 85.0, "overheatedC": 100.0, "parkedFanCapPct": 30}
+  assert payload["live"]["voltage"] == 12.4
   assert len(payload["samples"]) == 1
   assert payload["samples"][0]["v_mean"] == pytest.approx(12.4)
   assert "soc_mean" not in payload["samples"][0]
@@ -2159,6 +2161,10 @@ def test_device_history_endpoint(monkeypatch, tmp_path):
   assert payload["samples"][0]["soc_mean"] == pytest.approx(70.0)
   assert payload["samples"][0]["intake_mean"] == pytest.approx(40.0)
   assert "v_mean" not in payload["samples"][0]
+  assert payload["live"] is None  # only the battery view shows it
+
+  monkeypatch.setattr(server.HARDWARE, "get_device_type", lambda: "tizi")
+  assert client.get("/api/device-history").get_json()["thermal"] == {"dangerC": 75.0, "overheatedC": 96.0, "parkedFanCapPct": 30}
 
   assert client.get("/api/device-history?days=30&samples=0").get_json()["samples"] == []
   assert client.get("/api/device-history?metric=gpu").status_code == 400

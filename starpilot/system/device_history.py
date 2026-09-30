@@ -11,7 +11,7 @@ load included, plus the parked drop rate.
 
 Temperatures: the question is what staying on while parked in a hot car does to the device. Each park records the
 peak and mean SoC temperature, the cabin air at the intake and how much the device adds over it (self-heating), the
-fan (capped at PARKED_FAN_CAP_PCT without ignition) and the time at or above the offroad danger temperature. For a
+fan (capped at PARKED_FAN_CAP_PCT without ignition) and the time over hardwared's parked limit (s_hot). For a
 park that starts at boot, intake_at_start is the cabin air the device sat in while it was off.
 
 Raw buckets are only kept for SAMPLE_RETENTION_S; sessions are kept forever.
@@ -40,11 +40,19 @@ SMOOTHING_TAU_S = 45.                  # matches PowerMonitoring's car voltage f
 MAX_PENDING_BUCKETS = 24 * 3600 // SAMPLE_INTERVAL_S  # buckets held in memory while the clock is invalid
 DEFAULT_CUTOFF_V = 11.8                # PowerMonitoring's VBATT_PAUSE_CHARGING, without importing it into the Galaxy
 STOP_TIMEOUT_S = 2.0                   # how long stop() waits for the writer; manager SIGKILLs hardwared after 5 s
-# comma 4 (mici) thresholds, duplicated to keep hardwared out of the Galaxy (tests pin them). hardwared passes its
-# own OFFROAD_DANGER_TEMP to the recorder, so these only label the Galaxy charts.
-DANGER_TEMP_C = 85.                    # OFFROAD_DANGER_TEMP: offroad and above it, thermal status goes critical
-OVERHEATED_TEMP_C = 100.               # THERMAL_BANDS[ok].max_temp: above it, overheated (back to ok below 92)
+# hardwared's limits per device type, duplicated to keep hardwared out of the Galaxy (a test pins them). They only
+# label the Galaxy charts: hardwared tells the recorder itself when the parked limit is hit (Thermal.hot).
+# dangerC: OFFROAD_DANGER_TEMP, offroad above it (for 5 min) the thermal status goes critical and no drive starts.
+# overheatedC: THERMAL_BANDS[ok].max_temp, above it overheated (left again below THERMAL_BANDS[overheated].min_temp).
+THERMAL_LIMITS = {
+  "mici": {"dangerC": 85., "overheatedC": 100.},
+  "other": {"dangerC": 75., "overheatedC": 96.},
+}
 PARKED_FAN_CAP_PCT = 30                # TiciFanController's limit without ignition
+
+
+def thermal_limits(device_type: str) -> dict:
+  return {**THERMAL_LIMITS["mici" if device_type == "mici" else "other"], "parkedFanCapPct": PARKED_FAN_CAP_PCT}
 # The first version of the tables. Every column added since is nullable REAL and comes from the stats tables below;
 # _Writer adds whichever are missing, so a fresh database and one from an older version end up the same.
 SCHEMA = """
@@ -152,6 +160,7 @@ class Thermal:
   exhaust: float | None = None
   fan_pct: float | None = None  # desired fan speed, %
   fan_rpm: float | None = None
+  hot: bool = False             # hardwared's parked limit: offroad 5 min and over OFFROAD_DANGER_TEMP, no drive starts
   overheated: bool = False      # thermal status overheated or critical
 
 
@@ -274,7 +283,7 @@ class _Session:
 class DeviceHistory:
   # Rows outlive reboots, so they are stamped with wall time (once it is valid), not monotonic time
   def __init__(self, db_path: str | None = None, clock_valid=system_time_valid, wall_time=time.time,  # noqa: TID251
-               offroad_danger_temp: float = DANGER_TEMP_C, legacy_path: str | None = None):
+               legacy_path: str | None = None):
     """legacy_path: an older database to move to db_path before the first write. Defaults to the battery-only
     version's path when db_path is the default too."""
     if legacy_path is None and db_path is None:
@@ -282,7 +291,6 @@ class DeviceHistory:
     self.db_path = db_path or default_db_path()
     self._clock_valid = clock_valid
     self._wall_time = wall_time
-    self._danger_temp = offroad_danger_temp
     self._filter = FirstOrderFilter(0., SMOOTHING_TAU_S, DT_HW, initialized=False)
     self._writer = _Writer(self.db_path, legacy_path)
     self._offset: float | None = None   # wall time minus monotonic time, measured at each flush once the clock is valid
@@ -292,6 +300,7 @@ class DeviceHistory:
     self._ended: list[_Session] = []    # finished sessions not yet handed to the writer
     self._seq = 0
     self._closed = False
+    self._handed_off = False          # a snapshot has gone to the writer
 
   def update(self, now: float, voltage_mv: float | None, ignition: bool, power_draw_w: float = 0.,
              thermal: Thermal | None = None):
@@ -321,7 +330,9 @@ class DeviceHistory:
     if now - self._bucket.start >= SAMPLE_INTERVAL_S:
       self._end_bucket()
       self._flush(now)
-    elif edge:
+    elif edge or not self._handed_off:
+      # hand the boot session over at once (as soon as the clock is valid): the writer then finds a session the
+      # last run left open, and the resume lands before any v_at_Nh mark this run records could fall
       self._flush(now)
 
   def _thermal_reading(self, thermal: Thermal | None) -> dict:
@@ -338,7 +349,7 @@ class DeviceHistory:
       "fan_rpm": thermal.fan_rpm,
       "self_heat": None if thermal.intake is None else thermal.soc - thermal.intake,
       # each reading stands for one hardwared cycle
-      "s_hot": DT_HW if thermal.soc >= self._danger_temp else 0.,
+      "s_hot": DT_HW if thermal.hot else 0.,
       "s_overheated": DT_HW if thermal.overheated else 0.,
     }
 
@@ -416,6 +427,7 @@ class DeviceHistory:
       sessions=[(s.seq, s.values(self._offset)) for s in sessions],
       wall_now=now + self._offset,
     ))
+    self._handed_off = True
     self._pending.clear()
     self._ended.clear()
 
@@ -605,6 +617,17 @@ class _Writer:
     return False
 
 
+def _read_path(db_path: str | None) -> tuple[str, bool]:
+  """The database to read, and whether it's the battery-only version's: hardwared moves that one on its first write
+  (up to SAMPLE_INTERVAL_S after it starts), so until then the Galaxy reads it where it is."""
+  if db_path is not None:
+    return db_path, False
+  path = default_db_path()
+  if os.path.isfile(path) or not os.path.isfile(_legacy_db_path()):
+    return path, False
+  return _legacy_db_path(), True
+
+
 def _read_connection(db_path: str) -> sqlite3.Connection | None:
   if not os.path.isfile(db_path):
     return None
@@ -621,7 +644,10 @@ def read_history(days: float, db_path: str | None = None, now: float | None = No
   columns = METRIC_SAMPLE_COLUMNS[metric]
   now = time.time() if now is None else now  # noqa: TID251
   since = now - days * 86400
-  db = _read_connection(db_path or default_db_path())
+  path, legacy = _read_path(db_path)
+  if legacy and metric != "battery":
+    include_samples = False  # the battery-only version has no temperature columns
+  db = _read_connection(path)
   if db is None:
     return {"samples": [], "sessions": []}
   try:
@@ -638,7 +664,7 @@ def read_history(days: float, db_path: str | None = None, now: float | None = No
 
 
 def latest_sample(db_path: str | None = None) -> dict | None:
-  db = _read_connection(db_path or default_db_path())
+  db = _read_connection(_read_path(db_path)[0])
   if db is None:
     return None
   try:

@@ -8533,14 +8533,11 @@ def setup(app):
       "days": days,
       "now": time.time(),  # noqa: TID251 (rows are wall-clock stamped)
       "cutoffV": cutoff,
-      "thermal": {
-        "dangerC": device_history.DANGER_TEMP_C,
-        "overheatedC": device_history.OVERHEATED_TEMP_C,
-        "parkedFanCapPct": device_history.PARKED_FAN_CAP_PCT,
-      },
+      "thermal": device_history.thermal_limits(HARDWARE.get_device_type()),
       "sampleIntervalS": device_history.SAMPLE_INTERVAL_S,
       "sampleRetentionDays": device_history.SAMPLE_RETENTION_S / 86400,
-      "live": utilities._read_battery_summary(),
+      # only the battery view shows it, and it starts the on-demand peripheralState subscriber
+      "live": utilities._read_battery_summary() if metric == "battery" else None,
       "onroad": params.get_bool("IsOnroad"),
     }), 200
 

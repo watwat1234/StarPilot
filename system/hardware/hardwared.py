@@ -344,7 +344,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   params = Params()
   power_monitor = PowerMonitoring()
-  device_history = DeviceHistory(offroad_danger_temp=OFFROAD_DANGER_TEMP)
+  device_history = DeviceHistory()
   chestnut = Chestnut() if AGNOS else None
   chestnut_status = ChestnutStatus() if AGNOS else None
 
@@ -581,7 +581,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     # 12V battery and temperature history for the Galaxy (must never take hardwared down)
     try:
       ds = msg.deviceState
-      thermal = Thermal(
+      thermal = None if not voltage else Thermal(
         soc=max(temp_sources),
         cpu=max(ds.cpuTempC, default=None),
         gpu=max(ds.gpuTempC, default=None),
@@ -590,6 +590,7 @@ def hardware_thread(end_event, hw_queue) -> None:
         exhaust=ds.exhaustTempC if thermal_config.exhaust is not None else None,
         fan_pct=ds.fanSpeedPercentDesired if fan_controller is not None else None,
         fan_rpm=peripheralState.fanSpeedRpm if peripheral_panda_present else None,
+        hot=is_offroad_for_5_min and offroad_comp_temp > OFFROAD_DANGER_TEMP,  # the parked limit above
         overheated=thermal_status >= ThermalStatus.overheated,
       )
       device_history.update(time.monotonic(), voltage, onroad_conditions["ignition"], current_power_draw, thermal)

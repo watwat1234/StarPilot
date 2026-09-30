@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS sessions_end_ts ON sessions(end_ts);
 
 
 def default_db_path() -> str:
-  root = Path(Paths.comma_home()) / "battery_monitor" if PC else Path("/data/battery_monitor")
+  root = Path(Paths.comma_home()) / "battery_monitor" if PC else Path("/data/media/0/battery_monitor")
   return str(root / "battery.db")
 
 

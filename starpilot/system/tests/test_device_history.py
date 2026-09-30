@@ -642,3 +642,53 @@ def test_resume_keeps_the_rest_window_and_adds_topups(db_path):
   assert park["rest_start_ts"] == pytest.approx(WALL0 + 300)
   assert park["v_at_1h"] == pytest.approx(12.7, abs=0.01)
   assert park["v_at_3h"] is None
+
+
+def resume_with_an_invalid_clock(db_path, t, gap_s, *spans):
+  """A restart gap_s after the first run stopped at t, feeding (seconds, mV) spans before the clock becomes valid."""
+  valid = {"ok": False}
+  wall_base = WALL0 + t - DT + gap_s
+  second = make_monitor(db_path, wall_base=wall_base, clock_valid=lambda: valid["ok"])
+  t = 0.0
+  for seconds, mv in spans:
+    t = feed(second, t, seconds, mv, False)
+  valid["ok"] = True
+  t = feed(second, t, DT, spans[-1][1], False)  # the first valid reading hands the session over; the resume lands next
+  return second, wall_base, t
+
+
+def test_charge_before_the_resume_closes_a_window_with_a_mark(db_path):
+  first = make_monitor(db_path)
+  t = feed(first, 0.0, 60, 14000, True)
+  park_start = t
+  t = feed(first, t, 1.5 * 3600, 12600, False)  # the 1 h mark is taken, then a reboot
+  first.stop(now=t - DT, timeout=5)
+  first_rest_end = t - DT
+
+  # boots during a charge, and the clock is only valid after this run has a 1 h mark of its own
+  second, _, t = resume_with_an_invalid_clock(db_path, t, 300, (10 * 60, 14400), (70 * 60, 12900))
+  finish(second, feed(second, t, 3 * 3600, 12900, False))
+
+  _, park = rows(db_path, "sessions")
+  assert (park["rest_from"], park["topups"], park["rest_closed"]) == ("ignition", 1, 1)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + park_start)
+  assert park["rest_end_ts"] == pytest.approx(WALL0 + first_rest_end)
+  assert park["v_rest_end"] == pytest.approx(12.6, abs=0.01)
+  assert park["v_at_1h"] == pytest.approx(12.6, abs=0.01)  # from the first rest, not this run's
+  assert (park["v_at_3h"], park["v_at_6h"]) == (None, None)
+
+
+def test_charge_before_the_resume_replaces_a_window_without_a_mark(db_path):
+  first = make_monitor(db_path)
+  t = feed(first, 0.0, 60, 14000, True)
+  t = feed(first, t, 30 * 60, 12600, False)  # no mark yet, then a reboot
+  first.stop(now=t - DT, timeout=5)
+
+  second, wall_base, t = resume_with_an_invalid_clock(db_path, t, 300, (10 * 60, 14400), (5 * 60, 12900))
+  finish(second, feed(second, t, 1.5 * 3600, 12900, False))
+
+  _, park = rows(db_path, "sessions")
+  assert park["start_ts"] == pytest.approx(WALL0 + 60)
+  assert (park["rest_from"], park["topups"], park["rest_closed"]) == ("charge", 1, 0)
+  assert park["rest_start_ts"] == pytest.approx(wall_base + 10 * 60)
+  assert park["v_at_1h"] == pytest.approx(12.9, abs=0.01)

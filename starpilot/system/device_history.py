@@ -330,15 +330,21 @@ class _Session:
         self.rest_start, self.rest_from = self.below_since, "charge"
       self.below_since = None
 
-  def adopt_rest(self, resumed: dict, offset: float):
-    """Continue the rest window of the session this run resumes, unless this run has seen a charge of its own."""
-    if self.topups or self.charging:
-      return
+  def adopt_rest(self, resumed: dict, offset: float) -> bool:
+    """Continue the rest window of the session this run resumes; False when this run keeps its own.
+
+    A charge this run found before the resume landed (the wall clock was still invalid) came after that window, and is
+    handled like a charge within one run: with no mark taken in it yet, this run's window replaces it; otherwise it
+    closes it, so every mark in the park comes from one rest."""
+    charged = self.topups or self.charging
+    if charged and (resumed["rest_start_ts"] is None or not (resumed["v_at"] or resumed["rest_closed"])):
+      return False
     def mono(ts):
       return None if ts is None else ts - offset
     self.rest_start, self.rest_end = mono(resumed["rest_start_ts"]), mono(resumed["rest_end_ts"])
     self.rest_from, self.v_rest_end = resumed["rest_from"], resumed["v_rest_end"]
-    self.rest_closed = bool(resumed["rest_closed"])
+    self.rest_closed = bool(charged or resumed["rest_closed"])
+    return True
 
   def values(self, offset: float) -> dict:
     park = self.kind == "park"
@@ -477,8 +483,7 @@ class DeviceHistory:
     session.start = resumed["start_ts"] - self._offset
     if session.kind != "park":
       return
-    session.adopt_rest(resumed, self._offset)
-    if session.rest_start is None:
+    if not session.adopt_rest(resumed, self._offset) or session.rest_start is None:
       return
     v_at = {}
     for hours in PARK_OFFSETS_H:
@@ -699,14 +704,14 @@ class _Writer:
     merged = {**values, "start_ts": base["start_ts"], "start_flag": base["start_flag"], "n": values["n"] + base["n"]}
     for column, kind, _ in SESSION_STATS:
       merged[column] = _merge_stat(kind, values[column], values["n"], base["stats"][column], base["n"])
-    for hours, value in base["v_at"].items():
-      merged[f"v_at_{hours}h"] = value
     rest = base["rest"]
     if values["kind"] == "park":
-      # until this run adopts the resumed window (or finds a charge of its own) it has none: keep the resumed one
+      # until this run adopts the resumed window (or finds a charge of its own) it has none: keep the resumed one and
+      # its marks. Once it has one, its marks are its own (adopt_rest): the resumed ones may be from another rest
       if values["rest_start_ts"] is None and not values["topups"]:
         merged.update({column: rest[column] for column in ("rest_start_ts", "rest_end_ts", "v_rest_end", "rest_from",
                                                            "rest_closed")})
+        merged.update({f"v_at_{hours}h": value for hours, value in base["v_at"].items()})
       merged["topups"] = values["topups"] + (rest["topups"] or 0)
     return merged
 

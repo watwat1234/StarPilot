@@ -36,6 +36,12 @@ SAMPLE_RETENTION_S = 30 * 24 * 3600
 TRIM_INTERVAL_S = 24 * 3600
 RESUME_GAP_S = 15 * 60                 # a restart within this gap continues the open session instead of splitting it
 PARK_OFFSETS_H = (1, 3, 6)
+# The v_at_Nh marks are timed from when the battery started resting: switch-off, or the end of a charge while parked
+# (the DC-DC topping up the 12V, plug-in charging). Charging is told from the raw voltage, which drops within seconds
+# when it stops; the smoothed one takes minutes.
+CHARGE_V = 13.5                        # above the surface charge left after a charge (~13.0-13.3 V), below the DC-DC's 14+ V
+CHARGE_MIN_S = 60.                     # held this long above CHARGE_V is a charge, not the seconds after switch-off
+REST_CONFIRM_S = 60.                   # held this long below CHARGE_V ends a charge; a shorter dip doesn't
 SMOOTHING_TAU_S = 45.                  # matches PowerMonitoring's car voltage filter
 MAX_PENDING_BUCKETS = 24 * 3600 // SAMPLE_INTERVAL_S  # buckets held in memory while the clock is invalid
 DEFAULT_CUTOFF_V = 11.8                # PowerMonitoring's VBATT_PAUSE_CHARGING, without importing it into the Galaxy
@@ -53,8 +59,9 @@ PARKED_FAN_CAP_PCT = 30                # TiciFanController's limit without ignit
 
 def thermal_limits(device_type: str) -> dict:
   return {**THERMAL_LIMITS["mici" if device_type == "mici" else "other"], "parkedFanCapPct": PARKED_FAN_CAP_PCT}
-# The first version of the tables. Every column added since is nullable REAL and comes from the stats tables below;
-# _Writer adds whichever are missing, so a fresh database and one from an older version end up the same.
+# The first version of the tables. Every column added since is nullable and comes from the stats tables or
+# REST_COLUMNS below; _Writer adds whichever are missing, so a fresh database and one from an older version end up
+# the same.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
   ts_start REAL NOT NULL,
@@ -121,6 +128,19 @@ SESSION_STATS = (
   ("fan_rpm_mean", "mean", "fan_rpm"),
   ("s_hot", "sum", "s_hot"),
   ("s_overheated", "sum", "s_overheated"),
+)
+# A park's rest window, which the v_at_Nh marks are timed from (NULL for drives):
+# rest_start_ts: when the battery started resting; NULL while unknown (the device booted in a park at rest) or charging
+# rest_end_ts, v_rest_end: the window's last reading (smoothed voltage), for the drop rate
+# rest_from: "ignition" (switch-off) or "charge" (the end of a charge)
+# topups: charges during the park; rest_closed: a charge came after a mark was taken, so the later marks stay empty
+REST_COLUMNS = (
+  ("rest_start_ts", "REAL"),
+  ("rest_end_ts", "REAL"),
+  ("v_rest_end", "REAL"),
+  ("rest_from", "TEXT"),
+  ("topups", "INTEGER"),
+  ("rest_closed", "INTEGER"),
 )
 SAMPLE_COLUMNS = ("ts_start", "ts_end", "onroad", *(column for column, _, _ in BUCKET_STATS))
 # what read_history returns per metric; sessions always carry every column
@@ -255,17 +275,75 @@ class _Session:
   n: int = 0
   v_at: dict = field(default_factory=dict)
   end_reason: str | None = None
+  # the rest window (parks only, see REST_COLUMNS); monotonic times
+  rest_start: float | None = None
+  rest_from: str | None = None
+  rest_end: float | None = None
+  v_rest_end: float | None = None
+  rest_closed: bool = False
+  topups: int = 0               # charges confirmed in this run
+  charging: bool = False
+  above_since: float | None = None
+  below_since: float | None = None
+
+  def __post_init__(self):
+    if self.kind == "park" and self.start_flag == "clean":
+      self.rest_start, self.rest_from = self.start, "ignition"
 
   def add(self, now: float, reading: dict):
     self.last = now
     self.stats.add(reading)
     self.n += 1
-    if self.kind == "park":
-      for hours in PARK_OFFSETS_H:
-        if hours not in self.v_at and now - self.start >= hours * 3600:
-          self.v_at[hours] = reading["v_smooth"]
+    if self.kind != "park":
+      return
+    self._track_charge(now, reading["v"])
+    # readings above CHARGE_V may be the start of a charge: leave them out, so its first minute doesn't end the window
+    if self.rest_start is None or self.rest_closed or self.charging or self.above_since is not None:
+      return
+    self.rest_end, self.v_rest_end = now, reading["v_smooth"]
+    for hours in PARK_OFFSETS_H:
+      if hours not in self.v_at and now - self.rest_start >= hours * 3600:
+        self.v_at[hours] = reading["v_smooth"]
+
+  def _track_charge(self, now: float, v: float):
+    if v >= CHARGE_V:
+      self.below_since = None
+      if self.above_since is None:
+        self.above_since = now
+      if not self.charging and now - self.above_since >= CHARGE_MIN_S:
+        self.charging = True
+        self.topups += 1
+        if any(value is not None for value in self.v_at.values()):
+          self.rest_closed = True  # keep every mark from one window
+        elif not self.rest_closed:
+          self.rest_start = self.rest_end = self.v_rest_end = None
+          self.v_at = {}
+      return
+    self.above_since = None
+    if not self.charging:
+      return
+    if self.below_since is None:
+      self.below_since = now
+    if now - self.below_since >= REST_CONFIRM_S:
+      self.charging = False
+      if not self.rest_closed:
+        self.rest_start, self.rest_from = self.below_since, "charge"
+      self.below_since = None
+
+  def adopt_rest(self, resumed: dict, offset: float):
+    """Continue the rest window of the session this run resumes, unless this run has seen a charge of its own."""
+    if self.topups or self.charging:
+      return
+    def mono(ts):
+      return None if ts is None else ts - offset
+    self.rest_start, self.rest_end = mono(resumed["rest_start_ts"]), mono(resumed["rest_end_ts"])
+    self.rest_from, self.v_rest_end = resumed["rest_from"], resumed["v_rest_end"]
+    self.rest_closed = bool(resumed["rest_closed"])
 
   def values(self, offset: float) -> dict:
+    park = self.kind == "park"
+    def wall(t):
+      return None if t is None else t + offset
     return {
       "kind": self.kind,
       "start_ts": self.start + offset,
@@ -277,6 +355,12 @@ class _Session:
       "v_at_6h": _r(self.v_at.get(6)),
       "start_flag": self.start_flag,
       "end_reason": self.end_reason,
+      "rest_start_ts": wall(self.rest_start),
+      "rest_end_ts": wall(self.rest_end),
+      "v_rest_end": _r(self.v_rest_end),
+      "rest_from": self.rest_from,
+      "topups": self.topups if park else None,
+      "rest_closed": int(self.rest_closed) if park else None,
     }
 
 
@@ -384,18 +468,23 @@ class DeviceHistory:
     return _Session(kind, now, now, start_flag, seq=self._seq)
 
   def _apply_resume(self, now: float):
-    # The writer found that this run continues a session the previous run left open: adopt its start, so
-    # v_at_Nh is measured from the real start of the park
+    # The writer found that this run continues a session the previous run left open: adopt its start and rest
+    # window, so v_at_Nh is measured from when the battery really started resting
     resumed = self._writer.resumed()
     if resumed is None or self._session is None or self._session.seq != resumed["seq"]:
       return
     session = self._session
     session.start = resumed["start_ts"] - self._offset
+    if session.kind != "park":
+      return
+    session.adopt_rest(resumed, self._offset)
+    if session.rest_start is None:
+      return
     v_at = {}
     for hours in PARK_OFFSETS_H:
       if hours in resumed["v_at"]:
         v_at[hours] = resumed["v_at"][hours]
-      elif session.start + hours * 3600 <= now:
+      elif session.rest_start + hours * 3600 <= now:
         # the mark fell while the device was off (or earlier in this run, timed from the wrong start): there is
         # no reading from then, so leave it empty rather than store a later one
         v_at[hours] = None
@@ -457,11 +546,18 @@ def _migrate_legacy(db_path: str, legacy_path: str | None):
 
 
 def _add_missing_columns(db: sqlite3.Connection):
-  for table, columns in (("samples", SAMPLE_COLUMNS), ("sessions", [column for column, _, _ in SESSION_STATS])):
+  session_columns = [(column, "REAL") for column, _, _ in SESSION_STATS] + list(REST_COLUMNS)
+  added = set()
+  for table, columns in (("samples", [(column, "REAL") for column in SAMPLE_COLUMNS]), ("sessions", session_columns)):
     existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
-    for column in columns:
+    for column, sql_type in columns:
       if column not in existing:
-        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+        added.add(column)
+  if "rest_start_ts" in added:
+    # parks recorded before the rest window: those that began at switch-off rested from their start
+    db.execute("""UPDATE sessions SET rest_start_ts = start_ts, rest_end_ts = end_ts, v_rest_end = v_end,
+                  rest_from = 'ignition', topups = 0, rest_closed = 0 WHERE kind = 'park' AND start_flag = 'clean'""")
 
 
 class _Writer:
@@ -571,7 +667,9 @@ class _Writer:
   def _reconcile(self, db: sqlite3.Connection):
     """Close sessions a previous run left open, or continue one if this run started right where it stopped."""
     stat_columns = [column for column, _, _ in SESSION_STATS]
-    columns = ["id", "kind", "start_ts", "end_ts", "n", "v_at_1h", "v_at_3h", "v_at_6h", "start_flag", *stat_columns]
+    rest_columns = [column for column, _ in REST_COLUMNS]
+    columns = ["id", "kind", "start_ts", "end_ts", "n", "v_at_1h", "v_at_3h", "v_at_6h", "start_flag", *stat_columns,
+               *rest_columns]
     rows = [dict(zip(columns, row, strict=True)) for row in
             db.execute(f"SELECT {', '.join(columns)} FROM sessions WHERE end_reason IS NULL ORDER BY end_ts")]
     if not rows:
@@ -589,9 +687,10 @@ class _Writer:
     if resume:
       self._ids[seq] = last["id"]
       at = {hours: last[f"v_at_{hours}h"] for hours in PARK_OFFSETS_H if last[f"v_at_{hours}h"] is not None}
+      rest = {column: last[column] for column in rest_columns}
       self._base[seq] = {"start_ts": last["start_ts"], "start_flag": last["start_flag"], "n": last["n"], "v_at": at,
-                         "stats": {column: last[column] for column in stat_columns}}
-      self._resumed.put({"seq": seq, "start_ts": last["start_ts"], "v_at": at})
+                         "stats": {column: last[column] for column in stat_columns}, "rest": rest}
+      self._resumed.put({"seq": seq, "start_ts": last["start_ts"], "v_at": at, **rest})
 
   def _merged(self, seq: int, values: dict) -> dict:
     base = self._base.get(seq)
@@ -602,6 +701,13 @@ class _Writer:
       merged[column] = _merge_stat(kind, values[column], values["n"], base["stats"][column], base["n"])
     for hours, value in base["v_at"].items():
       merged[f"v_at_{hours}h"] = value
+    rest = base["rest"]
+    if values["kind"] == "park":
+      # until this run adopts the resumed window (or finds a charge of its own) it has none: keep the resumed one
+      if values["rest_start_ts"] is None and not values["topups"]:
+        merged.update({column: rest[column] for column in ("rest_start_ts", "rest_end_ts", "v_rest_end", "rest_from",
+                                                           "rest_closed")})
+      merged["topups"] = values["topups"] + (rest["topups"] or 0)
     return merged
 
   def _write_session(self, db: sqlite3.Connection, seq: int, values: dict) -> bool:

@@ -2155,6 +2155,9 @@ def test_device_history_endpoint(monkeypatch, tmp_path):
   assert "soc_mean" not in payload["samples"][0]
   assert [s["kind"] for s in payload["sessions"]] == ["park"]
   assert payload["sessions"][0]["soc_max"] == pytest.approx(70.0)
+  # a boot at rest: the page needs the rest window columns to leave it out of the trend
+  assert {"rest_start_ts", "rest_end_ts", "v_rest_end", "rest_from", "topups", "rest_closed"} <= set(payload["sessions"][0])
+  assert (payload["sessions"][0]["rest_start_ts"], payload["sessions"][0]["topups"]) == (None, 0)
 
   payload = client.get("/api/device-history?days=7&metric=thermal").get_json()
   assert payload["metric"] == "thermal"

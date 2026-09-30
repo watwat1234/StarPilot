@@ -97,9 +97,15 @@ export const DeviceHistory = {
       return this.sessions.filter((s) => s.kind === "park").map((s) => {
         const duration = s.end_ts - s.start_ts
         const fromBoot = s.start_flag === "ign_off_at_boot"
+        // the 1/3/6 h readings are timed from when the battery started resting: switch-off or the end of a charge.
+        // Unknown when the device booted with the car already parked and at rest
+        const hasRest = s.rest_start_ts != null
         let dropRate = null
-        if (s.v_at_1h != null && s.v_end != null && duration >= 2 * 3600) dropRate = (s.v_at_1h - s.v_end) / ((duration - 3600) / 3600)
-        return { ...s, duration, fromBoot, dropRate }
+        if (hasRest && s.v_at_1h != null && s.v_rest_end != null) {
+          const hours = (s.rest_end_ts - s.rest_start_ts - 3600) / 3600
+          if (hours >= 1) dropRate = (s.v_at_1h - s.v_rest_end) / hours
+        }
+        return { ...s, duration, fromBoot, hasRest, dropRate }
       })
     },
     drives() {
@@ -127,16 +133,24 @@ export const DeviceHistory = {
     },
 
     // battery
-    healthParks() { return this.parks.filter((p) => !p.fromBoot && p.start_ts >= this.t0) },
+    healthParks() { return this.parks.filter((p) => p.hasRest && p.start_ts >= this.t0) },
     trendSeries() {
+      const note = (p) => `${p.rest_from === "charge" ? "rest from the end of a charge" : "rest from switch-off"} · parked ${fmtDuration(p.duration)}`
       const series = (key, label, color, field) => ({
         key, label, color,
-        points: this.healthParks.filter((p) => p[field] != null).map((p) => ({ t: p.start_ts, v: p[field], note: `parked ${fmtDuration(p.duration)}` })),
+        points: this.healthParks.filter((p) => p[field] != null).map((p) => ({ t: p.start_ts, v: p[field], note: note(p) })),
       })
       return [
-        series("h1", "1 h after parking", "var(--vc-1)", "v_at_1h"),
-        series("h3", "3 h after parking", "var(--vc-2)", "v_at_3h"),
+        series("h1", "1 h at rest", "var(--vc-1)", "v_at_1h"),
+        series("h3", "3 h at rest", "var(--vc-2)", "v_at_3h"),
       ]
+    },
+    trendEmpty() {
+      const unknown = this.rangeParks.filter((p) => p.start_ts >= this.t0 && !p.hasRest).length
+      const text = "No park in this range has rested for an hour yet."
+      if (!unknown) return text
+      const parks = unknown === 1 ? "1 park has" : `${unknown} parks have`
+      return `${text} ${parks} no known rest start (the device started with the car already parked, or it was still charging); see the table.`
     },
     driveSeries() {
       const points = this.drives.filter((s) => s.v_mean != null)
@@ -155,8 +169,12 @@ export const DeviceHistory = {
         h1: fmtV(p.v_at_1h), h3: fmtV(p.v_at_3h), h6: fmtV(p.v_at_6h),
         end: fmtV(p.v_end),
         drop: p.dropRate == null ? "—" : `${(p.dropRate * 1000).toFixed(0)} mV/h`,
+        topups: p.topups ?? "—",
         reason: p.end_reason == null ? "In progress" : (END_REASONS[p.end_reason] || p.end_reason),
-        note: p.fromBoot ? "timed from device start" : "",
+        note: [
+          !p.hasRest ? "rest start unknown" : p.rest_from === "charge" ? "timed from the end of a charge" : "",
+          p.rest_closed ? "cut short by a charge" : "",
+        ].filter(Boolean).join(", "),
       }))
     },
     sampleRows() {
@@ -330,8 +348,8 @@ export const DeviceHistory = {
         <template v-if="metric === 'battery'">
           <section class="gx-card gx-history__chart">
             <h3>Parked voltage</h3>
-            <p class="gx-note">One point per park, measured 1 and 3 hours after the car was turned off (with the device's own draw). A steady downward drift over months points at an aging battery.</p>
-            <HistoryChart :series="trendSeries" :t0="t0" :t1="now" :ref-lines="cutoffLines" aria-label="Voltage 1 and 3 hours after parking, per park" />
+            <p class="gx-note">One point per park, measured 1 and 3 hours into its rest (with the device's own draw). The rest starts when the car is turned off, or again when the car stops charging the 12V while parked. A steady downward drift over months points at an aging battery.</p>
+            <HistoryChart :series="trendSeries" :t0="t0" :t1="now" :ref-lines="cutoffLines" :empty-text="trendEmpty" aria-label="Voltage 1 and 3 hours into each park's rest" />
           </section>
 
           <section class="gx-card gx-history__chart">
@@ -347,12 +365,12 @@ export const DeviceHistory = {
             </div>
             <div v-if="showTable" class="gx-history__scroll" tabindex="0" aria-label="Park history table">
               <table>
-                <thead><tr><th>Parked</th><th>Length</th><th>After 1 h</th><th>After 3 h</th><th>After 6 h</th><th>Last</th><th>Drop</th><th>Ended</th></tr></thead>
+                <thead><tr><th>Parked</th><th>Length</th><th>1 h at rest</th><th>3 h at rest</th><th>6 h at rest</th><th>Last</th><th>Drop</th><th>Top-ups</th><th>Ended</th></tr></thead>
                 <tbody>
                   <tr v-for="row in parkRows" :key="row.key">
-                    <td>{{ row.start }}<small v-if="row.note"> ({{ row.note }})</small></td><td>{{ row.duration }}</td><td>{{ row.h1 }}</td><td>{{ row.h3 }}</td><td>{{ row.h6 }}</td><td>{{ row.end }}</td><td>{{ row.drop }}</td><td>{{ row.reason }}</td>
+                    <td>{{ row.start }}<small v-if="row.note"> ({{ row.note }})</small></td><td>{{ row.duration }}</td><td>{{ row.h1 }}</td><td>{{ row.h3 }}</td><td>{{ row.h6 }}</td><td>{{ row.end }}</td><td>{{ row.drop }}</td><td>{{ row.topups }}</td><td>{{ row.reason }}</td>
                   </tr>
-                  <tr v-if="!parkRows.length"><td colspan="8" class="gx-empty">No parks recorded in this range.</td></tr>
+                  <tr v-if="!parkRows.length"><td colspan="9" class="gx-empty">No parks recorded in this range.</td></tr>
                 </tbody>
               </table>
             </div>

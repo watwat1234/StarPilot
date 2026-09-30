@@ -154,7 +154,8 @@ def test_close_does_not_wait_for_the_writer(db_path, monkeypatch):
 
 def test_resume_leaves_marks_in_the_off_gap_empty(db_path):
   first = make_monitor(db_path)
-  t = feed(first, 0.0, 3000, 12500, False)  # parked 50 min
+  t = feed(first, 0.0, 60, 14000, True)
+  t = feed(first, t, 3000, 12500, False)  # parked 50 min
   first.stop(now=t - DT, timeout=5)
 
   # back 12 min later: the 1 h mark fell while the device was off
@@ -162,8 +163,10 @@ def test_resume_leaves_marks_in_the_off_gap_empty(db_path):
   t = feed(second, 0.0, 601, 12300, False)  # the first flush finds the open session; drained, so the resume lands now
   feed(second, t, 2.5 * 3600, 12300, False)
 
-  (park,) = rows(db_path, "sessions")
-  assert park["start_ts"] == pytest.approx(WALL0)
+  _, park = rows(db_path, "sessions")
+  assert park["start_ts"] == pytest.approx(WALL0 + 60)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + 60)
+  assert park["rest_from"] == "ignition"
   assert park["v_at_1h"] is None
   assert park["v_at_3h"] == pytest.approx(12.3, abs=0.01)
 
@@ -425,7 +428,11 @@ def test_legacy_database_is_moved_and_extended(tmp_path):
   assert samples[1]["soc_mean"] == pytest.approx(70.0)
   old_park, park = rows(str(new), "sessions")
   assert (old_park["end_reason"], old_park["n"], old_park["soc_max"]) == ("ignition", 1200, None)
+  # a park from before the rest window that began at switch-off rested from its start; a boot park didn't
+  assert (old_park["rest_start_ts"], old_park["rest_end_ts"], old_park["rest_from"]) == (WALL0 - 1200, WALL0 - 600, "ignition")
+  assert (old_park["topups"], old_park["rest_closed"]) == (0, 0)
   assert park["soc_max"] == pytest.approx(70.0)
+  assert (park["rest_start_ts"], park["rest_from"], park["topups"]) == (None, None, 0)
 
 
 def test_legacy_move_skipped_when_new_database_exists(tmp_path):
@@ -491,7 +498,8 @@ def test_boot_session_is_handed_over_at_once(db_path):
 
 def test_resume_keeps_a_mark_that_fell_in_this_run(db_path):
   first = make_monitor(db_path)
-  t = feed(first, 0.0, 3000, 12500, False)  # parked 50 min, then a reboot
+  t = feed(first, 0.0, 60, 14000, True)
+  t = feed(first, t, 3000, 12500, False)  # parked 50 min, then a reboot
   first.stop(now=t - DT, timeout=5)
 
   # back 5 min later: the 1 h mark falls 5 min into this run, before its first bucket closes
@@ -499,8 +507,8 @@ def test_resume_keeps_a_mark_that_fell_in_this_run(db_path):
   t = feed(second, 0.0, DT, 12300, False)  # one reading hands the session over; drained, so the resume lands next
   feed(second, t, 601, 12300, False)
 
-  (park,) = rows(db_path, "sessions")
-  assert park["start_ts"] == pytest.approx(WALL0)
+  _, park = rows(db_path, "sessions")
+  assert park["start_ts"] == pytest.approx(WALL0 + 60)
   assert park["v_at_1h"] == pytest.approx(12.3, abs=0.01)
 
 
@@ -518,3 +526,119 @@ def test_readers_use_the_legacy_database_until_it_moves(tmp_path, monkeypatch):
   assert thermal["samples"] == []
   assert len(thermal["sessions"]) == 1
   assert latest_sample()["voltage"] == pytest.approx(12.2)
+
+
+def finish(monitor, t):
+  monitor.close("test", now=t)
+  assert monitor.drain(timeout=5)
+
+
+def test_boot_during_a_charge_rests_from_its_end(db_path):
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 600, 14400, False)  # booted parked, the DC-DC topping up the 12V
+  rest = t
+  t = feed(monitor, t, 2 * 3600, 12800, False)
+  finish(monitor, t)
+
+  (park,) = rows(db_path, "sessions")
+  assert park["start_flag"] == "ign_off_at_boot"
+  assert (park["rest_from"], park["topups"], park["rest_closed"]) == ("charge", 1, 0)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + rest)  # the first reading below CHARGE_V
+  assert park["rest_end_ts"] == pytest.approx(WALL0 + t - DT)
+  assert park["v_at_1h"] == pytest.approx(12.8, abs=0.01)
+  assert park["v_at_3h"] is None
+  assert park["v_rest_end"] == pytest.approx(12.8, abs=0.01)
+
+
+def test_boot_at_rest_has_no_rest_start(db_path):
+  monitor = make_monitor(db_path)
+  finish(monitor, feed(monitor, 0.0, 2 * 3600, 12500, False))
+
+  (park,) = rows(db_path, "sessions")
+  assert (park["rest_start_ts"], park["rest_end_ts"], park["rest_from"], park["topups"]) == (None, None, None, 0)
+  assert park["v_at_1h"] is None  # the battery may have rested for hours before the boot
+
+
+def test_surface_charge_after_switch_off_is_not_a_charge(db_path):
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 60, 14000, True)
+  park_start = t
+  t = feed(monitor, t, 45, 13800, False)  # above CHARGE_V, but for less than CHARGE_MIN_S
+  t = feed(monitor, t, 1.5 * 3600, 12600, False)
+  finish(monitor, t)
+
+  _, park = rows(db_path, "sessions")
+  assert (park["rest_from"], park["topups"]) == ("ignition", 0)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + park_start)
+  assert park["v_at_1h"] == pytest.approx(12.6, abs=0.01)
+
+
+def test_charge_before_the_first_mark_restarts_the_window(db_path):
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 60, 14000, True)
+  t = feed(monitor, t, 40 * 60, 12600, False)
+  t = feed(monitor, t, 20 * 60, 14400, False)
+  rest = t
+  t = feed(monitor, t, 2 * 3600, 12700, False)
+  finish(monitor, t)
+
+  _, park = rows(db_path, "sessions")
+  assert (park["rest_from"], park["topups"], park["rest_closed"]) == ("charge", 1, 0)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + rest)
+  assert park["v_at_1h"] == pytest.approx(12.7, abs=0.01)
+  assert park["v_at_3h"] is None
+
+
+def test_charge_after_a_mark_closes_the_window(db_path):
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 60, 14000, True)
+  park_start = t
+  t = feed(monitor, t, 2 * 3600, 12600, False)
+  last_rest = t - DT
+  t = feed(monitor, t, 10 * 60, 14400, False)
+  t = feed(monitor, t, 5 * 3600, 12700, False)
+  finish(monitor, t)
+
+  _, park = rows(db_path, "sessions")
+  assert (park["rest_from"], park["topups"], park["rest_closed"]) == ("ignition", 1, 1)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + park_start)
+  assert park["v_at_1h"] == pytest.approx(12.6, abs=0.01)
+  assert (park["v_at_3h"], park["v_at_6h"]) == (None, None)  # would be timed across the charge
+  # the window ends at the last reading before the charge, not partway into its first minute
+  assert park["rest_end_ts"] == pytest.approx(WALL0 + last_rest)
+  assert park["v_rest_end"] == pytest.approx(12.6, abs=0.01)
+
+
+def test_short_dip_does_not_end_a_charge(db_path):
+  monitor = make_monitor(db_path)
+  t = feed(monitor, 0.0, 300, 14400, False)
+  t = feed(monitor, t, 30, 13000, False)  # below CHARGE_V for less than REST_CONFIRM_S
+  t = feed(monitor, t, 300, 14400, False)
+  rest = t
+  t = feed(monitor, t, 1.5 * 3600, 12800, False)
+  finish(monitor, t)
+
+  (park,) = rows(db_path, "sessions")
+  assert (park["rest_from"], park["topups"]) == ("charge", 1)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + rest)
+
+
+def test_resume_keeps_the_rest_window_and_adds_topups(db_path):
+  first = make_monitor(db_path)
+  t = feed(first, 0.0, 300, 14400, False)
+  t = feed(first, t, 30 * 60, 12700, False)  # resting from 300 s, then a reboot
+  first.stop(now=t - DT, timeout=5)
+
+  second = make_monitor(db_path, wall_base=WALL0 + t - DT + 300)
+  t = feed(second, 0.0, DT, 12700, False)  # one reading hands the session over; drained, so the resume lands next
+  t = feed(second, t, 1.5 * 3600, 12700, False)
+  t = feed(second, t, 10 * 60, 14400, False)  # a second charge, after the 1 h mark
+  t = feed(second, t, 10 * 60, 12700, False)
+  finish(second, t)
+
+  (park,) = rows(db_path, "sessions")
+  assert park["start_ts"] == pytest.approx(WALL0)
+  assert (park["rest_from"], park["topups"], park["rest_closed"]) == ("charge", 2, 1)
+  assert park["rest_start_ts"] == pytest.approx(WALL0 + 300)
+  assert park["v_at_1h"] == pytest.approx(12.7, abs=0.01)
+  assert park["v_at_3h"] is None

@@ -61,6 +61,7 @@ export const HistoryChart = {
     ariaLabel: { type: String, default: "History over time" },
     // reserve the end-label gutter even without end labels, so stacked charts share an x axis
     gutter: { type: Boolean, default: false },
+    emptyText: { type: String, default: "No data in this range yet." },
   },
   data() { return { width: 600, hover: null } },
   mounted() {
@@ -229,7 +230,7 @@ export const HistoryChart = {
           <text v-for="s in drawn.filter((d) => d.endLabel)" :key="'e' + s.key" :x="s.endLabel.x" :y="s.endLabel.y" class="gx-vchart__end">{{ s.label }}</text>
           <line v-if="hover" :x1="hover.x" :x2="hover.x" :y1="${PAD.t}" :y2="${PAD.t} + plotH" class="gx-vchart__crosshair" />
         </svg>
-        <div v-if="empty" class="gx-vchart__empty">No data in this range yet.</div>
+        <div v-if="empty" class="gx-vchart__empty">{{ emptyText }}</div>
         <div v-if="tooltip" class="gx-vchart__tip" :style="{ left: tooltip.left + 'px' }" role="status">
           <strong>{{ tooltip.title }}</strong>
           <div v-for="row in tooltip.rows" :key="row.key">

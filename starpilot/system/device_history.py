@@ -1,14 +1,21 @@
-"""12V battery history: 10-minute voltage buckets plus one summary row per drive or park.
+"""Device history: 12V battery voltage and device temperatures, as 10-minute buckets plus one summary row per drive
+or park.
 
-hardwared feeds BatteryMonitor.update() with the panda's instant voltage at 2 Hz. update() only does in-memory
-work; SQLite writes happen on a background writer thread, so a slow disk can never stall hardwared's loop.
-The Galaxy reads the database through read_history() and latest_sample().
+hardwared feeds DeviceHistory.update() at 2 Hz with the panda's instant voltage and the thermal readings it already
+takes for deviceState. update() only does in-memory work; SQLite writes happen on a background writer thread, so a
+slow disk can never stall hardwared's loop. The Galaxy reads the database through read_history() and latest_sample().
 
-The device is off for most of a parked car's life (it shuts down DeviceShutdown hours after parking), so the
-long-term signal is the per-park summary: the smoothed voltage 1/3/6 hours after parking, with the device's own
-load included, plus the parked drop rate. Raw buckets are only kept for SAMPLE_RETENTION_S.
+Battery: the device is off for most of a parked car's life (it shuts down DeviceShutdown hours after parking), so
+the long-term signal is the per-park summary: the smoothed voltage 1/3/6 hours after parking, with the device's own
+load included, plus the parked drop rate.
+
+Temperatures: the question is what staying on while parked in a hot car does to the device. Each park records the
+peak and mean SoC temperature, the cabin air at the intake and how much the device adds over it (self-heating), the
+fan (capped at PARKED_FAN_CAP_PCT without ignition) and the time at or above the offroad danger temperature. For a
+park that starts at boot, intake_at_start is the cabin air the device sat in while it was off.
+
+Raw buckets are only kept for SAMPLE_RETENTION_S; sessions are kept forever.
 """
-import math
 import os
 import queue
 import sqlite3
@@ -33,6 +40,13 @@ SMOOTHING_TAU_S = 45.                  # matches PowerMonitoring's car voltage f
 MAX_PENDING_BUCKETS = 24 * 3600 // SAMPLE_INTERVAL_S  # buckets held in memory while the clock is invalid
 DEFAULT_CUTOFF_V = 11.8                # PowerMonitoring's VBATT_PAUSE_CHARGING, without importing it into the Galaxy
 STOP_TIMEOUT_S = 2.0                   # how long stop() waits for the writer; manager SIGKILLs hardwared after 5 s
+# comma 4 (mici) thresholds, duplicated to keep hardwared out of the Galaxy (tests pin them). hardwared passes its
+# own OFFROAD_DANGER_TEMP to the recorder, so these only label the Galaxy charts.
+DANGER_TEMP_C = 85.                    # OFFROAD_DANGER_TEMP: offroad and above it, thermal status goes critical
+OVERHEATED_TEMP_C = 92.                # THERMAL_BANDS[overheated].min_temp
+PARKED_FAN_CAP_PCT = 30                # TiciFanController's limit without ignition
+# The first version of the tables. Every column added since is nullable REAL and comes from the stats tables below;
+# _Writer adds whichever are missing, so a fresh database and one from an older version end up the same.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
   ts_start REAL NOT NULL,
@@ -64,8 +78,60 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS sessions_end_ts ON sessions(end_ts);
 """
 
+# (column, kind, reading key). kind: min / max / mean / sum / first / last, all over the readings that have the key
+BUCKET_STATS = (
+  ("v_min", "min", "v"),
+  ("v_mean", "mean", "v"),
+  ("v_max", "max", "v"),
+  ("draw_w", "mean", "draw_w"),
+  ("soc_mean", "mean", "soc"),
+  ("soc_max", "max", "soc"),
+  ("cpu_max", "max", "cpu"),
+  ("gpu_max", "max", "gpu"),
+  ("mem_max", "max", "mem"),
+  ("intake_mean", "mean", "intake"),
+  ("intake_max", "max", "intake"),
+  ("exhaust_mean", "mean", "exhaust"),
+  ("fan_pct_mean", "mean", "fan_pct"),
+  ("fan_rpm_mean", "mean", "fan_rpm"),
+  ("s_hot", "sum", "s_hot"),
+  ("s_overheated", "sum", "s_overheated"),
+)
+SESSION_STATS = (
+  ("v_start", "first", "v"),
+  ("v_end", "last", "v_smooth"),
+  ("v_min", "min", "v"),
+  ("v_max", "max", "v"),
+  ("v_mean", "mean", "v"),
+  ("soc_max", "max", "soc"),
+  ("soc_mean", "mean", "soc"),
+  ("intake_max", "max", "intake"),
+  ("intake_mean", "mean", "intake"),
+  ("intake_at_start", "first", "intake"),
+  ("self_heat_mean", "mean", "self_heat"),
+  ("fan_pct_mean", "mean", "fan_pct"),
+  ("fan_rpm_mean", "mean", "fan_rpm"),
+  ("s_hot", "sum", "s_hot"),
+  ("s_overheated", "sum", "s_overheated"),
+)
+SAMPLE_COLUMNS = ("ts_start", "ts_end", "onroad", *(column for column, _, _ in BUCKET_STATS))
+# what read_history returns per metric; sessions always carry every column
+METRIC_SAMPLE_COLUMNS = {
+  "battery": ("ts_start", "ts_end", "onroad", "v_min", "v_mean", "v_max", "draw_w"),
+  "thermal": ("ts_start", "ts_end", "onroad", "soc_mean", "soc_max", "cpu_max", "gpu_max", "mem_max", "intake_mean",
+              "intake_max", "exhaust_mean", "fan_pct_mean", "fan_rpm_mean", "s_hot", "s_overheated"),
+}
+_NO_THERMAL = dict.fromkeys(("soc", "cpu", "gpu", "mem", "intake", "exhaust", "fan_pct", "fan_rpm", "self_heat",
+                             "s_hot", "s_overheated"))
+
 
 def default_db_path() -> str:
+  root = Path(Paths.comma_home()) / "device_history" if PC else Path("/data/media/0/device_history")
+  return str(root / "device.db")
+
+
+def _legacy_db_path() -> str:
+  """Where the battery-only version kept its database; moved to default_db_path() on first write."""
   root = Path(Paths.comma_home()) / "battery_monitor" if PC else Path("/data/media/0/battery_monitor")
   return str(root / "battery.db")
 
@@ -74,28 +140,99 @@ def _r(value: float | None) -> float | None:
   return None if value is None else round(value, 3)
 
 
+@dataclass(frozen=True, slots=True)
+class Thermal:
+  """One thermal reading, from the values hardwared already puts in deviceState. °C unless noted; None for a zone
+  the device doesn't have (the comma 3 has no intake or exhaust)."""
+  soc: float                 # max of CPU, GPU, memory and PMIC: the unfiltered input to hardwared's all_comp_temp
+  cpu: float | None = None
+  gpu: float | None = None
+  mem: float | None = None
+  intake: float | None = None   # air at the fan intake: cabin air, the reference for self-heating
+  exhaust: float | None = None
+  fan_pct: float | None = None  # desired fan speed, %
+  fan_rpm: float | None = None
+  overheated: bool = False      # thermal status overheated or critical
+
+
+class _Stats:
+  """Running aggregates over readings, as declared by one of the stats tables."""
+  __slots__ = ("spec", "acc", "count")
+
+  def __init__(self, spec: tuple):
+    self.spec = spec
+    self.acc: dict[str, float | None] = {column: None for column, _, _ in spec}
+    self.count: dict[str, int] = {column: 0 for column, _, _ in spec}
+
+  def add(self, reading: dict):
+    acc = self.acc
+    for column, kind, key in self.spec:
+      x = reading[key]
+      if x is None:
+        continue
+      current = acc[column]
+      if kind == "mean" or kind == "sum":
+        acc[column] = x if current is None else current + x
+        self.count[column] += 1
+      elif kind == "max":
+        if current is None or x > current:
+          acc[column] = x
+      elif kind == "min":
+        if current is None or x < current:
+          acc[column] = x
+      elif kind == "first":
+        if current is None:
+          acc[column] = x
+      else:  # last
+        acc[column] = x
+
+  def values(self) -> dict:
+    out = {}
+    for column, kind, _ in self.spec:
+      value = self.acc[column]
+      if kind == "mean" and value is not None:
+        value /= self.count[column]
+      out[column] = _r(value)
+    return out
+
+
+def _merge_stat(kind: str, new, n_new: int, old, n_old: int):
+  """Combine one session stat from a resumed row (old) with this run's (new)."""
+  if old is None:
+    return new
+  if new is None:
+    return old
+  if kind == "first":
+    return old
+  if kind == "last":
+    return new
+  if kind == "min":
+    return min(new, old)
+  if kind == "max":
+    return max(new, old)
+  if kind == "sum":
+    return _r(new + old)
+  # mean, weighted by the session's reading count: a zone missing for some readings of a session skews it slightly
+  total = n_new + n_old
+  return _r((new * n_new + old * n_old) / total) if total else new
+
+
 @dataclass
 class _Bucket:
   start: float
   end: float
   onroad: bool
-  v_min: float = math.inf
-  v_max: float = -math.inf
-  v_sum: float = 0.
-  draw_sum: float = 0.
+  stats: _Stats = field(default_factory=lambda: _Stats(BUCKET_STATS))
   n: int = 0
 
-  def add(self, now: float, v: float, draw_w: float):
+  def add(self, now: float, reading: dict):
     self.end = now
-    self.v_min = min(self.v_min, v)
-    self.v_max = max(self.v_max, v)
-    self.v_sum += v
-    self.draw_sum += draw_w
+    self.stats.add(reading)
     self.n += 1
 
   def row(self, offset: float) -> tuple:
-    return (self.start + offset, self.end + offset, _r(self.v_min), _r(self.v_sum / self.n), _r(self.v_max),
-            int(self.onroad), round(self.draw_sum / self.n, 2))
+    values = self.stats.values()
+    return (self.start + offset, self.end + offset, int(self.onroad), *(values[column] for column, _, _ in BUCKET_STATS))
 
 
 @dataclass
@@ -105,39 +242,26 @@ class _Session:
   last: float
   start_flag: str       # "clean" (ignition edge), "ign_on_at_boot" or "ign_off_at_boot"
   seq: int = 0          # identifies the session to the writer, which owns its database id
-  v_start: float | None = None
-  v_end: float | None = None
-  v_min: float = math.inf
-  v_max: float = -math.inf
-  v_sum: float = 0.
+  stats: _Stats = field(default_factory=lambda: _Stats(SESSION_STATS))
   n: int = 0
   v_at: dict = field(default_factory=dict)
   end_reason: str | None = None
 
-  def add(self, now: float, v: float, smoothed: float):
-    if self.v_start is None:
-      self.v_start = v
+  def add(self, now: float, reading: dict):
     self.last = now
-    self.v_end = smoothed
-    self.v_min = min(self.v_min, v)
-    self.v_max = max(self.v_max, v)
-    self.v_sum += v
+    self.stats.add(reading)
     self.n += 1
     if self.kind == "park":
       for hours in PARK_OFFSETS_H:
         if hours not in self.v_at and now - self.start >= hours * 3600:
-          self.v_at[hours] = smoothed
+          self.v_at[hours] = reading["v_smooth"]
 
   def values(self, offset: float) -> dict:
     return {
       "kind": self.kind,
       "start_ts": self.start + offset,
       "end_ts": self.last + offset,
-      "v_start": _r(self.v_start),
-      "v_end": _r(self.v_end),
-      "v_min": _r(self.v_min) if self.n else None,
-      "v_max": _r(self.v_max) if self.n else None,
-      "v_mean": _r(self.v_sum / self.n) if self.n else None,
+      **self.stats.values(),
       "n": self.n,
       "v_at_1h": _r(self.v_at.get(1)),
       "v_at_3h": _r(self.v_at.get(3)),
@@ -147,14 +271,20 @@ class _Session:
     }
 
 
-class BatteryMonitor:
+class DeviceHistory:
   # Rows outlive reboots, so they are stamped with wall time (once it is valid), not monotonic time
-  def __init__(self, db_path: str | None = None, clock_valid=system_time_valid, wall_time=time.time):  # noqa: TID251
+  def __init__(self, db_path: str | None = None, clock_valid=system_time_valid, wall_time=time.time,  # noqa: TID251
+               offroad_danger_temp: float = DANGER_TEMP_C, legacy_path: str | None = None):
+    """legacy_path: an older database to move to db_path before the first write. Defaults to the battery-only
+    version's path when db_path is the default too."""
+    if legacy_path is None and db_path is None:
+      legacy_path = _legacy_db_path()
     self.db_path = db_path or default_db_path()
     self._clock_valid = clock_valid
     self._wall_time = wall_time
+    self._danger_temp = offroad_danger_temp
     self._filter = FirstOrderFilter(0., SMOOTHING_TAU_S, DT_HW, initialized=False)
-    self._writer = _Writer(self.db_path)
+    self._writer = _Writer(self.db_path, legacy_path)
     self._offset: float | None = None   # wall time minus monotonic time, measured at each flush once the clock is valid
     self._pending: list[_Bucket] = []   # finished buckets not yet handed to the writer
     self._bucket: _Bucket | None = None
@@ -163,13 +293,15 @@ class BatteryMonitor:
     self._seq = 0
     self._closed = False
 
-  def update(self, now: float, voltage_mv: float | None, ignition: bool, power_draw_w: float = 0.):
-    """Feed one reading. now is time.monotonic(); voltage_mv is the panda's instant voltage."""
+  def update(self, now: float, voltage_mv: float | None, ignition: bool, power_draw_w: float = 0.,
+             thermal: Thermal | None = None):
+    """Feed one reading. now is time.monotonic(); voltage_mv is the panda's instant voltage. Nothing is recorded
+    without a voltage (no panda), temperatures included."""
     if self._closed or not voltage_mv or voltage_mv <= 0:
       return
     self._apply_resume(now)
     v = voltage_mv / 1000.
-    smoothed = self._filter.update(v)
+    reading = {"v": v, "v_smooth": self._filter.update(v), "draw_w": power_draw_w, **self._thermal_reading(thermal)}
 
     kind = "drive" if ignition else "park"
     edge = False
@@ -183,14 +315,32 @@ class BatteryMonitor:
 
     if self._bucket is None:
       self._bucket = _Bucket(now, now, ignition)
-    self._bucket.add(now, v, power_draw_w)
-    self._session.add(now, v, smoothed)
+    self._bucket.add(now, reading)
+    self._session.add(now, reading)
 
     if now - self._bucket.start >= SAMPLE_INTERVAL_S:
       self._end_bucket()
       self._flush(now)
     elif edge:
       self._flush(now)
+
+  def _thermal_reading(self, thermal: Thermal | None) -> dict:
+    if thermal is None:
+      return _NO_THERMAL
+    return {
+      "soc": thermal.soc,
+      "cpu": thermal.cpu,
+      "gpu": thermal.gpu,
+      "mem": thermal.mem,
+      "intake": thermal.intake,
+      "exhaust": thermal.exhaust,
+      "fan_pct": thermal.fan_pct,
+      "fan_rpm": thermal.fan_rpm,
+      "self_heat": None if thermal.intake is None else thermal.soc - thermal.intake,
+      # each reading stands for one hardwared cycle
+      "s_hot": DT_HW if thermal.soc >= self._danger_temp else 0.,
+      "s_overheated": DT_HW if thermal.overheated else 0.,
+    }
 
   def close(self, reason: str, now: float | None = None):
     """End the open session (e.g. reason="low_voltage" when hardwared decides to shut down) and hand everything
@@ -257,7 +407,7 @@ class BatteryMonitor:
       self._offset = self._wall_time() - now
     elif self._offset is None:
       if final:
-        cloudlog.warning(f"battery_monitor: wall clock never became valid, dropping {len(self._pending)} buckets")
+        cloudlog.warning(f"device_history: wall clock never became valid, dropping {len(self._pending)} buckets")
       return
 
     sessions = self._ended + ([self._session] if self._session is not None else [])
@@ -272,16 +422,42 @@ class BatteryMonitor:
 
 @dataclass
 class _Snapshot:
-  rows: list[tuple]                 # finished buckets
+  rows: list[tuple]                 # finished buckets, in SAMPLE_COLUMNS order
   sessions: list[tuple[int, dict]]  # (seq, column values), oldest first; the open session last
   wall_now: float
+
+
+def _migrate_legacy(db_path: str, legacy_path: str | None):
+  """Move the battery-only version's database to db_path, once. Its WAL may hold the last writes (the writer never
+  closes its connection), so the WAL and shared-memory files move with it, before the database: an interrupted
+  move is finished on the next start."""
+  if legacy_path is None or os.path.exists(db_path) or not os.path.exists(legacy_path):
+    return
+  os.makedirs(os.path.dirname(db_path), exist_ok=True)
+  for suffix in ("-wal", "-shm", ""):
+    if os.path.exists(legacy_path + suffix):
+      os.rename(legacy_path + suffix, db_path + suffix)
+  try:
+    os.rmdir(os.path.dirname(legacy_path))
+  except OSError:
+    pass  # not empty: leave whatever else is there
+  cloudlog.info(f"device_history: moved {legacy_path} to {db_path}")
+
+
+def _add_missing_columns(db: sqlite3.Connection):
+  for table, columns in (("samples", SAMPLE_COLUMNS), ("sessions", [column for column, _, _ in SESSION_STATS])):
+    existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+    for column in columns:
+      if column not in existing:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
 
 
 class _Writer:
   """Owns the SQLite connection and does every write on its own thread. Data from a failed write is kept and
   retried with the next snapshot."""
-  def __init__(self, db_path: str):
+  def __init__(self, db_path: str, legacy_path: str | None = None):
     self.db_path = db_path
+    self.legacy_path = legacy_path
     self._queue: queue.Queue = queue.Queue()
     self._resumed: queue.Queue = queue.Queue()
     self._thread: threading.Thread | None = None
@@ -295,7 +471,7 @@ class _Writer:
 
   def submit(self, snapshot: _Snapshot):
     if self._thread is None:
-      self._thread = threading.Thread(target=self._run, name="battery-monitor-writer", daemon=True)
+      self._thread = threading.Thread(target=self._run, name="device-history-writer", daemon=True)
       self._thread.start()
     self._queue.put(snapshot)
 
@@ -321,7 +497,7 @@ class _Writer:
       try:
         self._write(item)
       except Exception:
-        cloudlog.exception("battery_monitor: writer failed")
+        cloudlog.exception("device_history: writer failed")
 
   def _write(self, snapshot: _Snapshot):
     self._rows += snapshot.rows
@@ -339,7 +515,8 @@ class _Writer:
       trim = self._last_trim is None or snapshot.wall_now - self._last_trim >= TRIM_INTERVAL_S
       try:
         with db:
-          db.executemany("INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?, ?)", self._rows)
+          db.executemany(f"INSERT INTO samples ({', '.join(SAMPLE_COLUMNS)}) VALUES ({', '.join('?' * len(SAMPLE_COLUMNS))})",
+                         self._rows)
           for seq, values in self._sessions.items():
             if self._write_session(db, seq, self._merged(seq, values)):
               inserted.append(seq)
@@ -350,7 +527,7 @@ class _Writer:
           del self._ids[seq]
         raise
     except (sqlite3.Error, OSError):
-      cloudlog.exception("battery_monitor: write failed")
+      cloudlog.exception("device_history: write failed")
       return
 
     if trim:
@@ -364,51 +541,53 @@ class _Writer:
 
   def _connect(self) -> sqlite3.Connection:
     if self._db is None:
+      _migrate_legacy(self.db_path, self.legacy_path)
       os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
       db = sqlite3.connect(self.db_path, timeout=1.0)
-      db.execute("PRAGMA journal_mode=WAL")
-      db.execute("PRAGMA synchronous=NORMAL")
-      db.executescript(SCHEMA)
+      try:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
+        db.executescript(SCHEMA)
+        with db:
+          _add_missing_columns(db)
+      except sqlite3.Error:
+        db.close()
+        raise
       self._db = db
     return self._db
 
   def _reconcile(self, db: sqlite3.Connection):
     """Close sessions a previous run left open, or continue one if this run started right where it stopped."""
-    columns = "id, kind, start_ts, end_ts, v_start, v_min, v_max, v_mean, n, v_at_1h, v_at_3h, v_at_6h, start_flag"
-    rows = db.execute(f"SELECT {columns} FROM sessions WHERE end_reason IS NULL ORDER BY end_ts").fetchall()
+    stat_columns = [column for column, _, _ in SESSION_STATS]
+    columns = ["id", "kind", "start_ts", "end_ts", "n", "v_at_1h", "v_at_3h", "v_at_6h", "start_flag", *stat_columns]
+    rows = [dict(zip(columns, row, strict=True)) for row in
+            db.execute(f"SELECT {', '.join(columns)} FROM sessions WHERE end_reason IS NULL ORDER BY end_ts")]
     if not rows:
       return
     seq, first = next(iter(self._sessions.items()), (None, None))
     *stale, last = rows
-    sid, kind, start_ts, end_ts, v_start, v_min, v_max, v_mean, n, *v_at, start_flag = last
-    resume = first is not None and first["start_flag"] != "clean" and first["kind"] == kind and \
-             0 <= first["start_ts"] - end_ts <= RESUME_GAP_S
+    resume = first is not None and first["start_flag"] != "clean" and first["kind"] == last["kind"] and \
+             0 <= first["start_ts"] - last["end_ts"] <= RESUME_GAP_S
     if not resume:
       stale.append(last)
     with db:
-      db.executemany("UPDATE sessions SET end_reason = 'unknown' WHERE id = ?", [(row[0],) for row in stale])
+      db.executemany("UPDATE sessions SET end_reason = 'unknown' WHERE id = ?", [(row["id"],) for row in stale])
 
     # Record the merge only after the commit, so a failed write can't leave it half done
     if resume:
-      self._ids[seq] = sid
-      at = {hours: value for hours, value in zip(PARK_OFFSETS_H, v_at, strict=True) if value is not None}
-      self._base[seq] = {"start_ts": start_ts, "start_flag": start_flag, "v_start": v_start, "v_min": v_min,
-                         "v_max": v_max, "v_mean": v_mean, "n": n, "v_at": at}
-      self._resumed.put({"seq": seq, "start_ts": start_ts, "v_at": at})
+      self._ids[seq] = last["id"]
+      at = {hours: last[f"v_at_{hours}h"] for hours in PARK_OFFSETS_H if last[f"v_at_{hours}h"] is not None}
+      self._base[seq] = {"start_ts": last["start_ts"], "start_flag": last["start_flag"], "n": last["n"], "v_at": at,
+                         "stats": {column: last[column] for column in stat_columns}}
+      self._resumed.put({"seq": seq, "start_ts": last["start_ts"], "v_at": at})
 
   def _merged(self, seq: int, values: dict) -> dict:
     base = self._base.get(seq)
     if base is None:
       return values
-    merged = {**values, "start_ts": base["start_ts"], "start_flag": base["start_flag"]}
-    if base["v_start"] is not None:
-      merged["v_start"] = base["v_start"]
-    if base["n"]:
-      n = values["n"] + base["n"]
-      merged["n"] = n
-      merged["v_min"] = min(v for v in (values["v_min"], base["v_min"]) if v is not None)
-      merged["v_max"] = max(v for v in (values["v_max"], base["v_max"]) if v is not None)
-      merged["v_mean"] = _r(((values["v_mean"] or 0.) * values["n"] + base["v_mean"] * base["n"]) / n)
+    merged = {**values, "start_ts": base["start_ts"], "start_flag": base["start_flag"], "n": values["n"] + base["n"]}
+    for column, kind, _ in SESSION_STATS:
+      merged[column] = _merge_stat(kind, values[column], values["n"], base["stats"][column], base["n"])
     for hours, value in base["v_at"].items():
       merged[f"v_at_{hours}h"] = value
     return merged
@@ -435,8 +614,11 @@ def _read_connection(db_path: str) -> sqlite3.Connection | None:
   return db
 
 
-def read_history(days: float, db_path: str | None = None, now: float | None = None, include_samples: bool = True) -> dict:
-  """Samples and sessions that ended within the last `days` days (open sessions included), oldest first."""
+def read_history(days: float, db_path: str | None = None, now: float | None = None, include_samples: bool = True,
+                 metric: str = "battery") -> dict:
+  """Samples and sessions that ended within the last `days` days (open sessions included), oldest first. Samples
+  carry only the columns of `metric` ("battery" or "thermal"); sessions carry everything."""
+  columns = METRIC_SAMPLE_COLUMNS[metric]
   now = time.time() if now is None else now  # noqa: TID251
   since = now - days * 86400
   db = _read_connection(db_path or default_db_path())
@@ -445,8 +627,7 @@ def read_history(days: float, db_path: str | None = None, now: float | None = No
   try:
     samples = []
     if include_samples:
-      samples = db.execute("SELECT ts_start, ts_end, v_min, v_mean, v_max, onroad, draw_w FROM samples WHERE ts_end >= ? ORDER BY ts_start",
-                           (since,)).fetchall()
+      samples = db.execute(f"SELECT {', '.join(columns)} FROM samples WHERE ts_end >= ? ORDER BY ts_start", (since,)).fetchall()
     sessions = db.execute("SELECT * FROM sessions WHERE end_ts >= ? OR end_reason IS NULL ORDER BY start_ts", (since,)).fetchall()
   finally:
     db.close()

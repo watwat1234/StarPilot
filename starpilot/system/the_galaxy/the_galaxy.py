@@ -8503,9 +8503,9 @@ def setup(app):
       "networkName": utilities.get_current_network_name(),
     }), 200
 
-  @app.route("/api/battery/history", methods=["GET"])
-  def battery_history():
-    from openpilot.starpilot.system import battery_monitor
+  @app.route("/api/device-history", methods=["GET"])
+  def get_device_history():
+    from openpilot.starpilot.system import device_history
 
     try:
       days = float(request.args.get("days", 30))
@@ -8514,23 +8514,32 @@ def setup(app):
     if not math.isfinite(days):
       return jsonify({"error": "days must be a number."}), 400
     days = min(max(days, 1.0), 400.0)
+    metric = request.args.get("metric", "battery")
+    if metric not in device_history.METRIC_SAMPLE_COLUMNS:
+      return jsonify({"error": "metric must be battery or thermal."}), 400
 
     # Same range as the toggle (starpilot_variables: low_voltage_shutdown)
-    cutoff = battery_monitor.DEFAULT_CUTOFF_V
+    cutoff = device_history.DEFAULT_CUTOFF_V
     if params.get_bool("DeviceManagement"):
-      cutoff = min(max(params.get_float("LowVoltageShutdown"), battery_monitor.DEFAULT_CUTOFF_V), 12.5)
+      cutoff = min(max(params.get_float("LowVoltageShutdown"), device_history.DEFAULT_CUTOFF_V), 12.5)
     try:
-      history = battery_monitor.read_history(days, include_samples=request.args.get("samples") != "0")
+      history = device_history.read_history(days, include_samples=request.args.get("samples") != "0", metric=metric)
     except Exception as exception:
-      return jsonify({"error": f"Battery history unavailable: {exception}"}), 500
+      return jsonify({"error": f"Device history unavailable: {exception}"}), 500
 
     return jsonify({
       **history,
+      "metric": metric,
       "days": days,
       "now": time.time(),  # noqa: TID251 (rows are wall-clock stamped)
       "cutoffV": cutoff,
-      "sampleIntervalS": battery_monitor.SAMPLE_INTERVAL_S,
-      "sampleRetentionDays": battery_monitor.SAMPLE_RETENTION_S / 86400,
+      "thermal": {
+        "dangerC": device_history.DANGER_TEMP_C,
+        "overheatedC": device_history.OVERHEATED_TEMP_C,
+        "parkedFanCapPct": device_history.PARKED_FAN_CAP_PCT,
+      },
+      "sampleIntervalS": device_history.SAMPLE_INTERVAL_S,
+      "sampleRetentionDays": device_history.SAMPLE_RETENTION_S / 86400,
       "live": utilities._read_battery_summary(),
       "onroad": params.get_bool("IsOnroad"),
     }), 200

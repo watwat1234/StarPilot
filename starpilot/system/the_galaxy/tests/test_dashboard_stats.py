@@ -1176,16 +1176,16 @@ def test_device_summary_includes_network_name(monkeypatch):
 
 
 def test_battery_summary_prefers_live_then_falls_back_to_recorded(monkeypatch):
-  from openpilot.starpilot.system import battery_monitor
+  from openpilot.starpilot.system import device_history
 
   monkeypatch.setattr(utilities, "_live_battery_voltage", lambda: 12.456)
   assert utilities._read_battery_summary() == {"voltage": 12.46, "live": True, "updatedAt": None}
 
   monkeypatch.setattr(utilities, "_live_battery_voltage", lambda: None)
-  monkeypatch.setattr(battery_monitor, "latest_sample", lambda: {"ts": 1_790_000_000.0, "voltage": 12.3, "onroad": False})
+  monkeypatch.setattr(device_history, "latest_sample", lambda: {"ts": 1_790_000_000.0, "voltage": 12.3, "onroad": False})
   assert utilities._read_battery_summary() == {"voltage": 12.3, "live": False, "updatedAt": 1_790_000_000.0, "onroad": False}
 
-  monkeypatch.setattr(battery_monitor, "latest_sample", lambda: None)
+  monkeypatch.setattr(device_history, "latest_sample", lambda: None)
   assert utilities._read_battery_summary() is None
 
 
@@ -2116,52 +2116,65 @@ def test_clear_generated_build_state_preserves_prebuilts_and_user_data(tmp_path)
   assert user_model.read_text() == "test"
 
 
-def test_battery_history_endpoint(monkeypatch, tmp_path):
-  from openpilot.starpilot.system import battery_monitor
+def test_device_history_endpoint(monkeypatch, tmp_path):
+  from openpilot.starpilot.system import device_history
 
   server = _load_server_module()
   assert server._import_galaxy_web_symbols()
 
   from datetime import UTC, datetime
 
-  db_path = str(tmp_path / "battery.db")
+  db_path = str(tmp_path / "device.db")
   wall_start = datetime.now(UTC).timestamp() - 3600
-  monitor = battery_monitor.BatteryMonitor(db_path=db_path, clock_valid=lambda: True, wall_time=lambda: wall_start + 600)
+  history = device_history.DeviceHistory(db_path=db_path, clock_valid=lambda: True, wall_time=lambda: wall_start + 600)
+  thermal = device_history.Thermal(soc=70.0, intake=40.0, fan_pct=30)
   for i in range(1202):  # just over one 10-minute bucket, parked
-    monitor.update(i * 0.5, 12400, False, 2.0)
-  assert monitor.drain(timeout=5)
-  monkeypatch.setattr(battery_monitor, "default_db_path", lambda: db_path)
+    history.update(i * 0.5, 12400, False, 2.0, thermal)
+  assert history.drain(timeout=5)
+  monkeypatch.setattr(device_history, "default_db_path", lambda: db_path)
 
   class BatteryParams(FakeParams):
     def get_float(self, key):
       return float(self.values.get(key, 0.0))
 
-  app = server.Flask("battery_history_test", template_folder=str(MODULE_DIR / "templates"), static_folder=str(MODULE_DIR / "assets"))
+  app = server.Flask("device_history_test", template_folder=str(MODULE_DIR / "templates"), static_folder=str(MODULE_DIR / "assets"))
   server.setup(app)
   monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 11.9}))
   monkeypatch.setattr(server.utilities, "_read_battery_summary", lambda: None)
   client = app.test_client()
 
-  payload = client.get("/api/battery/history?days=3650").get_json()
+  payload = client.get("/api/device-history?days=3650").get_json()
   assert payload["days"] == 400.0
+  assert payload["metric"] == "battery"
   assert payload["cutoffV"] == 11.9
+  assert payload["thermal"] == {"dangerC": 85.0, "overheatedC": 92.0, "parkedFanCapPct": 30}
   assert len(payload["samples"]) == 1
   assert payload["samples"][0]["v_mean"] == pytest.approx(12.4)
+  assert "soc_mean" not in payload["samples"][0]
   assert [s["kind"] for s in payload["sessions"]] == ["park"]
+  assert payload["sessions"][0]["soc_max"] == pytest.approx(70.0)
 
-  assert client.get("/api/battery/history?days=30&samples=0").get_json()["samples"] == []
-  assert client.get("/api/battery/history?days=abc").status_code == 400
-  assert client.get("/api/battery/history?days=nan").status_code == 400
-  assert client.get("/api/battery/history?days=inf").status_code == 400
+  payload = client.get("/api/device-history?days=7&metric=thermal").get_json()
+  assert payload["metric"] == "thermal"
+  assert payload["samples"][0]["soc_mean"] == pytest.approx(70.0)
+  assert payload["samples"][0]["intake_mean"] == pytest.approx(40.0)
+  assert "v_mean" not in payload["samples"][0]
+
+  assert client.get("/api/device-history?days=30&samples=0").get_json()["samples"] == []
+  assert client.get("/api/device-history?metric=gpu").status_code == 400
+  assert client.get("/api/device-history?days=abc").status_code == 400
+  assert client.get("/api/device-history?days=nan").status_code == 400
+  assert client.get("/api/device-history?days=inf").status_code == 400
+  assert client.get("/api/battery/history").status_code == 404
 
   monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": False, "LowVoltageShutdown": 12.2}))
-  assert client.get("/api/battery/history").get_json()["cutoffV"] == 11.8
+  assert client.get("/api/device-history").get_json()["cutoffV"] == 11.8
 
   # clamped to the toggle's range
   monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 14.0}))
-  assert client.get("/api/battery/history").get_json()["cutoffV"] == 12.5
+  assert client.get("/api/device-history").get_json()["cutoffV"] == 12.5
   monkeypatch.setattr(server, "params", BatteryParams({"DeviceManagement": True, "LowVoltageShutdown": 0.0}))
-  assert client.get("/api/battery/history").get_json()["cutoffV"] == 11.8
+  assert client.get("/api/device-history").get_json()["cutoffV"] == 11.8
 
 
 def test_maps_status_uses_cache_without_scanning_legacy_storage(monkeypatch):

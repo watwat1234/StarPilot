@@ -2961,7 +2961,7 @@ def _read_battery_summary():
     voltage = _live_battery_voltage()
     if voltage is not None:
       return {"voltage": round(voltage, 2), "live": True, "updatedAt": None}
-    from openpilot.starpilot.system.battery_monitor import latest_sample
+    from openpilot.starpilot.system.device_history import latest_sample
     latest = latest_sample()
     if latest is not None:
       return {"voltage": latest["voltage"], "live": False, "updatedAt": latest["ts"], "onroad": latest["onroad"]}

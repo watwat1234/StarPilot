@@ -472,7 +472,7 @@ with mock.patch.object(hw.HARDWARE, "get_device_type", return_value="mici"):
   from openpilot.system.hardware import hardwared, fan_controller
 bands = hardwared.THERMAL_BANDS
 fan = fan_controller.TiciFanController()
-print(hardwared.OFFROAD_DANGER_TEMP, bands[hardwared.ThermalStatus.overheated].min_temp,
+print(hardwared.OFFROAD_DANGER_TEMP, bands[hardwared.ThermalStatus.ok].max_temp,
       max(fan.update(110.0, False) for _ in range(200)))
 """
   out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True).stdout.split()

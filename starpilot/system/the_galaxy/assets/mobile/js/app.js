@@ -20,7 +20,7 @@ import { TestingGround } from "./views/TestingGround.js"
 import { ThemeMaker } from "./views/ThemeMaker.js"
 import { ModelLaboratory } from "./views/ModelLaboratory.js"
 import { Cameras } from "./views/Cameras.js"
-import { Battery } from "./views/Battery.js"
+import { DeviceHistory } from "./views/DeviceHistory.js"
 import { store, initRouter, navigate } from "./store.js"
 import { showSnackbar } from "./api.js"
 import { installDomTranslator } from "./i18n.js"
@@ -59,7 +59,8 @@ const VIEWS = {
   "/theme_maker": ThemeMaker,
   "/model_laboratory": ModelLaboratory,
   "/cameras": Cameras,
-  "/battery": Battery,
+  "/history": DeviceHistory,
+  "/battery": DeviceHistory,  // old path; the view redirects to /history
 }
 
 function resolveView(path) {

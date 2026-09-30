@@ -2147,7 +2147,7 @@ def test_device_history_endpoint(monkeypatch, tmp_path):
   assert payload["days"] == 400.0
   assert payload["metric"] == "battery"
   assert payload["cutoffV"] == 11.9
-  assert payload["thermal"] == {"dangerC": 85.0, "overheatedC": 92.0, "parkedFanCapPct": 30}
+  assert payload["thermal"] == {"dangerC": 85.0, "overheatedC": 100.0, "parkedFanCapPct": 30}
   assert len(payload["samples"]) == 1
   assert payload["samples"][0]["v_mean"] == pytest.approx(12.4)
   assert "soc_mean" not in payload["samples"][0]

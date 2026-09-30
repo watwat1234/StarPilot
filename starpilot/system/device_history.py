@@ -43,7 +43,7 @@ STOP_TIMEOUT_S = 2.0                   # how long stop() waits for the writer; m
 # comma 4 (mici) thresholds, duplicated to keep hardwared out of the Galaxy (tests pin them). hardwared passes its
 # own OFFROAD_DANGER_TEMP to the recorder, so these only label the Galaxy charts.
 DANGER_TEMP_C = 85.                    # OFFROAD_DANGER_TEMP: offroad and above it, thermal status goes critical
-OVERHEATED_TEMP_C = 92.                # THERMAL_BANDS[overheated].min_temp
+OVERHEATED_TEMP_C = 100.               # THERMAL_BANDS[ok].max_temp: above it, overheated (back to ok below 92)
 PARKED_FAN_CAP_PCT = 30                # TiciFanController's limit without ignition
 # The first version of the tables. Every column added since is nullable REAL and comes from the stats tables below;
 # _Writer adds whichever are missing, so a fresh database and one from an older version end up the same.

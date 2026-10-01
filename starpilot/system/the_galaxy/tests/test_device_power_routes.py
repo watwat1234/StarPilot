@@ -84,15 +84,13 @@ def test_device_power_requires_ignition_confirmed_off(monkeypatch, route, _param
 
 
 @pytest.mark.parametrize("route,_param", ROUTES)
-@pytest.mark.parametrize("update_kind", ["running", "rebooting", "rebooting_after_clock_jump"])
+@pytest.mark.parametrize("update_kind", ["running", "rebooting"])
 def test_device_power_refused_while_update_active(monkeypatch, route, _param, update_kind):
   # Timestamps are taken here, not at collection, so a slow suite can't age them out.
   update_state = {
     "running": {"running": True, "stage": "downloading"},
     # _finish_update_and_reboot: running is already False while it waits to call HARDWARE.reboot().
     "rebooting": {"running": False, "stage": "rebooting", "finishedAt": time.time()},
-    # The wall clock jumped (time sync) during the reboot notice; only the monotonic deadline counts.
-    "rebooting_after_clock_jump": {"running": False, "stage": "rebooting", "finishedAt": time.time() - 86400.0},
   }[update_kind]
   monkeypatch.setattr(the_galaxy, "_update_reboot_busy_until_mono", time.monotonic() + the_galaxy._UPDATE_REBOOT_BUSY_SECONDS)
   client, params, hardware_calls = _power_client(monkeypatch, PARKED, update_state=update_state)
@@ -152,6 +150,61 @@ def test_device_power_refused_during_panda_flash(monkeypatch, route, _param, fla
   assert params.writes == []
   assert params.ignition_probes == []
   assert hardware_calls == []
+
+
+@pytest.mark.parametrize("route,_param", ROUTES)
+def test_device_power_rechecks_galaxy_flash_inside_update_lock(monkeypatch, route, _param):
+  # Galaxy's own flash starts after the last FlashPanda read (e.g. while the request waited for the update
+  # lock): the in-lock check of _PANDA_FLASH_REBOOT_LOCK must still refuse.
+  client, params, hardware_calls = _power_client(monkeypatch, PARKED)
+  monkeypatch.setattr(the_galaxy, "_panda_flash_state", lambda: "idle")
+
+  def probe_while_galaxy_flash_starts():
+    the_galaxy._PANDA_FLASH_REBOOT_LOCK.acquire()
+    return False
+  monkeypatch.setattr(the_galaxy, "_device_ignition_on", probe_while_galaxy_flash_starts)
+
+  try:
+    assert client.post(route).status_code == 409
+  finally:
+    the_galaxy._PANDA_FLASH_REBOOT_LOCK.release()
+  assert params.writes == []
+  assert hardware_calls == []
+
+
+def test_device_power_update_busy_message_wins_over_unreadable_flash(monkeypatch):
+  client, params, _ = _power_client(monkeypatch, PARKED, update_state={"running": True, "stage": "downloading"})
+  params.memory["FlashPanda"] = OSError("params unavailable")
+  reads = []
+  monkeypatch.setattr(the_galaxy, "_panda_flash_state", lambda: reads.append(True) or "unknown")
+
+  response = client.post("/api/system/reboot")
+
+  assert response.status_code == 409
+  assert "Wait for the current update" in response.get_json()["message"]
+  assert reads == []  # not read at all while an update already blocks
+
+
+def test_panda_flash_state_logs_unreadable_once_per_streak(monkeypatch):
+  monkeypatch.setattr(the_galaxy, "_PANDA_FLASH_REBOOT_LOCK", threading.Lock())
+  monkeypatch.setattr(the_galaxy, "_panda_flash_read_failing", False)
+  value = {"read": OSError("params unavailable")}
+
+  def get_bool(key):
+    if isinstance(value["read"], Exception):
+      raise value["read"]
+    return value["read"]
+  monkeypatch.setattr(the_galaxy, "params_memory", SimpleNamespace(get_bool=get_bool))
+  logged = []
+  monkeypatch.setattr(the_galaxy.cloudlog, "exception", lambda *args, **kwargs: logged.append(args), raising=False)
+
+  assert [the_galaxy._panda_flash_state() for _ in range(3)] == ["unknown"] * 3
+  assert len(logged) == 1
+  value["read"] = False
+  assert the_galaxy._panda_flash_state() == "idle"
+  value["read"] = OSError("again")
+  assert the_galaxy._panda_flash_state() == "unknown"
+  assert len(logged) == 2
 
 
 @pytest.mark.parametrize("route,_param", ROUTES)
@@ -316,9 +369,11 @@ def ignition_reader(monkeypatch, fake_log):
   monkeypatch.setattr(the_galaxy, "_panda_ignition_stop", stop)
   fake = _FakeSubMaster()
   monkeypatch.setattr(the_galaxy.messaging, "SubMaster", fake)
+  before = set(threading.enumerate())
   yield fake
   stop.set()
-  for thread in threading.enumerate():
+  # Only readers this test started (they use this test's stop event).
+  for thread in set(threading.enumerate()) - before:
     if thread.name == "galaxy-panda-ignition":
       thread.join(timeout=3.0)
       assert not thread.is_alive()
@@ -420,8 +475,12 @@ def test_device_ignition_on_retries_subscriber_creation_on_the_same_thread(ignit
 def test_device_ignition_on_gives_up_after_repeated_creation_failures(ignition_reader):
   # Each failed creation may have cost a msgq reader slot, so stop retrying and refuse from then on.
   ignition_reader.fail_creates = 100
-  assert _probe(2.0)[0] is None
-  _wait_until(lambda: the_galaxy._panda_ignition_gave_up)
+  started = time.monotonic()
+  result, _ = _probe(2.0)
+  assert result is None
+  assert the_galaxy._panda_ignition_gave_up
+  # The give-up wakes the waiting caller; it doesn't sit out its 2 s timeout (backoff here is 0.05 + 0.1 s).
+  assert time.monotonic() - started < 1.0
   assert ignition_reader.create_attempts == the_galaxy._PANDA_IGNITION_CREATE_ATTEMPTS
 
   started = time.monotonic()

@@ -2316,15 +2316,22 @@ def _update_action_busy(state):
     return True
   return state.get("stage") == "rebooting" and time.monotonic() < _update_reboot_busy_until_mono
 
+_panda_flash_read_failing = False
+
 def _panda_flash_state():
   # "flashing", "idle", or "unknown" when the flash state can't be read (callers refuse).
+  global _panda_flash_read_failing
   if _PANDA_FLASH_REBOOT_LOCK.locked():
     return "flashing"
   try:
-    return "flashing" if params_memory.get_bool("FlashPanda") else "idle"
+    state = "flashing" if params_memory.get_bool("FlashPanda") else "idle"
   except Exception:
-    cloudlog.exception("galaxy: could not read FlashPanda")
+    if not _panda_flash_read_failing:
+      cloudlog.exception("galaxy: could not read FlashPanda")  # once per failure streak
+    _panda_flash_read_failing = True
     return "unknown"
+  _panda_flash_read_failing = False
+  return state
 
 def _set_fast_update_state(**kwargs):
   with _fast_update_lock:
@@ -3749,6 +3756,7 @@ def _panda_ignition_reader():
       if sm is None:
         create_attempts += 1
         sm = messaging.SubMaster(["pandaStates"])
+        failing = False  # a later update error is a new failure and gets its own log line
       sm.update(1000)
       if not sm.updated["pandaStates"]:
         continue
@@ -3761,10 +3769,14 @@ def _panda_ignition_reader():
         cloudlog.exception("galaxy: pandaStates reader failed")  # once per failure streak
         failing = True
       if sm is None and create_attempts >= _PANDA_IGNITION_CREATE_ATTEMPTS:
-        _panda_ignition_gave_up = True
+        cloudlog.error(f"galaxy: pandaStates reader gave up after {create_attempts} failed subscriber creations; "
+                       "Reboot/Power off stay refused until Galaxy restarts")
+        with _panda_ignition_cond:
+          _panda_ignition_gave_up = True
+          _panda_ignition_cond.notify_all()  # waiting callers return now instead of at their timeout
         return
       ignition = None
-      time.sleep(_PANDA_IGNITION_RETRY_S * (2 ** (create_attempts - 1) if sm is None else 1))
+      _panda_ignition_stop.wait(_PANDA_IGNITION_RETRY_S * (2 ** (create_attempts - 1) if sm is None else 1))
     with _panda_ignition_cond:
       _panda_ignition_seq += 1
       _panda_ignition_latest = ignition
@@ -3774,14 +3786,17 @@ def _device_ignition_on(timeout_s=1.0):
   # Waits for a conclusive result from a pandaStates message received after this call, so a stale one is
   # never used and one bad sample doesn't decide the request. None if none arrives in time.
   global _panda_ignition_thread
-  if _panda_ignition_gave_up:
-    return None
   with _panda_ignition_cond:
+    # Checked under the lock the reader sets it with, so a reader that just gave up is never restarted.
+    if _panda_ignition_gave_up:
+      return None
     if _panda_ignition_thread is None or not _panda_ignition_thread.is_alive():
       _panda_ignition_thread = threading.Thread(target=_panda_ignition_reader, name="galaxy-panda-ignition", daemon=True)
       _panda_ignition_thread.start()
     start_seq = _panda_ignition_seq
-    if not _panda_ignition_cond.wait_for(lambda: _panda_ignition_seq > start_seq and _panda_ignition_latest is not None, timeout=timeout_s):
+    if not _panda_ignition_cond.wait_for(
+        lambda: _panda_ignition_gave_up or (_panda_ignition_seq > start_seq and _panda_ignition_latest is not None),
+        timeout=timeout_s) or _panda_ignition_gave_up:
       return None
     return _panda_ignition_latest
 
@@ -10865,9 +10880,11 @@ def setup(app):
         "message": "Reboot/Power off is only available while parked.",
       }), 403
 
+    if _update_action_busy(_get_fast_update_state()):
+      return busy_response()
     # A panda flash reboots by itself when done; stopping pandad mid-flash can leave the panda in DFU.
     flash_state = _panda_flash_state()
-    if _update_action_busy(_get_fast_update_state()) or flash_state != "idle":
+    if flash_state != "idle":
       return busy_response(flash_state)
 
     ignition = _device_ignition_on()
@@ -10880,13 +10897,17 @@ def setup(app):
 
     # Recheck right before writing: the ignition probe can take up to a second. Under the update lock an
     # update cannot start in between. A panda flash isn't serialized by that lock (other processes can
-    # start one), so its recheck only narrows the window to the moment before the write.
+    # start one), so its recheck only narrows the window: FlashPanda is read before taking the lock (no
+    # params I/O inside it), and Galaxy's own flash lock is checked again inside, since waiting for the
+    # update lock can take seconds.
     flash_state = _panda_flash_state()
     if flash_state != "idle":
       return busy_response(flash_state)
     with _fast_update_lock:
       if _update_action_busy(_fast_update_state):
         return busy_response()
+      if _PANDA_FLASH_REBOOT_LOCK.locked():
+        return busy_response("flashing")
       if param == "DoShutdown":
         # manager checks the reboot params before DoShutdown, so a leftover reboot request would win.
         params.put_bool("DoReboot", False)

@@ -2310,10 +2310,11 @@ _UPDATE_REBOOT_BUSY_SECONDS = _FAST_UPDATE_REBOOT_NOTICE_SECONDS + 30.0
 def _update_action_busy(state):
   # _finish_update_and_reboot sets running=False and stage="rebooting", then reboots by itself. Count that
   # window as busy, but only for a while: if the reboot never happens the stage would otherwise stick.
+  # Monotonic: the device clock can jump (time sync) during the reboot notice.
   if state.get("running"):
     return True
-  finished_at = float(state.get("finishedAt") or 0.0)
-  return state.get("stage") == "rebooting" and time.time() - finished_at < _UPDATE_REBOOT_BUSY_SECONDS
+  since = state.get("rebootingSinceMono")
+  return state.get("stage") == "rebooting" and since is not None and time.monotonic() - float(since) < _UPDATE_REBOOT_BUSY_SECONDS
 
 def _set_fast_update_state(**kwargs):
   with _fast_update_lock:
@@ -3006,6 +3007,7 @@ def _finish_update_and_reboot(message):
     stage="rebooting",
     message=message,
     finishedAt=time.time(),
+    rebootingSinceMono=time.monotonic(),
   )
   # Keep the service online briefly so the UI can fetch and render the reboot notice.
   time.sleep(_FAST_UPDATE_REBOOT_NOTICE_SECONDS)
@@ -3722,10 +3724,13 @@ def _panda_ignition_reader():
   # One subscriber for the life of Galaxy, owned by this thread: msgq never frees reader slots (overflow
   # evicts every pandaStates reader), and it signals readers by the TID that subscribed, so the
   # subscriber must not belong to a short-lived request thread.
+  # The thread never exits on errors either: a dead thread's TID would stay in its reader slot.
   global _panda_ignition_seq, _panda_ignition_latest
-  sm = messaging.SubMaster(["pandaStates"])
+  sm = None
   while not _panda_ignition_stop.is_set():
     try:
+      if sm is None:
+        sm = messaging.SubMaster(["pandaStates"])
       sm.update(1000)
       if not sm.updated["pandaStates"]:
         continue
@@ -3740,14 +3745,15 @@ def _panda_ignition_reader():
       _panda_ignition_cond.notify_all()
 
 def _device_ignition_on(timeout_s=1.0):
-  # Waits for a pandaStates message received after this call, so a stale one is never used.
+  # Waits for a conclusive result from a pandaStates message received after this call, so a stale one is
+  # never used and one bad sample doesn't decide the request. None if none arrives in time.
   global _panda_ignition_thread
   with _panda_ignition_cond:
     if _panda_ignition_thread is None or not _panda_ignition_thread.is_alive():
       _panda_ignition_thread = threading.Thread(target=_panda_ignition_reader, name="galaxy-panda-ignition", daemon=True)
       _panda_ignition_thread.start()
     start_seq = _panda_ignition_seq
-    if not _panda_ignition_cond.wait_for(lambda: _panda_ignition_seq > start_seq, timeout=timeout_s):
+    if not _panda_ignition_cond.wait_for(lambda: _panda_ignition_seq > start_seq and _panda_ignition_latest is not None, timeout=timeout_s):
       return None
     return _panda_ignition_latest
 
@@ -10824,14 +10830,22 @@ def setup(app):
         "message": "Wait for the current update or panda firmware flash to finish.",
       }), 409
 
+    def panda_flash_busy():
+      # A panda flash reboots by itself when done; stopping pandad mid-flash can leave the panda in DFU.
+      if _PANDA_FLASH_REBOOT_LOCK.locked():
+        return True
+      try:
+        return params_memory.get_bool("FlashPanda")
+      except Exception:
+        return True
+
     if _personality_settings_write_locked():
       return jsonify({
         "success": False,
         "message": "Reboot/Power off is only available while parked.",
       }), 403
 
-    # A panda flash reboots by itself when done; stopping pandad mid-flash can leave the panda in DFU.
-    if _update_action_busy(_get_fast_update_state()) or _PANDA_FLASH_REBOOT_LOCK.locked() or params_memory.get_bool("FlashPanda"):
+    if _update_action_busy(_get_fast_update_state()) or panda_flash_busy():
       return busy_response()
 
     ignition = _device_ignition_on()
@@ -10842,9 +10856,10 @@ def setup(app):
                    "Reboot/Power off is unavailable: could not confirm the car is off.",
       }), 403
 
-    # Recheck and write under the update lock so an update cannot start in between.
+    # Recheck right before writing: the ignition probe can take up to a second. Under the update lock an
+    # update cannot start in between; a panda flash (not under that lock) is rechecked here as well.
     with _fast_update_lock:
-      if _update_action_busy(_fast_update_state):
+      if _update_action_busy(_fast_update_state) or panda_flash_busy():
         return busy_response()
       if param == "DoShutdown":
         # manager checks the reboot params before DoShutdown, so a leftover reboot request would win.

@@ -2305,6 +2305,16 @@ def _ensure_plots_worker():
     _plots_worker_thread = threading.Thread(target=_plots_worker, daemon=True)
     _plots_worker_thread.start()
 
+_UPDATE_REBOOT_BUSY_SECONDS = _FAST_UPDATE_REBOOT_NOTICE_SECONDS + 30.0
+
+def _update_action_busy(state):
+  # _finish_update_and_reboot sets running=False and stage="rebooting", then reboots by itself. Count that
+  # window as busy, but only for a while: if the reboot never happens the stage would otherwise stick.
+  if state.get("running"):
+    return True
+  finished_at = float(state.get("finishedAt") or 0.0)
+  return state.get("stage") == "rebooting" and time.time() - finished_at < _UPDATE_REBOOT_BUSY_SECONDS
+
 def _set_fast_update_state(**kwargs):
   with _fast_update_lock:
     _fast_update_state.update(kwargs)
@@ -3692,33 +3702,54 @@ def _safe_params_get_bool(key, default=False):
 def _personality_settings_write_locked():
   return _safe_params_get_bool("IsOnroad", default=True) or not _safe_params_get_bool("IsOffroad", default=False)
 
-_panda_states_sm = None
-_panda_states_lock = threading.Lock()
+def _panda_states_ignition(valid, panda_states):
+  # Ignition rule from manager/hardwared. None unless a valid message lists at least one known panda,
+  # so callers can fail closed.
+  if not valid:
+    return None
+  pandas = [ps for ps in panda_states if ps.pandaType != log.PandaState.PandaType.unknown]
+  if not pandas:
+    return None
+  return any(ps.ignitionLine or ps.ignitionCan for ps in pandas)
+
+_panda_ignition_cond = threading.Condition()
+_panda_ignition_seq = 0
+_panda_ignition_latest = None
+_panda_ignition_thread = None
+_panda_ignition_stop = threading.Event()
+
+def _panda_ignition_reader():
+  # One subscriber for the life of Galaxy, owned by this thread: msgq never frees reader slots (overflow
+  # evicts every pandaStates reader), and it signals readers by the TID that subscribed, so the
+  # subscriber must not belong to a short-lived request thread.
+  global _panda_ignition_seq, _panda_ignition_latest
+  sm = messaging.SubMaster(["pandaStates"])
+  while not _panda_ignition_stop.is_set():
+    try:
+      sm.update(1000)
+      if not sm.updated["pandaStates"]:
+        continue
+      ignition = _panda_states_ignition(sm.valid["pandaStates"], sm["pandaStates"])
+    except Exception:
+      cloudlog.exception("galaxy: pandaStates reader failed")
+      ignition = None
+      time.sleep(1.0)
+    with _panda_ignition_cond:
+      _panda_ignition_seq += 1
+      _panda_ignition_latest = ignition
+      _panda_ignition_cond.notify_all()
 
 def _device_ignition_on(timeout_s=1.0):
-  # Ignition rule from manager/hardwared. None unless a fresh, valid pandaStates reports at least one known
-  # panda, so callers can fail closed. One long-lived subscriber: msgq never frees reader slots, and
-  # overflowing them evicts every pandaStates reader.
-  global _panda_states_sm
-  try:
-    with _panda_states_lock:
-      if _panda_states_sm is None:
-        _panda_states_sm = messaging.SubMaster(["pandaStates"])
-      sm = _panda_states_sm
-      deadline = time.monotonic() + timeout_s
-      sm.update(0)  # drop whatever the conflated socket kept since the last request; it can be old
-      fresh = False
-      while not fresh and time.monotonic() < deadline:
-        sm.update(100)
-        fresh = sm.updated["pandaStates"]
-      if not fresh or not sm.valid["pandaStates"]:
-        return None
-      pandas = [ps for ps in sm["pandaStates"] if ps.pandaType != log.PandaState.PandaType.unknown]
-      if not pandas:
-        return None
-      return any(ps.ignitionLine or ps.ignitionCan for ps in pandas)
-  except Exception:
-    return None
+  # Waits for a pandaStates message received after this call, so a stale one is never used.
+  global _panda_ignition_thread
+  with _panda_ignition_cond:
+    if _panda_ignition_thread is None or not _panda_ignition_thread.is_alive():
+      _panda_ignition_thread = threading.Thread(target=_panda_ignition_reader, name="galaxy-panda-ignition", daemon=True)
+      _panda_ignition_thread.start()
+    start_seq = _panda_ignition_seq
+    if not _panda_ignition_cond.wait_for(lambda: _panda_ignition_seq > start_seq, timeout=timeout_s):
+      return None
+    return _panda_ignition_latest
 
 def _personality_editor_write_locked():
   def road_state(value):
@@ -10787,14 +10818,11 @@ def setup(app):
     # manager acts on DoReboot/DoShutdown after a clean process stop. It defers DoReboot while
     # started or ignition is on, but not DoShutdown, so this route is the only guard for power off.
     # IsOffroad alone is not enough: ForceOffroad or a blocked startup keeps it set with the car running.
-    def update_busy(state):
-      # "rebooting": _finish_update_and_reboot has set running=False and will call HARDWARE.reboot() itself.
-      return bool(state.get("running")) or str(state.get("stage") or "").strip().lower() == "rebooting"
-
-    update_busy_response = (jsonify({
-      "success": False,
-      "message": "Wait for the current update action to finish.",
-    }), 409)
+    def busy_response():
+      return jsonify({
+        "success": False,
+        "message": "Wait for the current update or panda firmware flash to finish.",
+      }), 409
 
     if _personality_settings_write_locked():
       return jsonify({
@@ -10802,8 +10830,9 @@ def setup(app):
         "message": "Reboot/Power off is only available while parked.",
       }), 403
 
-    if update_busy(_get_fast_update_state()):
-      return update_busy_response
+    # A panda flash reboots by itself when done; stopping pandad mid-flash can leave the panda in DFU.
+    if _update_action_busy(_get_fast_update_state()) or _PANDA_FLASH_REBOOT_LOCK.locked() or params_memory.get_bool("FlashPanda"):
+      return busy_response()
 
     ignition = _device_ignition_on()
     if ignition is not False:
@@ -10815,8 +10844,8 @@ def setup(app):
 
     # Recheck and write under the update lock so an update cannot start in between.
     with _fast_update_lock:
-      if update_busy(_fast_update_state):
-        return update_busy_response
+      if _update_action_busy(_fast_update_state):
+        return busy_response()
       if param == "DoShutdown":
         # manager checks the reboot params before DoShutdown, so a leftover reboot request would win.
         params.put_bool("DoReboot", False)

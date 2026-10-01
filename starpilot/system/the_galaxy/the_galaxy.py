@@ -3692,16 +3692,31 @@ def _safe_params_get_bool(key, default=False):
 def _personality_settings_write_locked():
   return _safe_params_get_bool("IsOnroad", default=True) or not _safe_params_get_bool("IsOffroad", default=False)
 
+_panda_states_sm = None
+_panda_states_lock = threading.Lock()
+
 def _device_ignition_on(timeout_s=1.0):
-  # Same ignition rule as manager/hardwared. None when no fresh pandaStates arrive (pandad down, no panda).
+  # Ignition rule from manager/hardwared. None unless a fresh, valid pandaStates reports at least one known
+  # panda, so callers can fail closed. One long-lived subscriber: msgq never frees reader slots, and
+  # overflowing them evicts every pandaStates reader.
+  global _panda_states_sm
   try:
-    sm = messaging.SubMaster(["pandaStates"])
-    deadline = time.monotonic() + timeout_s
-    while not sm.updated["pandaStates"] and time.monotonic() < deadline:
-      sm.update(100)
-    if not sm.updated["pandaStates"]:
-      return None
-    return any(ps.ignitionLine or ps.ignitionCan for ps in sm["pandaStates"] if ps.pandaType != log.PandaState.PandaType.unknown)
+    with _panda_states_lock:
+      if _panda_states_sm is None:
+        _panda_states_sm = messaging.SubMaster(["pandaStates"])
+      sm = _panda_states_sm
+      deadline = time.monotonic() + timeout_s
+      sm.update(0)  # drop whatever the conflated socket kept since the last request; it can be old
+      fresh = False
+      while not fresh and time.monotonic() < deadline:
+        sm.update(100)
+        fresh = sm.updated["pandaStates"]
+      if not fresh or not sm.valid["pandaStates"]:
+        return None
+      pandas = [ps for ps in sm["pandaStates"] if ps.pandaType != log.PandaState.PandaType.unknown]
+      if not pandas:
+        return None
+      return any(ps.ignitionLine or ps.ignitionCan for ps in pandas)
   except Exception:
     return None
 
@@ -10772,11 +10787,23 @@ def setup(app):
     # manager acts on DoReboot/DoShutdown after a clean process stop. It defers DoReboot while
     # started or ignition is on, but not DoShutdown, so this route is the only guard for power off.
     # IsOffroad alone is not enough: ForceOffroad or a blocked startup keeps it set with the car running.
+    def update_busy(state):
+      # "rebooting": _finish_update_and_reboot has set running=False and will call HARDWARE.reboot() itself.
+      return bool(state.get("running")) or str(state.get("stage") or "").strip().lower() == "rebooting"
+
+    update_busy_response = (jsonify({
+      "success": False,
+      "message": "Wait for the current update action to finish.",
+    }), 409)
+
     if _personality_settings_write_locked():
       return jsonify({
         "success": False,
         "message": "Reboot/Power off is only available while parked.",
       }), 403
+
+    if update_busy(_get_fast_update_state()):
+      return update_busy_response
 
     ignition = _device_ignition_on()
     if ignition is not False:
@@ -10786,17 +10813,15 @@ def setup(app):
                    "Reboot/Power off is unavailable: could not confirm the car is off.",
       }), 403
 
-    if _get_fast_update_state().get("running"):
-      return jsonify({
-        "success": False,
-        "message": "Wait for the current update action to finish.",
-      }), 409
-
-    if param == "DoShutdown":
-      # manager checks the reboot params before DoShutdown, so a leftover reboot request would win.
-      params.put_bool("DoReboot", False)
-      params.put_bool("DoUserReboot", False)
-    params.put_bool(param, True)
+    # Recheck and write under the update lock so an update cannot start in between.
+    with _fast_update_lock:
+      if update_busy(_fast_update_state):
+        return update_busy_response
+      if param == "DoShutdown":
+        # manager checks the reboot params before DoShutdown, so a leftover reboot request would win.
+        params.put_bool("DoReboot", False)
+        params.put_bool("DoUserReboot", False)
+      params.put_bool(param, True)
     return jsonify({"success": True, "message": message})
 
   @app.route("/api/system/reboot", methods=["POST"])

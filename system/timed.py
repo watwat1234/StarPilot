@@ -79,6 +79,22 @@ def car_clock_to_utc(local_dt, timezone):
   return local_dt.replace(tzinfo=tz, fold=0).astimezone(datetime.UTC).replace(tzinfo=None)
 
 
+def usable_gps(sm, services):
+  """First service with a fresh fix and an in-range time, as (message, utc time), else (None, None).
+
+  A car GPS feed without time (the Bolt's) sends 0, which is out of range, so the time comes from the
+  device's own GPS on the other topic.
+  """
+  for service in services:
+    gps = sm[service]
+    gps_time = datetime.datetime.fromtimestamp(gps.unixTimestampMillis / 1000., datetime.UTC).replace(tzinfo=None)
+    if (sm.updated[service] and
+        (time.monotonic() - sm.logMonoTime[service] / 1e9) <= 2.0 and
+        gps.hasFix and min_date() <= gps_time <= MAX_DATE):
+      return gps, gps_time
+  return None, None
+
+
 def set_time(new_time):
   diff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - new_time
   if abs(diff) < datetime.timedelta(seconds=10):
@@ -122,9 +138,11 @@ def main() -> NoReturn:
 
   params = Params()
   gps_location_service = get_gps_location_service(params)
+  # with a car GPS feed, the device's own GPS is on gpsLocation (see ubloxd)
+  gps_services = [gps_location_service] + [s for s in ('gpsLocationExternal', 'gpsLocation') if s != gps_location_service]
 
   pm = messaging.PubMaster(['clocks'])
-  sm = messaging.SubMaster([gps_location_service])
+  sm = messaging.SubMaster(gps_services)
   # StarPilot variables
   can_sock = messaging.sub_sock('can', timeout=100)
 
@@ -145,15 +163,11 @@ def main() -> NoReturn:
     msg.clocks.wallTimeNanos = time.time_ns()
     pm.send('clocks', msg)
 
-    gps = sm[gps_location_service]
-    gps_time = datetime.datetime.fromtimestamp(gps.unixTimestampMillis / 1000., datetime.UTC).replace(tzinfo=None)
-    gps_usable = (sm.updated[gps_location_service] and
-                  (time.monotonic() - sm.logMonoTime[gps_location_service] / 1e9) <= 2.0 and
-                  gps.hasFix and min_date() <= gps_time <= MAX_DATE)
+    gps, gps_time = usable_gps(sm, gps_services)
 
     # StarPilot variables
     # only corrects an invalid clock, so GPS and NTP always win
-    if not gps_usable and not system_time_valid():
+    if gps_time is None and not system_time_valid():
       if not last_timezone and not car_clock_tz_logged:
         cloudlog.warning("timed: no saved timezone, cannot use car clock fallback")
         car_clock_tz_logged = True
@@ -163,7 +177,7 @@ def main() -> NoReturn:
         set_time(car_time)
       continue
 
-    if not gps_usable:
+    if gps is None or gps_time is None:
       continue
 
     set_time(gps_time)

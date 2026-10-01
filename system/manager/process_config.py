@@ -48,7 +48,9 @@ def ublox(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: S
   use_ublox = ublox_available()
   if use_ublox != params.get_bool("UbloxAvailable"):
     params.put_bool("UbloxAvailable", use_ublox)
-  return started and use_ublox and car_gps is False
+  # with a car GPS feed, ubloxd publishes on gpsLocation (see ubloxd main) so gpsLocationExternal keeps one
+  # publisher; it still runs because some car feeds (the Bolt's) carry no time, and timed needs one
+  return started and use_ublox and car_gps is not None
 
 def joystick(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and params.get_bool("JoystickDebugMode")

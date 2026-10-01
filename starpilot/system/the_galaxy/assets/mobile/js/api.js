@@ -232,6 +232,8 @@ export const api = {
   },
   restoreToggles(data) { return request("/api/toggles/restore", { method: "POST", data }) },
   resetTogglesDefault() { return request("/api/toggles/reset_default", { method: "POST" }) },
+  rebootDevice() { return request("/api/system/reboot", { method: "POST" }) },
+  powerOffDevice() { return request("/api/system/power_off", { method: "POST" }) },
 
   getUpdateBranches() {
     return request("/api/update/branches", { cache: "no-store" }).then((data) => {

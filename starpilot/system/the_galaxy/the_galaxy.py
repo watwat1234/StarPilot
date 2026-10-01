@@ -10755,6 +10755,26 @@ def setup(app):
     HARDWARE.reboot()
     return jsonify({"success": True, "message": "Toggles reset to default StarPilot values. Rebooting..."})
 
+  def _request_device_power_action(param, message):
+    # manager acts on DoReboot/DoShutdown after a clean process stop. It defers DoReboot while
+    # started, but not DoShutdown, so this parked check is the only guard for power off.
+    if _personality_settings_write_locked():
+      return jsonify({
+        "success": False,
+        "message": "Reboot/Power off is only available while parked.",
+      }), 403
+
+    params.put_bool(param, True)
+    return jsonify({"success": True, "message": message})
+
+  @app.route("/api/system/reboot", methods=["POST"])
+  def reboot_device():
+    return _request_device_power_action("DoReboot", "Rebooting...")
+
+  @app.route("/api/system/power_off", methods=["POST"])
+  def power_off_device():
+    return _request_device_power_action("DoShutdown", "Powering off...")
+
   @app.route("/api/v_asm/snapshot", methods=["GET"])
   def v_asm_snapshot():
     jpeg = _get_live_driver_jpeg()

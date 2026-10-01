@@ -196,6 +196,7 @@ export const SystemTools = {
     },
     statusRebooting() { return String(this.fastStatus?.stage || "").trim().toLowerCase() === "rebooting" },
     updateInProgress() { return !!this.fastStatus?.running || this.statusRebooting || this.rebootPending },
+    powerActionsBlocked() { return this.isOnroad || this.updateInProgress || !!this.powerBusy || this.poweredOff },
     statusPollingNeeded() { return !this.fastStatus || this.updateInProgress || this.rebootPending },
     versionChoices() { return this.targetBranch === "StarPilot" ? releaseVersions(this.versionCommits) : this.versionCommits },
     installVersionBlocked() {
@@ -266,7 +267,8 @@ export const SystemTools = {
         if (stage === "rebooting" && !this.rebootPending) {
           this.rebootPending = true
           this.rebootStartedAt = Date.now()
-          writeRebootMarker(this.rebootStartedAt)
+          this.rebootReason = "update"
+          writeRebootMarker(this.rebootStorageScope, this.rebootStartedAt)
         }
         const pendingAge = this.rebootStartedAt ? Date.now() - this.rebootStartedAt : 0
         const deviceReturned = this.rebootPending && !status.running && stage !== "rebooting" &&
@@ -375,14 +377,14 @@ export const SystemTools = {
       if (!(await GalaxyConfirm({ title: "Reset toggles to default?", message: "This resets all toggles to their default values and reboots.", confirmLabel: "Reset", danger: true }))) return
       try {
         await api.resetTogglesDefault()
-        this.markRebootPending()
+        this.markRebootPending("reboot")
         showSnackbar("Resetting toggles to default... rebooting.")
       } catch (e) {
         showSnackbar("Reset failed.", "error")
       }
     },
     async rebootDevice() {
-      if (this.powerBusy || this.isOnroad || this.updateInProgress || this.poweredOff) return
+      if (this.powerActionsBlocked) return
       if (!(await GalaxyConfirm({ title: "Reboot device?", message: "The device will restart and Galaxy will reconnect when it is back up.", confirmLabel: "Reboot" }))) return
       this.powerBusy = "reboot"
       try {
@@ -391,12 +393,13 @@ export const SystemTools = {
         showSnackbar(result?.message || "Rebooting...")
       } catch (e) {
         showSnackbar(e?.message || "Reboot failed.", "error")
+        this.loadFastStatus()
       } finally {
         this.powerBusy = ""
       }
     },
     async powerOffDevice() {
-      if (this.powerBusy || this.isOnroad || this.updateInProgress || this.poweredOff) return
+      if (this.powerActionsBlocked) return
       if (!(await GalaxyConfirm({ title: "Power off device?", message: "The device will shut down. It will start again when the car is next turned on, or when it is powered up by hand.", confirmLabel: "Power Off", danger: true }))) return
       this.powerBusy = "power_off"
       try {
@@ -406,6 +409,7 @@ export const SystemTools = {
         showSnackbar(result?.message || "Powering off...")
       } catch (e) {
         showSnackbar(e?.message || "Power off failed.", "error")
+        this.loadFastStatus()
       } finally {
         this.powerBusy = ""
       }
@@ -894,14 +898,14 @@ export const SystemTools = {
             text="Waiting for the device to reconnect…" />
           <GxNotice v-else-if="isOnroad" text="Park the vehicle to reboot or power off." />
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button type="button" class="gx-btn gx-btn--tonal" :disabled="isOnroad || updateInProgress || !!powerBusy || poweredOff" @click="rebootDevice">
+            <button type="button" class="gx-btn gx-btn--tonal" :disabled="powerActionsBlocked" @click="rebootDevice">
               <i class="bi" :class="powerBusy === 'reboot' ? 'bi-arrow-repeat gx-spin' : 'bi-arrow-clockwise'"></i> Reboot
             </button>
-            <button type="button" class="gx-btn gx-btn--danger" :disabled="isOnroad || updateInProgress || !!powerBusy || poweredOff" @click="powerOffDevice">
+            <button type="button" class="gx-btn gx-btn--danger" :disabled="powerActionsBlocked" @click="powerOffDevice">
               <i class="bi" :class="powerBusy === 'power_off' ? 'bi-arrow-repeat gx-spin' : 'bi-power'"></i> Power Off
             </button>
           </div>
-          <p class="gx-note" style="margin:0;">Only available while parked. Power Off shuts the device down until the car is next turned on.</p>
+          <p class="gx-note" style="margin:0;">Only available while parked with the car turned off. Power Off shuts the device down until the car is next turned on.</p>
         </div>
       </GalaxySection>
 

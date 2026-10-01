@@ -673,7 +673,9 @@ def test_ui_mobile_polish_regressions():
   power_off_body = system.split("async powerOffDevice() {", 1)[1].split("\n    },\n", 1)[0]
   assert 'this.markRebootPending("reboot")' in reboot_body
   assert "markRebootPending" not in power_off_body and "this.poweredOff = true" in power_off_body
-  assert system.count('isOnroad || updateInProgress || !!powerBusy || poweredOff') == 2
+  assert "powerActionsBlocked() { return this.isOnroad || this.updateInProgress || !!this.powerBusy || this.poweredOff }" in system
+  assert system.count(':disabled="powerActionsBlocked"') == 2
+  assert "writeRebootMarker(this.rebootStartedAt)" not in system
 
   bluetooth = _read("js/components/BluetoothPanel.js")
   assert "methods: {\n    address," in bluetooth

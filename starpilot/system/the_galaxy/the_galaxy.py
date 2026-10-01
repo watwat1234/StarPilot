@@ -3692,6 +3692,19 @@ def _safe_params_get_bool(key, default=False):
 def _personality_settings_write_locked():
   return _safe_params_get_bool("IsOnroad", default=True) or not _safe_params_get_bool("IsOffroad", default=False)
 
+def _device_ignition_on(timeout_s=1.0):
+  # Same ignition rule as manager/hardwared. None when no fresh pandaStates arrive (pandad down, no panda).
+  try:
+    sm = messaging.SubMaster(["pandaStates"])
+    deadline = time.monotonic() + timeout_s
+    while not sm.updated["pandaStates"] and time.monotonic() < deadline:
+      sm.update(100)
+    if not sm.updated["pandaStates"]:
+      return None
+    return any(ps.ignitionLine or ps.ignitionCan for ps in sm["pandaStates"] if ps.pandaType != log.PandaState.PandaType.unknown)
+  except Exception:
+    return None
+
 def _personality_editor_write_locked():
   def road_state(value):
     if isinstance(value, bytes):
@@ -10757,13 +10770,32 @@ def setup(app):
 
   def _request_device_power_action(param, message):
     # manager acts on DoReboot/DoShutdown after a clean process stop. It defers DoReboot while
-    # started, but not DoShutdown, so this parked check is the only guard for power off.
+    # started or ignition is on, but not DoShutdown, so this route is the only guard for power off.
+    # IsOffroad alone is not enough: ForceOffroad or a blocked startup keeps it set with the car running.
     if _personality_settings_write_locked():
       return jsonify({
         "success": False,
         "message": "Reboot/Power off is only available while parked.",
       }), 403
 
+    ignition = _device_ignition_on()
+    if ignition is not False:
+      return jsonify({
+        "success": False,
+        "message": "Turn the car off to reboot or power off." if ignition else
+                   "Reboot/Power off is unavailable: could not confirm the car is off.",
+      }), 403
+
+    if _get_fast_update_state().get("running"):
+      return jsonify({
+        "success": False,
+        "message": "Wait for the current update action to finish.",
+      }), 409
+
+    if param == "DoShutdown":
+      # manager checks the reboot params before DoShutdown, so a leftover reboot request would win.
+      params.put_bool("DoReboot", False)
+      params.put_bool("DoUserReboot", False)
     params.put_bool(param, True)
     return jsonify({"success": True, "message": message})
 

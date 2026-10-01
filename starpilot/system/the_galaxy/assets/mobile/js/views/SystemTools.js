@@ -905,7 +905,7 @@ export const SystemTools = {
               <i class="bi" :class="powerBusy === 'power_off' ? 'bi-arrow-repeat gx-spin' : 'bi-power'"></i> Power Off
             </button>
           </div>
-          <p class="gx-note" style="margin:0;">Only available while parked with the car turned off. Power Off shuts the device down until the car is next turned on.</p>
+          <p class="gx-note" style="margin:0;">Only available while parked. Power Off shuts the device down until the car is next turned on.</p>
         </div>
       </GalaxySection>
 

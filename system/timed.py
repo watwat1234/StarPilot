@@ -9,7 +9,7 @@ import cereal.messaging as messaging
 from openpilot.common.time_helpers import min_date, MAX_DATE, system_time_valid
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
-from openpilot.common.gps import get_gps_location_service
+from openpilot.common.gps import GPS_LOCATION_SERVICES, get_gps_location_service
 from openpilot.system.hardware import AGNOS
 
 try:
@@ -138,8 +138,8 @@ def main() -> NoReturn:
 
   params = Params()
   gps_location_service = get_gps_location_service(params)
-  # with a car GPS feed, the device's own GPS is on gpsLocation (see ubloxd)
-  gps_services = [gps_location_service] + [s for s in ('gpsLocationExternal', 'gpsLocation') if s != gps_location_service]
+  # with a car GPS feed, the device's own GPS is on the other topic (get_ublox_location_service)
+  gps_services = sorted(GPS_LOCATION_SERVICES, key=lambda s: s != gps_location_service)
 
   pm = messaging.PubMaster(['clocks'])
   sm = messaging.SubMaster(gps_services)
@@ -167,7 +167,7 @@ def main() -> NoReturn:
 
     # StarPilot variables
     # only corrects an invalid clock, so GPS and NTP always win
-    if gps_time is None and not system_time_valid():
+    if gps is None and not system_time_valid():
       if not last_timezone and not car_clock_tz_logged:
         cloudlog.warning("timed: no saved timezone, cannot use car clock fallback")
         car_clock_tz_logged = True
@@ -177,7 +177,7 @@ def main() -> NoReturn:
         set_time(car_time)
       continue
 
-    if gps is None or gps_time is None:
+    if gps is None:
       continue
 
     set_time(gps_time)

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from cereal import log
 from cereal import messaging
+from openpilot.common.gps import get_ublox_location_service
 from openpilot.common.params import Params
 from openpilot.system.ubloxd.generated.ubx import Ubx
 from openpilot.system.ubloxd.generated.gps import Gps
@@ -106,6 +107,9 @@ class UbloxMsgParser:
 
   def __init__(self, location_service: str = 'gpsLocationExternal') -> None:
     self.location_service = location_service
+    # gpsLocation is declared at 1 Hz with every message in the qlog; NAV-PVT comes at 10 Hz
+    self.location_interval = 0.95 if location_service == 'gpsLocation' else 0.0
+    self.last_location_time: float | None = None
     self.framer = UbxFramer()
     self.caches = EphemerisCaches(
       gps_subframes=defaultdict(dict),
@@ -162,7 +166,12 @@ class UbloxMsgParser:
     return None
 
   # NAV-PVT -> gpsLocationExternal (gpsLocation when a car GPS feed owns gpsLocationExternal)
-  def _gen_nav_pvt(self, msg: Ubx.NavPvt) -> tuple[str, capnp.lib.capnp._DynamicStructBuilder]:
+  def _gen_nav_pvt(self, msg: Ubx.NavPvt) -> tuple[str, capnp.lib.capnp._DynamicStructBuilder] | None:
+    log_time = self.framer.last_log_time
+    if self.last_location_time is not None and 0.0 <= log_time - self.last_location_time < self.location_interval:
+      return None
+    self.last_location_time = log_time
+
     dat = messaging.new_message(self.location_service, valid=True)
     gps = getattr(dat, self.location_service)
     gps.source = log.GpsLocationData.SensorSource.ublox
@@ -496,7 +505,7 @@ class UbloxMsgParser:
 
 def main():
   # manager starts ubloxd only after CarGpsAvailable matches the current CarParams
-  location_service = 'gpsLocation' if Params().get_bool("CarGpsAvailable") else 'gpsLocationExternal'
+  location_service = get_ublox_location_service(Params())
   parser = UbloxMsgParser(location_service)
   pm = messaging.PubMaster(['ubloxGnss', location_service])
   sock = messaging.sub_sock('ubloxRaw', timeout=100, conflate=False)

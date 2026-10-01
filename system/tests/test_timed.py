@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from openpilot.common.time_helpers import min_date
 from openpilot.system.timed import usable_gps
 
-REAL_TIME = datetime.datetime(2026, 9, 30, 15, 4, 5)
+# relative to min_date() (the host's systemd build date), so the tests don't age out
+REAL_TIME = (min_date() + datetime.timedelta(days=30)).replace(microsecond=0)
 REAL_MS = int(REAL_TIME.replace(tzinfo=datetime.UTC).timestamp() * 1000)
 STALE_NS = int((time.monotonic() - 10.0) * 1e9)
 

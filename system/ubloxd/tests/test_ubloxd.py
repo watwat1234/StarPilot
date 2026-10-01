@@ -1,9 +1,11 @@
 import calendar
 import struct
+from types import SimpleNamespace
 
 import pytest
 
 from cereal import log
+from openpilot.common.gps import get_ublox_location_service
 from openpilot.system.ubloxd.ubloxd import UbloxMsgParser
 
 
@@ -42,3 +44,25 @@ def test_nav_pvt_publishes_on_the_chosen_service(service):
 
 def test_default_service_is_gps_location_external():
   assert UbloxMsgParser().location_service == "gpsLocationExternal"
+
+
+def published_at(service, times):
+  parser = UbloxMsgParser(service)
+  out = []
+  for t in times:
+    for frame in parser.framer.add_data(t, nav_pvt_frame()):
+      if parser.parse_frame(frame) is not None:
+        out.append(t)
+  return out
+
+
+def test_gps_location_is_limited_to_its_declared_1hz():
+  times = [i * 0.1 for i in range(30)]  # 10 Hz for 3 s
+  assert published_at("gpsLocation", times) == pytest.approx([0.0, 1.0, 2.0])
+  assert published_at("gpsLocationExternal", times) == pytest.approx(times)
+
+
+@pytest.mark.parametrize("car_gps,expected", [(False, "gpsLocationExternal"), (True, "gpsLocation")])
+def test_ublox_moves_off_external_with_a_car_gps_feed(car_gps, expected):
+  params = SimpleNamespace(get_bool=lambda key: car_gps if key == "CarGpsAvailable" else False)
+  assert get_ublox_location_service(params) == expected

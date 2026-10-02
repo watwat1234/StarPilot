@@ -160,8 +160,9 @@ def test_ublox_waits_for_current_carparams(monkeypatch):
   assert params.get_bool("UbloxAvailable")
 
 
-@pytest.mark.parametrize("car_gps,expected", [(False, True), (True, False)])
-def test_ublox_has_single_external_gps_publisher(monkeypatch, car_gps, expected):
+@pytest.mark.parametrize("car_gps", [False, True])
+def test_ublox_runs_with_and_without_car_gps(monkeypatch, car_gps):
+  # with car GPS, ubloxd moves to gpsLocation, so gpsLocationExternal still has one publisher
   monkeypatch.setattr("openpilot.system.manager.process_config.ublox_available", lambda: True)
   CP = car.CarParams.new_message()
   if car_gps:
@@ -172,5 +173,6 @@ def test_ublox_has_single_external_gps_publisher(monkeypatch, car_gps, expected)
     CP.carFingerprint = "mock"
   params = GpsParams(CP)
 
-  assert ublox(True, params, car.CarParams.new_message(), SimpleNamespace()) is expected
+  assert ublox(True, params, car.CarParams.new_message(), SimpleNamespace())
+  assert not ublox(False, params, car.CarParams.new_message(), SimpleNamespace())
   assert params.get_bool("CarGpsAvailable") is car_gps

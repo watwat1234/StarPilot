@@ -363,6 +363,22 @@ def test_media_parts_are_remuxed_once_split_and_cached(tmp_path, monkeypatch):
   assert sorted(path.name for path in entry.iterdir()) == ["init.mp4", "media.m4s"]
 
 
+def test_a_cache_dir_missing_a_part_is_remuxed_again(tmp_path, monkeypatch):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  _make_camera_segment(footage, 0)
+  calls = _fake_ffmpeg(monkeypatch)
+  client = _full_client(footage, cache_root, FakeExecutor())
+  url = f"/route-playback/segment/{ROUTE_NAME}--0/forward/media.m4s"
+  client.get(url).close()
+  [entry] = list(cache_root.iterdir())
+  (entry / "media.m4s").unlink()
+
+  with client.get(url) as response:
+    assert response.status_code == 200
+    assert response.data == FAKE_MEDIA
+  assert len(calls) == 2
+
+
 def test_concurrent_requests_share_one_remux_and_time_out_with_503(tmp_path, monkeypatch):
   footage = tmp_path / "footage"
   _make_camera_segment(footage, 0)

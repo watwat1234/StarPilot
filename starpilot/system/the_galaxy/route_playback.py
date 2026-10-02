@@ -158,12 +158,14 @@ def _prune_cache(cache_root, keep_path):
 
 def _remux_to_fmp4(source_path, target_dir, cache_root):
   """Stream-copy one raw .hevc segment into target_dir/{init.mp4,media.m4s}. Runs on the remux executor."""
-  if target_dir.is_dir():
+  if _is_complete(target_dir):
     return target_dir
   if os.path.exists(_segment_lock_path(source_path)):
     raise ValueError(f"File is still being recorded: {source_path}")
 
   cache_root.mkdir(parents=True, exist_ok=True)
+  # A dir missing a part (an interrupted prune) would otherwise count as a hit forever.
+  shutil.rmtree(target_dir, ignore_errors=True)
   _prune_cache(cache_root, keep_path=target_dir)
   temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX, dir=cache_root))
   try:
@@ -182,6 +184,10 @@ def _remux_to_fmp4(source_path, target_dir, cache_root):
     shutil.rmtree(temp_dir, ignore_errors=True)
     raise ValueError(f"Cannot process video file: {source_path}") from error
   return target_dir
+
+
+def _is_complete(target_dir):
+  return (target_dir / INIT_FILENAME).is_file() and (target_dir / MEDIA_FILENAME).is_file()
 
 
 def _cache_dir_for(cache_root, source_path):
@@ -205,10 +211,13 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
   def remuxed_dir(source_path):
     """Cache dir with init.mp4 + media.m4s, or None if the remux is not ready in time."""
     target_dir = _cache_dir_for(cache_root, source_path)
-    if target_dir.is_dir():
+    if _is_complete(target_dir):
       # Cache hit: answered here, without queueing behind other remuxes. Touch for the oldest-first prune.
-      os.utime(target_dir)
-      return target_dir
+      try:
+        os.utime(target_dir)
+        return target_dir
+      except FileNotFoundError:
+        pass  # pruned just now: remux again below
 
     key = str(target_dir)
     created = False

@@ -59,7 +59,8 @@ export const RoutePlayer = {
     async attach(keepTime = false) {
       // Camera/quality switches continue at the same point of the route, also across a fallback that never played.
       const resumeAt = keepTime ? this._resumeAt || this.$refs.video?.currentTime || 0 : 0
-      this._resumeAt = 0
+      // Pending until the new source reaches it, so a second quick switch keeps the same point.
+      this._resumeAt = resumeAt
       this.detach()
       const video = this.$refs.video
       const url = this.playlistUrl
@@ -70,14 +71,16 @@ export const RoutePlayer = {
       const mseHevc = !!mediaSource?.isTypeSupported?.(HEVC_MIME)
       if (full && !mseHevc && !(video.canPlayType(HLS_MIME) && video.canPlayType(HEVC_MIME))) {
         // Full quality is HEVC. Without decode support the road camera drops to low quality; other cameras error.
-        this._resumeAt = resumeAt
         if (this.camera === "forward") this.$emit("fallback-low")
         else this.$emit("error", "This browser cannot play full-quality video.")
         return
       }
       if (resumeAt > 0) {
         video.addEventListener("loadedmetadata", () => {
-          if (token === this._token) video.currentTime = resumeAt
+          if (token !== this._token) return
+          // hls.js already starts there (startPosition); native HLS needs the seek.
+          if (this._native) video.currentTime = resumeAt
+          this._resumeAt = 0
         }, { once: true })
       }
 
@@ -104,7 +107,8 @@ export const RoutePlayer = {
         return
       }
 
-      const hls = new Hls()
+      // Start loading at the resume point instead of fetching (and remuxing) segment 0 first.
+      const hls = new Hls({ startPosition: resumeAt > 0 ? resumeAt : -1 })
       this._hls = hls
       let recoveredMedia = false
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -114,6 +118,7 @@ export const RoutePlayer = {
           hls.recoverMediaError()
           return
         }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && this.fallBackToLow()) return
         this.detach()
         this.$emit("error", data.response?.code === 404 ? "No playable video for this route." : "Could not play this route.")
       })
@@ -123,7 +128,16 @@ export const RoutePlayer = {
     },
     onVideoError() {
       // hls.js reports its own errors; this covers the native fallback.
-      if (this._native) this.$emit("error", "Could not play this route.")
+      if (this._native && !this.fallBackToLow()) this.$emit("error", "Could not play this route.")
+    },
+    fallBackToLow() {
+      // Road camera full quality that fails to decode: drop to low quality at the same point, not to segments
+      // (the single-segment player serves the same HEVC).
+      if (this.camera !== "forward" || !this.fullQuality) return false
+      this._resumeAt = this._resumeAt || this.$refs.video?.currentTime || 0
+      this.detach()
+      this.$emit("fallback-low")
+      return true
     },
     detach() {
       this._token = (this._token || 0) + 1

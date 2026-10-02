@@ -274,7 +274,7 @@ export const Recordings = {
     },
     onRoutePlayerError(message) {
       this.wholeRoute = false
-      showSnackbar(`${message} Showing single segments instead.`, "error")
+      showSnackbar(`${message} Trying single segments instead.`, "error")
       this.$nextTick(() => this.playSegment())
     },
     selectSegment(i) {

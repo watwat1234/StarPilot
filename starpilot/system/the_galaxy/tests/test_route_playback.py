@@ -233,7 +233,14 @@ def test_recordings_plays_the_whole_route_through_the_hls_route_player():
   assert "camera() {\n      this.attach(true)" in player and "quality() {\n      this.attach(true)" in player
   assert "const resumeAt = keepTime ? this._resumeAt || this.$refs.video?.currentTime || 0 : 0" in player
   assert player.index("this._resumeAt = resumeAt") < player.index('this.$emit("fallback-low")')
-  assert "if (token === this._token) video.currentTime = resumeAt" in player
+  assert "this._resumeAt = resumeAt\n" in player  # stays pending until the new source loads
+  assert "if (this._native) video.currentTime = resumeAt\n          this._resumeAt = 0" in player
+  assert "new Hls({ startPosition: resumeAt > 0 ? resumeAt : -1 })" in player
+
+  # A road-camera full-quality decode failure during playback drops to low quality, not to segments.
+  assert 'if (data.type === Hls.ErrorTypes.MEDIA_ERROR && this.fallBackToLow()) return' in player
+  assert "if (this._native && !this.fallBackToLow())" in player
+  assert 'if (this.camera !== "forward" || !this.fullQuality) return false' in player
 
   # The hls.js instance is torn down on close/camera switch (unmount) and before re-attaching.
   assert "beforeUnmount() {\n    this.detach()" in player

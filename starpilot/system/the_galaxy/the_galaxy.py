@@ -5488,7 +5488,7 @@ def setup(app):
   if not isinstance(app.wsgi_app, GalaxySlugMiddleware):
     app.wsgi_app = GalaxySlugMiddleware(app.wsgi_app)
   from openpilot.starpilot.system.the_galaxy import route_playback
-  route_playback.register(app, footage_paths=FOOTAGE_PATHS)
+  route_playback.register(app, footage_paths=FOOTAGE_PATHS, remux_executor=_VIDEO_REMUX_EXECUTOR)
 
   model_status_debug = {
     "last_signature": None,

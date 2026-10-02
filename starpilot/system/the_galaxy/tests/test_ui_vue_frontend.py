@@ -161,6 +161,7 @@ def test_ui_ports_all_tool_views():
     "js/views/ToolEmbed.js": ["/manage_maps", "/manage_navigation_keys"],
     "js/views/SystemTools.js": [
       "backupToggles", "restoreToggles", "getToggleProfiles", "saveToggleProfile", "loadToggleProfile", "getUpdateBranches", "factoryReset",
+      "rebootDevice", "powerOffDevice",
     ],
     "js/components/WheelControls.js": ["getWheelControlsStatus"],
     "js/components/BluetoothPanel.js": ["getBluetoothStatus"],
@@ -663,6 +664,18 @@ def test_ui_mobile_polish_regressions():
   assert "rebootStorageScope" in system
   assert "writeRebootMarker(this.rebootStorageScope" in system
   assert "clearRebootMarker(this.rebootStorageScope" in system
+
+  # Device Power: reboot uses the reconnect flow, power off must not (the device is not coming back).
+  api_src = _read("js/api.js")
+  assert '"/api/system/reboot"' in api_src and '"/api/system/power_off"' in api_src
+  assert 'title="Device Power"' in system
+  reboot_body = system.split("async rebootDevice() {", 1)[1].split("\n    },\n", 1)[0]
+  power_off_body = system.split("async powerOffDevice() {", 1)[1].split("\n    },\n", 1)[0]
+  assert 'this.markRebootPending("reboot")' in reboot_body
+  assert "markRebootPending" not in power_off_body and "this.poweredOff = true" in power_off_body
+  assert "powerActionsBlocked() { return this.isOnroad || this.updateInProgress || !!this.powerBusy || this.poweredOff }" in system
+  assert system.count(':disabled="powerActionsBlocked"') == 2
+  assert "writeRebootMarker(this.rebootStartedAt)" not in system
 
   bluetooth = _read("js/components/BluetoothPanel.js")
   assert "methods: {\n    address," in bluetooth

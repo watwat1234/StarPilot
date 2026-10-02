@@ -5,6 +5,7 @@ segment; nothing is remuxed. Kept out of the_galaxy.py so upstream ingests don't
 """
 import math
 import os
+import subprocess
 
 from flask import Blueprint, Response, send_file
 
@@ -12,6 +13,7 @@ from openpilot.starpilot.system.the_galaxy import utilities
 
 QCAMERA_FILENAME = "qcamera.ts"
 SEGMENT_SECONDS = 60.0
+FFPROBE_TIMEOUT_SECONDS = 5
 
 
 def _segment_lock_path(path):
@@ -37,10 +39,14 @@ def _playable_segments(route_name, footage_paths):
 
 
 def _last_segment_seconds(path):
-  # Only the last segment of a route is normally short. One ffprobe call; fall back to a full minute.
+  # Only the last segment of a route is normally short. One bounded ffprobe call; fall back to a full minute.
   try:
-    seconds = float(utilities.get_video_duration(path))
-  except (OSError, ValueError):
+    result = subprocess.run([
+      utilities.FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1", path,
+    ], capture_output=True, text=True, check=True, timeout=FFPROBE_TIMEOUT_SECONDS)
+    seconds = float(result.stdout)
+  except (OSError, ValueError, subprocess.SubprocessError):
     return SEGMENT_SECONDS
   return seconds if math.isfinite(seconds) and seconds > 0 else SEGMENT_SECONDS
 

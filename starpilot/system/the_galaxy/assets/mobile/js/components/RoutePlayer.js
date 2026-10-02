@@ -1,5 +1,6 @@
 // Whole-route player: plays a route's qcamera.ts segments as one HLS stream with a single seekable timeline.
-// Safari/iOS play the playlist natively; other browsers load the vendored hls.js on first use.
+// Uses the vendored hls.js (loaded on first use) wherever Media Source Extensions exist, so every browser gets the
+// same playback and error handling; the browser's native HLS player is only the fallback (e.g. older iPhones).
 
 const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"
 const HLS_MIME = "application/vnd.apple.mpegurl"
@@ -42,24 +43,26 @@ export const RoutePlayer = {
       const url = routePlaylistUrl(this.route)
       const token = (this._token = (this._token || 0) + 1)
 
-      if (video.canPlayType(HLS_MIME)) {
+      let Hls = null
+      if (window.MediaSource || window.ManagedMediaSource) {
+        try {
+          const loaded = await loadHls()
+          if (loaded.isSupported()) Hls = loaded
+        } catch (error) {
+          // Falls back to native playback below.
+        }
+        // Closed or switched route while hls.js was loading.
+        if (token !== this._token || !this.$refs.video) return
+      }
+
+      if (!Hls) {
+        if (!video.canPlayType(HLS_MIME)) {
+          this.$emit("error", "This browser cannot play route video.")
+          return
+        }
         this._native = true
         video.src = url
         video.play().catch(() => {})
-        return
-      }
-
-      let Hls
-      try {
-        Hls = await loadHls()
-      } catch (error) {
-        if (token === this._token) this.$emit("error", "Could not load the video player.")
-        return
-      }
-      // Closed or switched route while hls.js was loading.
-      if (token !== this._token || !this.$refs.video) return
-      if (!Hls.isSupported()) {
-        this.$emit("error", "This browser cannot play route video.")
         return
       }
 
@@ -81,7 +84,7 @@ export const RoutePlayer = {
       video.play().catch(() => {})
     },
     onVideoError() {
-      // hls.js reports its own errors; this covers the native (Safari/iOS) path.
+      // hls.js reports its own errors; this covers the native fallback.
       if (this._native) this.$emit("error", "Could not play this route.")
     },
     detach() {

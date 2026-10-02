@@ -1,4 +1,6 @@
+import subprocess
 import time
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask
@@ -23,10 +25,21 @@ def _make_segment(root, segment_num, route_name=ROUTE_NAME, payload=b"ts", locke
   return segment
 
 
+def _fake_ffprobe(monkeypatch, outcome):
+  calls = []
+  def run(cmd, **kwargs):
+    calls.append((cmd, kwargs))
+    if isinstance(outcome, BaseException):
+      raise outcome
+    return SimpleNamespace(stdout=f"{outcome()}\n")
+  monkeypatch.setattr(route_playback.subprocess, "run", run)
+  return calls
+
+
 @pytest.fixture
 def last_duration(monkeypatch):
   durations = {"seconds": 23.5}
-  monkeypatch.setattr(route_playback.utilities, "get_video_duration", lambda path: durations["seconds"])
+  durations["calls"] = _fake_ffprobe(monkeypatch, lambda: durations["seconds"])
   return durations
 
 
@@ -84,15 +97,29 @@ def test_playlist_target_duration_covers_a_long_last_segment(tmp_path, last_dura
   assert "#EXT-X-TARGETDURATION:61" in lines
 
 
-def test_playlist_falls_back_to_a_full_minute_without_ffprobe(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [
+  FileNotFoundError("ffprobe"),
+  subprocess.TimeoutExpired("ffprobe", route_playback.FFPROBE_TIMEOUT_SECONDS),
+  subprocess.CalledProcessError(1, "ffprobe"),
+])
+def test_playlist_falls_back_to_a_full_minute_when_ffprobe_fails(tmp_path, monkeypatch, failure):
   _make_segment(tmp_path, 0)
-  def missing_ffprobe(path):
-    raise FileNotFoundError("ffprobe")
-  monkeypatch.setattr(route_playback.utilities, "get_video_duration", missing_ffprobe)
+  _fake_ffprobe(monkeypatch, failure)
 
   _, lines = _entries(_client(tmp_path).get(PLAYLIST_URL).get_data(as_text=True))
 
   assert "#EXTINF:60.000," in lines
+
+
+def test_ffprobe_runs_once_on_the_last_segment_with_a_timeout(tmp_path, last_duration):
+  for num in (0, 1):
+    _make_segment(tmp_path, num)
+
+  _client(tmp_path).get(PLAYLIST_URL)
+
+  [(cmd, kwargs)] = last_duration["calls"]
+  assert cmd[-1].endswith(f"{ROUTE_NAME}--1/qcamera.ts")
+  assert kwargs["timeout"] == route_playback.FFPROBE_TIMEOUT_SECONDS
 
 
 def test_playlist_uses_the_first_footage_path_with_playable_segments(tmp_path, last_duration):
@@ -161,3 +188,31 @@ def test_galaxy_setup_registers_route_playback(monkeypatch, tmp_path, last_durat
   response = app.test_client().get(PLAYLIST_URL)
   assert response.status_code == 200
   assert f"../segment/{ROUTE_NAME}--0/qcamera.ts" in response.get_data(as_text=True)
+
+
+def test_recordings_plays_the_whole_route_through_the_hls_route_player():
+  mobile = MODULE_DIR / "assets/mobile/js"
+  recordings = (mobile / "views/Recordings.js").read_text(encoding="utf-8")
+  player = (mobile / "components/RoutePlayer.js").read_text(encoding="utf-8")
+  vendor = MODULE_DIR / "assets/vendor/hls.js"
+
+  # Road camera defaults to the whole-route player; other cameras and the full-quality toggle keep segments.
+  assert 'import { RoutePlayer } from "../components/RoutePlayer.js"' in recordings
+  assert '<RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" @error="onRoutePlayerError" />' in recordings
+  assert 'return this.selectedCamera === "forward" && this.wholeRoute' in recordings
+  assert 'v-if="!usingRoutePlayer" class="gx-video-segment-controls"' in recordings
+  assert "if (this.usingRoutePlayer || !this.segments[this.current]) return" in recordings
+
+  # Playlist URL is built from the route name; hls.js comes from the local vendor copy, loaded only when needed.
+  assert "`/route-playback/${encodeURIComponent(route)}/qcamera.m3u8`" in player
+  assert 'const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"' in player
+  assert (vendor / "hls.light-1.7.3.min.js").is_file() and (vendor / "LICENSE").is_file()
+  assert "import(HLS_MODULE_URL)" in player
+
+  # hls.js is preferred wherever MSE exists; native HLS is only the fallback.
+  assert player.index("window.MediaSource || window.ManagedMediaSource") < player.index("video.canPlayType(HLS_MIME)")
+
+  # The hls.js instance is torn down on close/camera switch (unmount) and before re-attaching.
+  assert "beforeUnmount() {\n    this.detach()" in player
+  assert "this._hls?.destroy()" in player
+  assert "async attach() {\n      this.detach()" in player

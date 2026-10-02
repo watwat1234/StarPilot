@@ -50,6 +50,10 @@ change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without t
   Rebuild staging from scratch whenever the dev branch changes (reset to `Dom`, `git merge --squash pr/<name>-dev`);
   when `Dom` moves, rebase the dev branch first. wat-only paths to exclude from any PR:
   `tools/wat_dev`, `Dockerfile.wat_*`, `.github/workflows/base-image.yml`, `.forgejo`.
+- **Backup tags are temporary undo points.** Tag `backup/<date>/<name>` only before an action that would leave
+  commits with no other reference: a history rewrite, a force-push, or deleting a branch whose work isn't on any
+  other branch. Delete the tag once the result is verified (and pushed, if the action was a push). Don't tag a
+  branch whose work is already merged elsewhere; for local-only undo, the reflog keeps old tips for 90 days.
 
 ## Car-work branch naming: `wat-<car>-<class>-<name>`
 
@@ -80,7 +84,7 @@ Sibling worktrees under `workspace/`. **Rule: the directory name is the branch n
 | `StarPilot-Dom-wat` | `Dom-wat` (upstream ingest and common-feature merges happen here) |
 | `wat-bolt`, `wat-ioniq` | same-named car branches (never switch to a `test/*` branch) |
 | `wat-dev-notes` | `wat-dev-notes` (orphan notes branch, `<class>/<name>/progress.md`; never merged into code) |
-| `test-<name>` | a temporary `test/<name>` branch, only while a combined on-device test needs one; delete it (and tag the tip `backup/<date>/test-<name>`) once its work is on the feature/fix branches or the car branches |
+| `test-<name>` | a temporary `test/<name>` branch, only while a combined on-device test needs one; delete it (no backup tag) once its work is on the feature/fix branches or the car branches |
 | `feature-<name>`, `fix-<name>`, ... | `feature/<name>`, `fix/<name>`: one worktree per in-flight branch |
 
 Exemptions from the naming rule:

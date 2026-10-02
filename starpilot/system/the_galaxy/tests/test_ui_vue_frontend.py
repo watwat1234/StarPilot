@@ -962,3 +962,27 @@ def test_ui_navigation_map_first_layout_regressions():
   assert destination.count('class="gx-navigation-metric"') == 3
   assert "gx-navigation-summary__rows" not in destination and "gx-navigation-summary__rows" not in css
   assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
+
+
+def test_recordings_plays_the_whole_route_through_the_hls_route_player():
+  recordings = _read("js/views/Recordings.js")
+  player = _read("js/components/RoutePlayer.js")
+  vendor = UI_ROOT.parent / "vendor/hls.js"
+
+  # Road camera defaults to the whole-route player; other cameras and the full-quality toggle keep segments.
+  assert 'import { RoutePlayer } from "../components/RoutePlayer.js"' in recordings
+  assert '<RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" @error="onRoutePlayerError" />' in recordings
+  assert 'return this.selectedCamera === "forward" && this.wholeRoute' in recordings
+  assert 'v-if="!usingRoutePlayer" class="gx-video-segment-controls"' in recordings
+  assert "if (this.usingRoutePlayer || !this.segments[this.current]) return" in recordings
+
+  # Playlist URL is built from the route name; hls.js comes from the local vendor copy, loaded only when needed.
+  assert "`/route-playback/${encodeURIComponent(route)}/qcamera.m3u8`" in player
+  assert 'const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"' in player
+  assert (vendor / "hls.light-1.7.3.min.js").is_file() and (vendor / "LICENSE").is_file()
+  assert "video.canPlayType(HLS_MIME)" in player and "import(HLS_MODULE_URL)" in player
+
+  # The hls.js instance is torn down on close/camera switch (unmount) and before re-attaching.
+  assert "beforeUnmount() {\n    this.detach()" in player
+  assert "this._hls?.destroy()" in player
+  assert "async attach() {\n      this.detach()" in player

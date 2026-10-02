@@ -3,6 +3,7 @@ import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySheet } from "../components/GalaxySheet.js"
 import { GalaxyTabs } from "../components/GalaxyTabs.js"
 import { GxNotice } from "../components/GxNotice.js"
+import { RoutePlayer } from "../components/RoutePlayer.js"
 import { isFirestarOrigin } from "../components/PwaInstallSection.js"
 import { normalizeRoute, routeMatchesSearch, sortRoutes } from "../../../components/recordings/dashcam_routes_helpers.js"
 
@@ -48,7 +49,7 @@ function localDeviceUrl(ip, route = "/") {
 
 export const Recordings = {
   name: "Recordings",
-  components: { GalaxyTabs, GxNotice, GalaxySheet },
+  components: { GalaxyTabs, GxNotice, GalaxySheet, RoutePlayer },
   data() {
     return {
       sub: "routes",
@@ -66,6 +67,8 @@ export const Recordings = {
       current: 0,
       cameras: [],
       selectedCamera: "",
+      // Road camera plays the whole route (qcamera HLS); off = full-quality single segments.
+      wholeRoute: true,
       logsRoute: null,
       logsData: null,
       onFirestar: isFirestarOrigin(),
@@ -85,6 +88,9 @@ export const Recordings = {
         formattedDuration: fmtDuration(this.routes.reduce((n, r) => n + r.approxDurationSeconds, 0)),
         preservedCount: this.routes.filter((r) => r.is_preserved).length,
       }
+    },
+    usingRoutePlayer() {
+      return this.selectedCamera === "forward" && this.wholeRoute
     },
     visibleRoutes() {
       const list = this.routes.filter((r) => (!this.showPreservedOnly || r.is_preserved) && routeMatchesSearch(r, this.searchQuery))
@@ -216,6 +222,7 @@ export const Recordings = {
         this.current = 0
         this.cameras = cameras
         this.selectedCamera = cameras.includes("forward") ? "forward" : cameras[0]
+        this.wholeRoute = true
         this.$nextTick(() => this.playSegment())
       } catch (e) {
         this.playerError = e?.message || "Could not load route."
@@ -230,7 +237,7 @@ export const Recordings = {
     },
     playSegment() {
       const video = this.$refs.player
-      if (!this.segments[this.current]) return
+      if (this.usingRoutePlayer || !this.segments[this.current]) return
       // The player mounts inside a Teleport + transition after openPlayer clears
       // playerLoading, so the video element may not exist on the very first call.
       if (!video) {
@@ -245,6 +252,19 @@ export const Recordings = {
       video.src = this.cameraUrl(this.segments[this.current])
       video.load()
       video.play().catch(() => {})
+    },
+    selectCamera(camera) {
+      this.selectedCamera = camera
+      this.$nextTick(() => this.playSegment())
+    },
+    toggleWholeRoute() {
+      this.wholeRoute = !this.wholeRoute
+      this.$nextTick(() => this.playSegment())
+    },
+    onRoutePlayerError(message) {
+      this.wholeRoute = false
+      showSnackbar(`${message} Showing single segments instead.`, "error")
+      this.$nextTick(() => this.playSegment())
     },
     selectSegment(i) {
       if (i === this.current) return
@@ -463,9 +483,10 @@ export const Recordings = {
           <div v-if="playerError" class="gx-empty" style="color: var(--error);">{{ playerError }}</div>
           <div v-else-if="playerLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading video...</div>
           <template v-else-if="segments.length">
-            <video ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
+            <RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" @error="onRoutePlayerError" />
+            <video v-else ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
             <div style="display:flex; flex-direction:column; gap:8px; padding: var(--sp-3) 0 0;">
-              <div class="gx-video-segment-controls">
+              <div v-if="!usingRoutePlayer" class="gx-video-segment-controls">
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon" aria-label="Previous segment" :disabled="current<=0" @click="current--; playSegment()"><i class="bi bi-chevron-left"></i></button>
                 <GalaxySelect class="gx-field gx-video-segment-select" aria-label="Video segment" :value="String(current)" :disabled="!segments.length" @change="selectSegment(Number($event.target.value))">
                   <option v-for="(s, i) in segments" :key="i" :value="String(i)">Segment {{ i + 1 }} of {{ segments.length }}</option>
@@ -473,7 +494,8 @@ export const Recordings = {
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon" aria-label="Next segment" :disabled="current>=segments.length-1" @click="current++; playSegment()"><i class="bi bi-chevron-right"></i></button>
               </div>
               <div class="gx-video-actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectedCamera=c; playSegment()">{{ c }}</button>
+                <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectCamera(c)">{{ c }}</button>
+                <button v-if="selectedCamera==='forward'" type="button" class="gx-chip gx-video-whole-route" :title="wholeRoute ? 'Switch to full-quality single segments' : 'Play the whole route (low quality)'" @click="toggleWholeRoute">{{ wholeRoute ? 'Whole route' : 'Full quality' }}</button>
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon gx-video-download" title="Download" style="margin-left:auto;" @click="downloadRoute"><i class="bi bi-download"></i></button>
               </div>
             </div>

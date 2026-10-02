@@ -846,6 +846,17 @@ def test_route_start_ignores_touched_segment_directories_when_logs_exist(tmp_pat
   assert utilities.get_route_start_time_for_route(CLOCK_ROUTE_NAME, str(tmp_path)) == REAL_ROUTE_START
 
 
+def test_process_route_finds_segments_past_a_long_gap(tmp_path):
+  closes = _closes_from(FALLBACK_BOOT_START, range(1))
+  closes += [None] * (utilities.ROUTE_SEGMENT_GAP_LIMIT + 10)
+  closes += _closes_from(REAL_ROUTE_START, range(len(closes), len(closes) + 1))
+  _make_logged_route(tmp_path, closes)
+
+  processed = utilities.process_route(str(tmp_path), CLOCK_ROUTE_NAME, segment_count=2)
+
+  assert processed["timestamp"] == REAL_ROUTE_START.isoformat()
+
+
 def test_process_route_skips_missing_segments(tmp_path):
   closes = _closes_from(FALLBACK_BOOT_START, range(1)) + [None] + _closes_from(REAL_ROUTE_START, range(2, 3))
   _make_logged_route(tmp_path, closes)
@@ -879,7 +890,24 @@ def test_log_route_time_uses_only_valid_clocks():
 
   assert drive["date"] == REAL_ROUTE_START.isoformat()
   assert drive["timeSource"] == utilities.DASHBOARD_TIME_SOURCE_LOG
-  assert utilities._route_logged_start_time("unused", reader=_late_clock_messages()) == REAL_ROUTE_START
+
+
+def test_logged_start_time_stops_at_the_first_clocks_message():
+  read_past = []
+
+  def reader():
+    yield from _late_clock_messages()[:2]
+    read_past.append(True)
+    yield from _late_clock_messages()[2:]
+
+  assert utilities._route_logged_start_time("unused", reader=reader()) is None
+  assert not read_past
+
+  valid_first = [
+    msg("carState", 10.0, SimpleNamespace(vEgo=10.0)),
+    _clocks(15.0, REAL_ROUTE_START + utilities.timedelta(seconds=5), valid=True),
+  ]
+  assert utilities._route_logged_start_time("unused", reader=valid_first) == REAL_ROUTE_START
 
 
 def test_log_route_time_falls_back_to_filesystem_when_clock_never_valid():

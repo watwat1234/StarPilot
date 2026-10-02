@@ -1159,8 +1159,10 @@ def _route_start_from_segment_mtimes(segments):
   A segment's log is last written when the segment closes, about (num + 1) minutes into the route.
   When the clock is set mid-route (the device boots on its fallback date without WiFi), segments that
   closed before that give estimates months too early, so the latest log estimate wins. A partial last
-  segment only runs early too. Directory mtimes are the fallback without a log; renames and dashboard
-  analysis can touch a directory later but cannot make it older, so the earliest of those wins.
+  segment only runs early too. Known limit: timed's car-clock fallback (Hyundai/Kia cluster, no GPS fix)
+  can run ahead until GPS corrects it, and then the route is dated late by that difference.
+  Directory mtimes are the fallback without a log; renames and dashboard analysis can touch a
+  directory later but cannot make it older, so the earliest of those wins.
   """
   log_estimates = []
   dir_estimates = []
@@ -3195,7 +3197,9 @@ def _route_logged_start_time(log_path, reader=None):
 
       message_type = _message_type(message)
       wall_time.add(message, message_type, _message_payload(message, message_type), mono_time)
-      if wall_time.clock_offset is not None:
+      # Only one clocks message is needed: this runs for logs closed before the clock was valid,
+      # so the first clocks message decides, and reading on would decompress the whole log for nothing.
+      if wall_time.saw_clocks:
         break
 
     if first_mono_time is None or wall_time.offset is None:
@@ -3336,7 +3340,11 @@ def process_route(footage_path, route_name, segment_count=0, first_segment_num=0
         custom_name = item
         break
 
-  segment_nums = _route_segment_nums(footage_path, route_name, max(0, int(first_segment_num)), max(1, int(segment_count)))
+  segment_count = max(1, int(segment_count))
+  segment_nums = _route_segment_nums(footage_path, route_name, max(0, int(first_segment_num)), segment_count)
+  if len(segment_nums) < segment_count:
+    # A gap past the walk limit: list the footage directory for this route instead.
+    segment_nums = None
   route_timestamp_dt = get_route_start_time_for_route(route_name, footage_path, segment_nums)
   route_timestamp_str = custom_name or (route_timestamp_dt.isoformat() if route_timestamp_dt else None)
 

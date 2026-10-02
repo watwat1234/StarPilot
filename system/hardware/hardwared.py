@@ -41,6 +41,7 @@ from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
 
 from openpilot.starpilot.assets.model_manager import selected_chestnut_artifacts_ready
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
+from openpilot.starpilot.system.device_history import DeviceHistory, Thermal
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -343,6 +344,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   params = Params()
   power_monitor = PowerMonitoring()
+  device_history = DeviceHistory()
   chestnut = Chestnut() if AGNOS else None
   chestnut_status = ChestnutStatus() if AGNOS else None
 
@@ -576,6 +578,25 @@ def hardware_thread(end_event, hw_queue) -> None:
     statlog.sample("power_draw", current_power_draw)
     msg.deviceState.powerDrawW = current_power_draw
 
+    # 12V battery and temperature history for the Galaxy (must never take hardwared down)
+    try:
+      ds = msg.deviceState
+      thermal = None if not voltage else Thermal(
+        soc=max(temp_sources),
+        cpu=max(ds.cpuTempC, default=None),
+        gpu=max(ds.gpuTempC, default=None),
+        mem=ds.memoryTempC if thermal_config.memory is not None else None,
+        intake=ds.intakeTempC if thermal_config.intake is not None else None,
+        exhaust=ds.exhaustTempC if thermal_config.exhaust is not None else None,
+        fan_pct=ds.fanSpeedPercentDesired if fan_controller is not None else None,
+        fan_rpm=peripheralState.fanSpeedRpm if peripheral_panda_present else None,
+        hot=is_offroad_for_5_min and offroad_comp_temp > OFFROAD_DANGER_TEMP,  # the parked limit above
+        overheated=thermal_status >= ThermalStatus.overheated,
+      )
+      device_history.update(time.monotonic(), voltage, onroad_conditions["ignition"], current_power_draw, thermal)
+    except Exception:
+      cloudlog.exception("device_history update failed")
+
     som_power_draw = HARDWARE.get_som_power_draw()
     statlog.sample("som_power_draw", som_power_draw)
     msg.deviceState.somPowerDrawW = som_power_draw
@@ -593,6 +614,10 @@ def hardware_thread(end_event, hw_queue) -> None:
       if params.get_bool("SentryModeEnabled") and not sentry_power_off_notified:
         sentry_power_off_notified = True
         notify_sentry_power_off(shutdown_reason, power_monitor)
+      try:
+        device_history.close(shutdown_reason)  # no-op after the first call
+      except Exception:
+        cloudlog.exception("device_history close failed")
       params.put_bool("DoShutdown", True)
     else:
       sentry_power_off_notified = False
@@ -686,6 +711,12 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # StarPilot variables
     starpilot_toggles = get_starpilot_toggles(sm, read_persisted_force_params=True)
+
+  # manager stops hardwared (SIGINT) on every reboot, shutdown and update: write out the last readings
+  try:
+    device_history.stop()
+  except Exception:
+    cloudlog.exception("device_history stop failed")
 
 
 def main():

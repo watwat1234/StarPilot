@@ -53,7 +53,7 @@ def test_process_route_is_metadata_only_and_retains_fields(monkeypatch, tmp_path
   (segment / "qlog.zst").write_bytes(b"log")
   (segment / "Morning school run").touch()
   started_at = datetime(2026, 8, 26, 15, 30, tzinfo=timezone.utc)
-  monkeypatch.setattr(utilities, "get_route_start_time", lambda path: started_at)
+  monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: started_at)
   monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: True)
   monkeypatch.setattr(utilities, "video_to_png", lambda *args: (_ for _ in ()).throw(AssertionError("preview generation must stay lazy")))
 
@@ -75,7 +75,7 @@ def test_process_route_is_metadata_only_and_retains_fields(monkeypatch, tmp_path
 def test_process_route_uses_display_timestamp_without_losing_started_at(monkeypatch, tmp_path):
   _make_segment(tmp_path)
   started_at = datetime(2026, 8, 26, 15, 30, tzinfo=timezone.utc)
-  monkeypatch.setattr(utilities, "get_route_start_time", lambda path: started_at)
+  monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: started_at)
 
   result = utilities.process_route(str(tmp_path), ROUTE_NAME, segment_count=1)
 
@@ -290,7 +290,7 @@ def test_timed_out_thumbnail_job_stays_deduplicated_until_completion(monkeypatch
 def test_routes_endpoint_uses_sse_no_buffering_headers(monkeypatch, tmp_path):
   segment = _make_segment(tmp_path)
   (segment / "qlog.zst").write_bytes(b"log")
-  monkeypatch.setattr(utilities, "get_route_start_time", lambda path: datetime(2026, 8, 26, tzinfo=timezone.utc))
+  monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: datetime(2026, 8, 26, tzinfo=timezone.utc))
   client = _make_client(monkeypatch, tmp_path)
 
   response = client.get("/api/routes")
@@ -321,7 +321,7 @@ def test_rename_and_reset_keep_logs_and_use_both_reset_urls(monkeypatch, tmp_pat
   for segment in segments:
     (segment / "qlog.zst").write_bytes(b"log")
     (segment / "Old_name").touch()
-  monkeypatch.setattr(utilities, "get_route_start_time", lambda path: datetime(2026, 8, 26, tzinfo=timezone.utc))
+  monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: datetime(2026, 8, 26, tzinfo=timezone.utc))
   client = _make_client(monkeypatch, tmp_path)
 
   renamed = client.post("/api/routes/rename", json={"old": ROUTE_NAME, "new": "New name"})
@@ -594,7 +594,7 @@ def test_sparse_route_metadata_and_video_downloads(monkeypatch, tmp_path):
   segments = [_make_segment(tmp_path, segment_num=number) for number in (0, 3, 11)]
   for segment in segments:
     (segment / "fcamera.hevc").write_bytes(b"hevc")
-  monkeypatch.setattr(utilities, "get_route_start_time", lambda path: datetime(2026, 8, 26, tzinfo=timezone.utc))
+  monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: datetime(2026, 8, 26, tzinfo=timezone.utc))
   _stub_remux(monkeypatch, tmp_path)
   monkeypatch.setattr(utilities, "ffmpeg_stream_concatenated_mp4", lambda paths: iter((b"combined-", b"video")))
   client = _make_client(monkeypatch, tmp_path)
@@ -627,7 +627,7 @@ def test_route_metadata_never_probes_segments_with_ffprobe(monkeypatch, tmp_path
     raise AssertionError(f"ffprobe must stay off the route metadata path: {path}")
 
   monkeypatch.setattr(utilities, "get_video_duration", explode)
-  monkeypatch.setattr(utilities, "get_route_start_time", lambda path: datetime(2026, 8, 26, tzinfo=timezone.utc))
+  monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: datetime(2026, 8, 26, tzinfo=timezone.utc))
   client = _make_client(monkeypatch, tmp_path)
 
   metadata = client.get(f"/api/routes/{ROUTE_NAME}")

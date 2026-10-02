@@ -772,6 +772,7 @@ def test_route_listing_does_not_parse_logs_when_filesystem_time_is_valid(tmp_pat
   segment.mkdir()
   (segment / "qlog.zst").write_bytes(b"placeholder")
   segment_end = route_start.timestamp() + 60
+  os.utime(segment / "qlog.zst", (segment_end, segment_end))
   os.utime(segment, (segment_end, segment_end))
 
   def fail_if_read(_path):
@@ -783,6 +784,142 @@ def test_route_listing_does_not_parse_logs_when_filesystem_time_is_valid(tmp_pat
 
   assert routes[0]["startedAt"] == route_start
   assert routes[0]["timeSource"] == utilities.DASHBOARD_TIME_SOURCE_FILESYSTEM
+
+
+FALLBACK_BOOT_START = utilities.datetime(2026, 7, 28, 8, 5, 16)
+REAL_ROUTE_START = utilities.datetime(2026, 9, 30, 9, 11, 22)
+CLOCK_ROUTE_NAME = "0000015e--df7a997181"
+
+
+def _make_logged_route(root, closes):
+  """Segments whose qlog was last written at closes[n] (epoch seconds), like loggerd closing each segment."""
+  for segment_num, closed_at in enumerate(closes):
+    if closed_at is None:
+      continue
+    segment = root / f"{CLOCK_ROUTE_NAME}--{segment_num}"
+    segment.mkdir()
+    (segment / "qlog.zst").write_bytes(b"placeholder")
+    os.utime(segment / "qlog.zst", (closed_at, closed_at))
+    os.utime(segment, (closed_at, closed_at))
+
+
+def _closes_from(start, segment_nums):
+  return [start.timestamp() + (segment_num + 1) * 60 for segment_num in segment_nums]
+
+
+def test_route_start_uses_segments_written_after_the_clock_was_set(tmp_path):
+  # Booted on the fallback date, clock set during segment 3, last segment partial (10 s).
+  closes = _closes_from(FALLBACK_BOOT_START, range(3)) + _closes_from(REAL_ROUTE_START, range(3, 12))
+  closes.append(REAL_ROUTE_START.timestamp() + 12 * 60 + 10)
+  _make_logged_route(tmp_path, closes)
+
+  assert utilities.get_route_start_time_for_route(CLOCK_ROUTE_NAME, str(tmp_path)) == REAL_ROUTE_START
+  assert utilities._list_dashboard_routes([tmp_path])[0]["startedAt"] == REAL_ROUTE_START
+  processed = utilities.process_route(str(tmp_path), CLOCK_ROUTE_NAME, segment_count=13)
+  assert processed["timestamp"] == REAL_ROUTE_START.isoformat()
+
+
+def test_route_start_is_first_segment_start_when_clock_was_valid(tmp_path):
+  _make_logged_route(tmp_path, _closes_from(REAL_ROUTE_START, range(4)))
+
+  assert utilities.get_route_start_time_for_route(CLOCK_ROUTE_NAME, str(tmp_path)) == REAL_ROUTE_START
+
+
+def test_route_start_stays_on_fallback_date_when_clock_was_never_set(tmp_path):
+  _make_logged_route(tmp_path, _closes_from(FALLBACK_BOOT_START, range(4)))
+
+  assert utilities.get_route_start_time_for_route(CLOCK_ROUTE_NAME, str(tmp_path)) == FALLBACK_BOOT_START
+
+
+def test_route_start_single_segment(tmp_path):
+  _make_logged_route(tmp_path, _closes_from(REAL_ROUTE_START, range(1)))
+
+  assert utilities.get_route_start_time_for_route(CLOCK_ROUTE_NAME, str(tmp_path)) == REAL_ROUTE_START
+
+
+def test_route_start_ignores_touched_segment_directories_when_logs_exist(tmp_path):
+  _make_logged_route(tmp_path, _closes_from(REAL_ROUTE_START, range(3)))
+  renamed_at = REAL_ROUTE_START.timestamp() + 2 * 24 * 60 * 60
+  for segment_num in range(3):
+    segment = tmp_path / f"{CLOCK_ROUTE_NAME}--{segment_num}"
+    (segment / "New_name").touch()
+    os.utime(segment, (renamed_at, renamed_at))
+
+  assert utilities.get_route_start_time_for_route(CLOCK_ROUTE_NAME, str(tmp_path)) == REAL_ROUTE_START
+
+
+def test_process_route_finds_segments_past_a_long_gap(tmp_path):
+  closes = _closes_from(FALLBACK_BOOT_START, range(1))
+  closes += [None] * (utilities.ROUTE_SEGMENT_GAP_LIMIT + 10)
+  closes += _closes_from(REAL_ROUTE_START, range(len(closes), len(closes) + 1))
+  _make_logged_route(tmp_path, closes)
+
+  processed = utilities.process_route(str(tmp_path), CLOCK_ROUTE_NAME, segment_count=2)
+
+  assert processed["timestamp"] == REAL_ROUTE_START.isoformat()
+
+
+def test_process_route_skips_missing_segments(tmp_path):
+  closes = _closes_from(FALLBACK_BOOT_START, range(1)) + [None] + _closes_from(REAL_ROUTE_START, range(2, 3))
+  _make_logged_route(tmp_path, closes)
+
+  processed = utilities.process_route(str(tmp_path), CLOCK_ROUTE_NAME, segment_count=2)
+
+  assert processed["timestamp"] == REAL_ROUTE_START.isoformat()
+
+
+def _clocks(seconds, wall_time, valid):
+  message = msg("clocks", seconds, SimpleNamespace(wallTimeNanos=int(wall_time.timestamp() * 1e9)))
+  message.valid = valid
+  return message
+
+
+def _late_clock_messages():
+  # initData and the first clocks carry the fallback date; the clock becomes valid 240 s in.
+  return [
+    msg("initData", 10.0, SimpleNamespace(params={}, wallTimeNanos=int(FALLBACK_BOOT_START.timestamp() * 1e9))),
+    _clocks(10.0, FALLBACK_BOOT_START, valid=False),
+    msg("carState", 11.0, SimpleNamespace(vEgo=10.0)),
+    _clocks(250.0, REAL_ROUTE_START + utilities.timedelta(seconds=240), valid=True),
+    msg("carState", 300.0, SimpleNamespace(vEgo=10.0)),
+  ]
+
+
+def test_log_route_time_uses_only_valid_clocks():
+  route_info = {"name": CLOCK_ROUTE_NAME, "segments": [], "segmentCount": 5, "analysisSegmentCount": 5}
+
+  drive = utilities._analyze_route_messages(_late_clock_messages(), route_info, {}, is_metric=False)
+
+  assert drive["date"] == REAL_ROUTE_START.isoformat()
+  assert drive["timeSource"] == utilities.DASHBOARD_TIME_SOURCE_LOG
+
+
+def test_logged_start_time_stops_at_the_first_clocks_message():
+  read_past = []
+
+  def reader():
+    yield from _late_clock_messages()[:2]
+    read_past.append(True)
+    yield from _late_clock_messages()[2:]
+
+  assert utilities._route_logged_start_time("unused", reader=reader()) is None
+  assert not read_past
+
+  valid_first = [
+    msg("carState", 10.0, SimpleNamespace(vEgo=10.0)),
+    _clocks(15.0, REAL_ROUTE_START + utilities.timedelta(seconds=5), valid=True),
+  ]
+  assert utilities._route_logged_start_time("unused", reader=valid_first) == REAL_ROUTE_START
+
+
+def test_log_route_time_falls_back_to_filesystem_when_clock_never_valid():
+  route_info = {"name": CLOCK_ROUTE_NAME, "segments": [], "segmentCount": 1, "analysisSegmentCount": 1}
+  messages = _late_clock_messages()[:3]
+
+  drive = utilities._analyze_route_messages(messages, route_info, {}, is_metric=False)
+
+  assert drive["timeSource"] != utilities.DASHBOARD_TIME_SOURCE_LOG
+  assert utilities._route_logged_start_time("unused", reader=messages) is None
 
 
 def test_route_listing_applies_limit_before_parsing_old_logs(tmp_path, monkeypatch):
@@ -814,6 +951,7 @@ def test_route_listing_defers_offline_clock_repair_to_background_analysis(tmp_pa
   (segment / "qlog.zst").write_bytes(b"placeholder")
 
   stale_time = utilities.datetime(2025, 7, 18, 7, 20, 0).timestamp()
+  os.utime(segment / "qlog.zst", (stale_time, stale_time))
   os.utime(segment, (stale_time, stale_time))
   def fail_if_read(_path):
     raise AssertionError("dashboard route listing must not decompress logs")

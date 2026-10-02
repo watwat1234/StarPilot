@@ -8107,7 +8107,9 @@ def setup(app):
           "name": name,
           "segment_urls": segment_urls,
           "total_duration": total_duration,
-          "date": utilities.get_route_start_time(base_path),
+          "date": utilities.get_route_start_time_for_route(
+            name, footage_path, [int(segment.rsplit("--", 1)[1]) for segment in segments]
+          ),
           "available_cameras": utilities.get_available_cameras(base_path),
         }, 200
     return {"error": "Route not found"}, 404
@@ -8195,9 +8197,9 @@ def setup(app):
             except OSError:
               pass
 
-        if cleared:
-          route_timestamp_dt = utilities.get_route_start_time(segment_dir)
-          original_timestamp = route_timestamp_dt.isoformat() if route_timestamp_dt else None
+      if cleared:
+        route_timestamp_dt = utilities.get_route_start_time_for_route(route_name, footage_path)
+        original_timestamp = route_timestamp_dt.isoformat() if route_timestamp_dt else None
 
     if cleared:
       return jsonify({"message": "Route name cleared successfully!", "timestamp": original_timestamp}), 200

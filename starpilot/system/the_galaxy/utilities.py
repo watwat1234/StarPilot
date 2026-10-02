@@ -56,6 +56,9 @@ ROUTE_TIME_LOG_CANDIDATES = [
   "raw_log.bz2",
 ]
 
+# Missing segment numbers tolerated when walking a route's segments from its first one.
+ROUTE_SEGMENT_GAP_LIMIT = 60
+
 SEGMENT_RE = re.compile(r"^[0-9a-fA-F]{8}--[0-9a-fA-F]{10}--\d+$")
 ROUTE_RE = re.compile(r"^[0-9a-fA-F]{8}--[0-9a-fA-F]{10}$")
 
@@ -75,7 +78,7 @@ DASHBOARD_ROUTE_SEGMENT_SAMPLE_LIMIT = 2
 DASHBOARD_PERSISTED_ROUTE_LIMIT = 5000
 DASHBOARD_PERSIST_MIN_ROUTE_AGE_SECONDS = 120
 DASHBOARD_PERSISTENT_STATS_PARAM = "GalaxyDashboardStats"
-DASHBOARD_ROUTE_ANALYSIS_VERSION = 4
+DASHBOARD_ROUTE_ANALYSIS_VERSION = 5
 DASHBOARD_PARAMS_DIR = Path("/data/params/d")
 DASHBOARD_ANALYZER_LOG_PATH = "/tmp/galaxy_dashboard_analyzer.log"
 DASHBOARD_ANALYZER_STATUS_PATH = Path("/tmp/galaxy_dashboard_analyzer_status.json")
@@ -1150,22 +1153,43 @@ def _select_dashboard_segment_candidate(candidates):
   return next((candidate for candidate in candidates if _segment_has_dashboard_log(candidate)), candidates[0])
 
 
+def _route_start_from_segment_mtimes(segments):
+  """Estimate a route's start from (segment_num, path) pairs using filesystem metadata only.
+
+  A segment's log is last written when the segment closes, about (num + 1) minutes into the route.
+  When the clock is set mid-route (the device boots on its fallback date without WiFi), segments that
+  closed before that give estimates months too early, so the latest log estimate wins. A partial last
+  segment only runs early too. Directory mtimes are the fallback without a log; renames and dashboard
+  analysis can touch a directory later but cannot make it older, so the earliest of those wins.
+  """
+  log_estimates = []
+  dir_estimates = []
+  for segment_num, path in segments:
+    if path is None:
+      continue
+    offset = (max(0, _safe_int(segment_num, 0)) + 1) * 60
+    log_path = get_route_log_path(path) if Path(path).is_dir() else None
+    estimates = log_estimates if log_path is not None else dir_estimates
+    parsed = _timestamp_to_dashboard_time(_segment_mtime(log_path or path) - offset)
+    if parsed is not None:
+      estimates.append(parsed.timestamp())
+
+  if log_estimates:
+    return datetime.fromtimestamp(max(log_estimates))
+  if dir_estimates:
+    return datetime.fromtimestamp(min(dir_estimates))
+  return None
+
+
 def _estimate_route_start_details(segments):
   # Reading a compressed qlog materializes the complete log in memory. Route
   # log analysis happens in the bounded background worker; the synchronous
   # dashboard path must only use filesystem metadata.
-  filesystem_estimates = []
-  for segment in segments:
-    segment_num = max(0, _safe_int(segment.get("num", 0), 0))
-    # Segment directory mtimes normally land at the end of their one-minute segment.
-    estimate = _segment_mtime(segment.get("path")) - (segment_num + 1) * 60
-    parsed = _timestamp_to_dashboard_time(estimate)
-    if parsed is not None:
-      filesystem_estimates.append(parsed.timestamp())
-
-  # Dashboard analysis can touch a segment directory later, but cannot make it older.
-  if filesystem_estimates:
-    return datetime.fromtimestamp(min(filesystem_estimates)), DASHBOARD_TIME_SOURCE_FILESYSTEM
+  started_at = _route_start_from_segment_mtimes(
+    (segment.get("num", 0), segment.get("path")) for segment in segments
+  )
+  if started_at is not None:
+    return started_at, DASHBOARD_TIME_SOURCE_FILESYSTEM
 
   return None, ""
 
@@ -1399,6 +1423,43 @@ def _wall_time_seconds_from_payload(payload):
   return None
 
 
+class _LogWallTimeOffset:
+  """Wall time minus logMonoTime for a route log.
+
+  timed marks each clocks message valid only once the system clock is real, so in a log with clocks
+  messages only the valid ones count: other wall times (initData, GPS) can carry the boot fallback date.
+  Logs without clocks messages keep the first wall time seen.
+  """
+
+  def __init__(self):
+    self.clock_offset = None
+    self.fallback_offset = None
+    self.saw_clocks = False
+
+  def add(self, message, message_type, payload, seconds):
+    if self.clock_offset is not None:
+      return
+    if message_type == "clocks":
+      self.saw_clocks = True
+      if getattr(message, "valid", False):
+        wall_seconds = _wall_time_seconds_from_payload(payload)
+        if wall_seconds is not None:
+          self.clock_offset = wall_seconds - seconds
+      return
+    if self.fallback_offset is None:
+      wall_seconds = _wall_time_seconds_from_payload(payload)
+      if wall_seconds is None:
+        wall_seconds = _wall_time_seconds_from_payload(message)
+      if wall_seconds is not None and _timestamp_to_dashboard_time(wall_seconds) is not None:
+        self.fallback_offset = wall_seconds - seconds
+
+  @property
+  def offset(self):
+    if self.clock_offset is not None:
+      return self.clock_offset
+    return None if self.saw_clocks else self.fallback_offset
+
+
 def _log_wall_time_range(first_time, last_time, wall_time_offset, duration_seconds):
   if first_time is None or wall_time_offset is None:
     return None
@@ -1462,7 +1523,7 @@ def _analyze_route_messages(messages, route_info, model_names, is_metric, deadli
   distracted_moments = 0
   unresponsive_moments = 0
   model = ""
-  wall_time_offset = None
+  wall_time = _LogWallTimeOffset()
 
   for message in messages:
     if _deadline_reached(deadline):
@@ -1476,12 +1537,8 @@ def _analyze_route_messages(messages, route_info, model_names, is_metric, deadli
 
     message_type = _message_type(message)
     payload = _message_payload(message, message_type)
-    if seconds is not None and wall_time_offset is None:
-      wall_seconds = _wall_time_seconds_from_payload(payload)
-      if wall_seconds is None:
-        wall_seconds = _wall_time_seconds_from_payload(message)
-      if wall_seconds is not None:
-        wall_time_offset = wall_seconds - seconds
+    if seconds is not None:
+      wall_time.add(message, message_type, payload, seconds)
 
     if message_type == "initData" and payload is not None and not model:
       model = _route_model_from_init_data(payload, model_names)
@@ -1531,7 +1588,7 @@ def _analyze_route_messages(messages, route_info, model_names, is_metric, deadli
   engaged_percent = round((engaged_seconds / duration_seconds) * 100) if duration_seconds > 0 else 0
   distance = distance_m * (METER_TO_KILOMETER if is_metric else METER_TO_MILE)
   avg_speed = (distance_m / duration_seconds) * (CV.MS_TO_KPH if is_metric else METER_PER_SECOND_TO_MPH) if duration_seconds > 0 else 0.0
-  time_range = _log_wall_time_range(first_time, last_time, wall_time_offset, duration_seconds)
+  time_range = _log_wall_time_range(first_time, last_time, wall_time.offset, duration_seconds)
   start_date, end_date = time_range if time_range is not None else _route_time_range(route_info, duration_seconds)
   time_source = DASHBOARD_TIME_SOURCE_LOG if time_range is not None else (DASHBOARD_TIME_SOURCE_FILESYSTEM if start_date else "")
 
@@ -3129,6 +3186,7 @@ def _route_logged_start_time(log_path, reader=None):
       reader = _LogFileReader(str(log_path))
 
     first_mono_time = None
+    wall_time = _LogWallTimeOffset()
     for message in reader:
       mono_time = _safe_float(getattr(message, "logMonoTime", 0), 0.0) / 1e9
       if mono_time <= 0.0:
@@ -3136,17 +3194,15 @@ def _route_logged_start_time(log_path, reader=None):
       first_mono_time = mono_time if first_mono_time is None else min(first_mono_time, mono_time)
 
       message_type = _message_type(message)
-      payload = _message_payload(message, message_type)
-      wall_time = _wall_time_seconds_from_payload(payload)
-      if wall_time is None:
-        wall_time = _wall_time_seconds_from_payload(message)
-      if wall_time is None:
-        continue
+      wall_time.add(message, message_type, _message_payload(message, message_type), mono_time)
+      if wall_time.clock_offset is not None:
+        break
 
-      start_seconds = wall_time - (mono_time - first_mono_time)
-      start_time = datetime.fromtimestamp(start_seconds)
-      if _dashboard_time_is_valid(start_time):
-        return start_time
+    if first_mono_time is None or wall_time.offset is None:
+      return None
+    start_time = datetime.fromtimestamp(first_mono_time + wall_time.offset)
+    if _dashboard_time_is_valid(start_time):
+      return start_time
   except Exception:
     return None
   return None
@@ -3179,6 +3235,22 @@ def get_route_start_time(path):
     return logged_time
 
   return datetime.fromtimestamp(modified_time)
+
+def get_route_start_time_for_route(route_name, footage_path, segment_nums=None):
+  """Date a route from all of its segments, so a clock set mid-route still dates it correctly.
+
+  Without segment_nums the footage directory is listed; callers that already know them avoid that.
+  Missing segment directories are skipped.
+  """
+  if segment_nums is None:
+    segment_nums = [int(segment.rsplit("--", 1)[1]) for segment in get_segments_in_route(route_name, footage_path)]
+  segment_paths = [(num, os.path.join(footage_path, f"{route_name}--{num}")) for num in segment_nums]
+  if not segment_paths:
+    return None
+  started_at = _route_start_from_segment_mtimes(segment_paths)
+  if started_at is not None:
+    return started_at
+  return get_route_start_time(segment_paths[0][1])
 
 def get_routes_names(footage_path):
   segments = get_all_segment_names(footage_path)
@@ -3244,6 +3316,16 @@ def _utc_rfc3339(value):
   # Naive values come off the filesystem in local time; astimezone reads them that way.
   return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
+def _route_segment_nums(footage_path, route_name, first_num, segment_count):
+  """Segment numbers on disk from the listing's first number and count, without relisting the footage directory."""
+  found = []
+  num = first_num
+  while len(found) < segment_count and num - first_num < segment_count + ROUTE_SEGMENT_GAP_LIMIT:
+    if os.path.isdir(os.path.join(footage_path, f"{route_name}--{num}")):
+      found.append(num)
+    num += 1
+  return found
+
 def process_route(footage_path, route_name, segment_count=0, first_segment_num=0):
   segment_name = f"{route_name}--{max(0, int(first_segment_num))}"
   segment_path = os.path.join(footage_path, segment_name)
@@ -3254,7 +3336,8 @@ def process_route(footage_path, route_name, segment_count=0, first_segment_num=0
         custom_name = item
         break
 
-  route_timestamp_dt = get_route_start_time(segment_path)
+  segment_nums = _route_segment_nums(footage_path, route_name, max(0, int(first_segment_num)), max(1, int(segment_count)))
+  route_timestamp_dt = get_route_start_time_for_route(route_name, footage_path, segment_nums)
   route_timestamp_str = custom_name or (route_timestamp_dt.isoformat() if route_timestamp_dt else None)
 
   return {

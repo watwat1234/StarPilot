@@ -399,6 +399,26 @@ def test_concurrent_requests_share_one_remux_and_time_out_with_503(tmp_path, mon
     assert response.data == FAKE_MEDIA
 
 
+def test_backlog_on_the_shared_executor_is_capped(tmp_path, monkeypatch):
+  footage = tmp_path / "footage"
+  for num in (0, 1, 2):
+    _make_camera_segment(footage, num)
+  _fake_ffmpeg(monkeypatch)
+  monkeypatch.setattr(route_playback, "REMUX_WAIT_SECONDS", 0.01)
+  executor = FakeExecutor(hold=True)
+  client = _full_client(footage, tmp_path / "cache", executor)
+  url = f"/route-playback/segment/{ROUTE_NAME}--{{}}/forward/media.m4s"
+
+  # A scrub over three minutes: two jobs queue, the third is turned away without submitting.
+  assert [client.get(url.format(num)).status_code for num in (0, 1, 2)] == [503] * 3
+  assert len(executor.submitted) == route_playback.MAX_QUEUED_REMUXES == 2
+
+  fn, args, future = executor.submitted[0]
+  future.set_result(fn(*args))
+  assert client.get(url.format(2)).status_code == 503
+  assert len(executor.submitted) == 3
+
+
 def test_ffmpeg_failure_is_an_error_and_leaves_no_partial_cache(tmp_path, monkeypatch):
   footage, cache_root = tmp_path / "footage", tmp_path / "cache"
   _make_camera_segment(footage, 0)

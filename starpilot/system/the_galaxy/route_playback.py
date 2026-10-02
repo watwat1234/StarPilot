@@ -29,6 +29,8 @@ FFPROBE_TIMEOUT_SECONDS = 5
 # Same bounds as the upstream /video remux, whose one-worker executor this shares.
 REMUX_WAIT_SECONDS = utilities.VIDEO_REMUX_TIMEOUT_SECONDS + 5
 HLS_CACHE_MAX_BYTES = 512 * 1024 * 1024
+# Unfinished full-quality remuxes (queued or running) allowed on the shared executor at once.
+MAX_QUEUED_REMUXES = 2
 TEMP_DIR_PREFIX = ".tmp-"
 
 
@@ -209,7 +211,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
         remux_futures.pop(key, None)
 
   def remuxed_dir(source_path):
-    """Cache dir with init.mp4 + media.m4s, or None if the remux is not ready in time."""
+    """Cache dir with init.mp4 + media.m4s, or None if it is not ready in time or our backlog is full."""
     target_dir = _cache_dir_for(cache_root, source_path)
     if _is_complete(target_dir):
       # Cache hit: answered here, without queueing behind other remuxes. Touch for the oldest-first prune.
@@ -224,6 +226,10 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
     with remux_lock:
       future = remux_futures.get(key)
       if future is None:
+        # Seeking abandons requests but not their jobs, and the executor is shared with /video. Cap our backlog;
+        # the 503 is retried by hls.js once the queue drains.
+        if len(remux_futures) >= MAX_QUEUED_REMUXES:
+          return None
         future = remux_executor.submit(_remux_to_fmp4, source_path, target_dir, cache_root)
         remux_futures[key] = future
         created = True

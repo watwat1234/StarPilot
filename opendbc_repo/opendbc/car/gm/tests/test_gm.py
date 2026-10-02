@@ -101,6 +101,12 @@ class TestBoltGps:
     assert gps["verticalAccuracy"] == 10.0
     assert gps["speedAccuracy"] == 0.5
 
+  def test_bolt_gps_has_no_time(self):
+    # the OnStar message has no time: 0, not the device clock, so timed never takes it as GPS time
+    gps = parse_chevrolet_bolt_can_gps({"GPSLatitude": 145292743.0, "GPSLongitude": -267520892.0})
+    assert gps is not None
+    assert gps["unixTimestampMillis"] == 0
+
   def test_bolt_gps_heading_and_speed_derivation(self):
     cp = SimpleNamespace(
       brand="gm",

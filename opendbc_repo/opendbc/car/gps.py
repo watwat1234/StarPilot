@@ -114,7 +114,8 @@ def parse_chevrolet_bolt_can_gps(position: Mapping[str, float]) -> CarGpsSample 
     "speed": 0.0,
     "bearingDeg": 0.0,
     "horizontalAccuracy": 6.0,
-    "unixTimestampMillis": int(datetime.now(UTC).timestamp() * 1000),
+    # the message has no time; 0 keeps timed from taking the device's own clock as GPS time
+    "unixTimestampMillis": 0,
     "verticalAccuracy": 10.0,
     "bearingAccuracyDeg": 180.0,
     "speedAccuracy": 0.5,

@@ -1,6 +1,8 @@
 import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
+import { navigate } from "../store.js"
+import { batteryStatus } from "./DeviceHistory.js"
 
 const toNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 const toInt = (v) => Math.round(toNum(v)).toLocaleString("en-US", { maximumFractionDigits: 0 })
@@ -279,9 +281,24 @@ export const Home = {
         { label: "LAN IP", value: device.lanIp || "unknown" },
         { label: "Network", value: device.networkName || "No wireless connectivity" },
         { label: "Uptime", value: device.uptimeSeconds == null ? "unknown" : fmtDuration(device.uptimeSeconds) },
-        { label: "CPU temp", value: device.cpuTempC == null ? "unknown" : `${toInt(device.cpuTempC)} C` },
-        { label: "GPU temp", value: device.gpuTempC == null ? "unknown" : `${toInt(device.gpuTempC)} C` },
+        { label: "CPU temp", value: device.cpuTempC == null ? "unknown" : `${toInt(device.cpuTempC)} C`, link: "/history?metric=thermal" },
+        { label: "GPU temp", value: device.gpuTempC == null ? "unknown" : `${toInt(device.gpuTempC)} C`, link: "/history?metric=thermal" },
+        this.batteryVital,
       ]
+    },
+
+    batteryVital() {
+      const battery = this.device.battery
+      if (!battery || battery.voltage == null) return { label: "12V battery", value: "unknown", link: "/history" }
+      const onroad = battery.live ? this.device.status === "Driving" : Boolean(battery.onroad)
+      const status = batteryStatus(battery.voltage, onroad)
+      return {
+        label: "12V battery",
+        value: `${toNum(battery.voltage).toFixed(2)} V`,
+        note: battery.live ? "" : "last recorded",
+        status,
+        link: "/history",
+      }
     },
 
     softwareList() {
@@ -299,6 +316,8 @@ export const Home = {
     },
   },
   methods: {
+    openLink(link) { navigate(link) },
+
     isToggling(routeNames) {
       return this.togglingKey === (routeNames || []).join(",")
     },
@@ -544,10 +563,19 @@ export const Home = {
           <section class="gx-card dh-card">
             <div class="dh-card__head"><i class="bi bi-cpu"></i><span>Vitals</span></div>
             <div class="dh-list">
-              <div v-for="v in vitalsList" :key="v.label" class="gx-row">
-                <span class="gx-row__label">{{ v.label }}</span>
-                <span class="gx-row__value">{{ v.value }}</span>
-              </div>
+              <template v-for="v in vitalsList" :key="v.label">
+                <button v-if="v.link" type="button" class="gx-row dh-row--link" @click="openLink(v.link)">
+                  <span class="gx-row__label">{{ v.label }}<small v-if="v.note" class="dh-row__note">{{ v.note }}</small></span>
+                  <span class="gx-row__value">
+                    <span v-if="v.status" class="gx-history__status" :class="'is-' + v.status.level"><i class="bi" :class="v.status.icon"></i>{{ v.status.label }}</span>
+                    {{ v.value }} <i class="bi bi-chevron-right" aria-hidden="true"></i>
+                  </span>
+                </button>
+                <div v-else class="gx-row">
+                  <span class="gx-row__label">{{ v.label }}</span>
+                  <span class="gx-row__value">{{ v.value }}</span>
+                </div>
+              </template>
             </div>
           </section>
 

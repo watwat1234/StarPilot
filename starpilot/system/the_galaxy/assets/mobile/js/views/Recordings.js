@@ -260,9 +260,6 @@ export const Recordings = {
       this.selectedCamera = camera
       this.$nextTick(() => this.playSegment())
     },
-    toggleQuality() {
-      this.quality = this.quality === "low" ? "full" : "low"
-    },
     playWholeRoute() {
       // Back from the single-segment fallback: restart at the quality that plays everywhere.
       this.quality = "low"
@@ -505,8 +502,13 @@ export const Recordings = {
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon" aria-label="Next segment" :disabled="current>=segments.length-1" @click="current++; playSegment()"><i class="bi bi-chevron-right"></i></button>
               </div>
               <div class="gx-video-actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectCamera(c)">{{ c }}</button>
-                <button v-if="usingRoutePlayer && selectedCamera==='forward'" type="button" class="gx-chip gx-video-quality" :title="quality === 'low' ? 'Switch to full quality' : 'Switch to low quality'" @click="toggleQuality">{{ quality === 'low' ? 'Low quality' : 'Full quality' }}</button>
+                <template v-for="c in cameras" :key="c">
+                  <button type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectCamera(c)">{{ c }}</button>
+                  <!-- Road camera quality, next to its chip: both options shown, the active one outlined. -->
+                  <span v-if="c==='forward' && usingRoutePlayer && selectedCamera==='forward'" class="gx-video-quality" role="group" aria-label="Road camera quality" title="Road camera quality" style="display:inline-flex; gap:2px; padding:1px; border:1px solid var(--glass-border); border-radius:var(--radius-full);">
+                    <button v-for="q in ['low', 'full']" :key="q" type="button" class="gx-chip" :aria-pressed="String(quality===q)" :style="quality===q?'border-color:var(--primary);color:var(--primary);':'border-color:transparent;background:transparent;'" @click="quality = q">{{ q === 'low' ? 'Low' : 'Full' }}</button>
+                  </span>
+                </template>
                 <button v-if="!usingRoutePlayer" type="button" class="gx-chip gx-video-whole-route" title="Play the whole route again" @click="playWholeRoute">Whole route</button>
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon gx-video-download" title="Download" style="margin-left:auto;" @click="downloadRoute"><i class="bi bi-download"></i></button>
               </div>

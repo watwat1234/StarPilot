@@ -205,7 +205,10 @@ def test_recordings_plays_the_whole_route_through_the_hls_route_player():
   assert ('<RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" :camera="selectedCamera" :quality="quality" '
           '@error="onRoutePlayerError" @fallback-low="onRoutePlayerFallbackLow" />') in recordings
   assert "usingRoutePlayer() {\n      return this.wholeRoute\n    }" in recordings
-  assert 'v-if="usingRoutePlayer && selectedCamera===\'forward\'" type="button" class="gx-chip gx-video-quality"' in recordings
+  # The quality options sit right after the forward chip, both shown, the active one marked.
+  assert ('<span v-if="c===\'forward\' && usingRoutePlayer && selectedCamera===\'forward\'" class="gx-video-quality" '
+          'role="group"') in recordings
+  assert ':aria-pressed="String(quality===q)"' in recordings and '@click="quality = q"' in recordings
   assert 'v-if="!usingRoutePlayer" type="button" class="gx-chip gx-video-whole-route"' in recordings
   assert 'v-if="!usingRoutePlayer" class="gx-video-segment-controls"' in recordings
   assert "if (this.usingRoutePlayer || !this.segments[this.current]) return" in recordings

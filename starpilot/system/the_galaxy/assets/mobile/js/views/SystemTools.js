@@ -76,14 +76,15 @@ function readRebootMarker(scope = LOCAL_DEVICE_SCOPE) {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     const startedAt = Number(parsed?.startedAt)
-    return Number.isFinite(startedAt) && startedAt > 0 ? startedAt : null
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return null
+    return { startedAt, reason: parsed?.reason === "reboot" ? "reboot" : "update" }
   } catch (e) {
     return null
   }
 }
 
-function writeRebootMarker(scope, startedAt) {
-  try { localStorage.setItem(rebootStorageKey(scope), JSON.stringify({ startedAt })) } catch (e) {}
+function writeRebootMarker(scope, startedAt, reason = "update") {
+  try { localStorage.setItem(rebootStorageKey(scope), JSON.stringify({ startedAt, reason })) } catch (e) {}
 }
 
 function clearRebootMarker(scope) {
@@ -133,7 +134,10 @@ export const SystemTools = {
       rebootPending: false,
       rebootStartedAt: 0,
       rebootOfflineSeen: false,
+      rebootReason: "update",
       reconnectedNotice: false,
+      powerBusy: "",
+      poweredOff: false,
       checkedForUpdates: false,
       busy: "",
       autoUpdateBusy: false,
@@ -151,7 +155,8 @@ export const SystemTools = {
       this.rebootStorageScope = scope
       const marker = readRebootMarker(scope)
       this.rebootPending = !!marker
-      this.rebootStartedAt = marker || 0
+      this.rebootStartedAt = marker?.startedAt || 0
+      this.rebootReason = marker?.reason || "update"
     }).finally(() => {
       if (this.rebootScopeCancelled) return
       this.poll = usePolling(() => this.loadFastStatus(), {
@@ -191,6 +196,7 @@ export const SystemTools = {
     },
     statusRebooting() { return String(this.fastStatus?.stage || "").trim().toLowerCase() === "rebooting" },
     updateInProgress() { return !!this.fastStatus?.running || this.statusRebooting || this.rebootPending },
+    powerActionsBlocked() { return this.isOnroad || this.updateInProgress || !!this.powerBusy || this.poweredOff },
     statusPollingNeeded() { return !this.fastStatus || this.updateInProgress || this.rebootPending },
     versionChoices() { return this.targetBranch === "StarPilot" ? releaseVersions(this.versionCommits) : this.versionCommits },
     installVersionBlocked() {
@@ -261,7 +267,8 @@ export const SystemTools = {
         if (stage === "rebooting" && !this.rebootPending) {
           this.rebootPending = true
           this.rebootStartedAt = Date.now()
-          writeRebootMarker(this.rebootStartedAt)
+          this.rebootReason = "update"
+          writeRebootMarker(this.rebootStorageScope, this.rebootStartedAt)
         }
         const pendingAge = this.rebootStartedAt ? Date.now() - this.rebootStartedAt : 0
         const deviceReturned = this.rebootPending && !status.running && stage !== "rebooting" &&
@@ -279,12 +286,13 @@ export const SystemTools = {
         if (throwOnError) throw e
       }
     },
-    markRebootPending() {
+    markRebootPending(reason = "update") {
       this.rebootPending = true
       this.rebootStartedAt = Date.now()
       this.rebootOfflineSeen = false
+      this.rebootReason = reason
       this.reconnectedNotice = false
-      writeRebootMarker(this.rebootStorageScope, this.rebootStartedAt)
+      writeRebootMarker(this.rebootStorageScope, this.rebootStartedAt, reason)
     },
     clearRebootPending(showNotice = true) {
       this.rebootPending = false
@@ -369,10 +377,41 @@ export const SystemTools = {
       if (!(await GalaxyConfirm({ title: "Reset toggles to default?", message: "This resets all toggles to their default values and reboots.", confirmLabel: "Reset", danger: true }))) return
       try {
         await api.resetTogglesDefault()
-        this.markRebootPending()
+        this.markRebootPending("reboot")
         showSnackbar("Resetting toggles to default... rebooting.")
       } catch (e) {
         showSnackbar("Reset failed.", "error")
+      }
+    },
+    async rebootDevice() {
+      if (this.powerActionsBlocked) return
+      if (!(await GalaxyConfirm({ title: "Reboot device?", message: "The device will restart and Galaxy will reconnect when it is back up.", confirmLabel: "Reboot" }))) return
+      this.powerBusy = "reboot"
+      try {
+        const result = await api.rebootDevice()
+        this.markRebootPending("reboot")
+        showSnackbar(result?.message || "Rebooting...")
+      } catch (e) {
+        showSnackbar(e?.message || "Reboot failed.", "error")
+        this.loadFastStatus()
+      } finally {
+        this.powerBusy = ""
+      }
+    },
+    async powerOffDevice() {
+      if (this.powerActionsBlocked) return
+      if (!(await GalaxyConfirm({ title: "Power off device?", message: "The device will shut down. It will start again when the car is next turned on, or when it is powered up by hand.", confirmLabel: "Power Off", danger: true }))) return
+      this.powerBusy = "power_off"
+      try {
+        const result = await api.powerOffDevice()
+        // Not a reboot: the device is not coming back on its own, so skip the reconnect flow.
+        this.poweredOff = true
+        showSnackbar(result?.message || "Powering off...")
+      } catch (e) {
+        showSnackbar(e?.message || "Power off failed.", "error")
+        this.loadFastStatus()
+      } finally {
+        this.powerBusy = ""
       }
     },
     onPrimaryBranchSelect(e) {
@@ -648,9 +687,9 @@ export const SystemTools = {
           <template v-else>
             <GxNotice v-if="isOnroad" text="Updates and branch switching are only available while offroad." style="margin-bottom:12px;" />
             <GxNotice v-if="rebootPending" tone="info" icon="bi-arrow-repeat gx-spin" title="Device rebooting"
-              :text="statusUnavailable ? 'The device is temporarily offline. Galaxy will keep checking until it reconnects.' : 'The update is complete. Waiting for the device to reconnect…'" />
+              :text="statusUnavailable ? 'The device is temporarily offline. Galaxy will keep checking until it reconnects.' : rebootReason === 'reboot' ? 'Waiting for the device to reconnect…' : 'The update is complete. Waiting for the device to reconnect…'" />
             <GxNotice v-else-if="reconnectedNotice" tone="info" icon="bi-check-circle-fill" title="Device reconnected"
-              text="Galaxy is connected again and the update status is current." />
+              :text="rebootReason === 'reboot' ? 'Galaxy is connected again.' : 'Galaxy is connected again and the update status is current.'" />
 
             <div v-if="fastStatus" class="gx-card" style="margin-bottom:12px;">
               <div class="gx-section__header">
@@ -848,6 +887,25 @@ export const SystemTools = {
             </div>
             <p class="gx-note" style="margin:0;">Installing opens the Tailscale login page to authenticate this device.</p>
           </template>
+        </div>
+      </GalaxySection>
+
+      <GalaxySection title="Device Power" icon="bi-power" :collapsible="false">
+        <div style="padding: var(--sp-3); display:grid; gap:12px;">
+          <GxNotice v-if="poweredOff" tone="info" icon="bi-power" title="Device powered off"
+            text="Galaxy will be unavailable until the device is turned back on." />
+          <GxNotice v-else-if="rebootPending && rebootReason === 'reboot'" tone="info" icon="bi-arrow-repeat gx-spin" title="Device rebooting"
+            text="Waiting for the device to reconnect…" />
+          <GxNotice v-else-if="isOnroad" text="Park the vehicle to reboot or power off." />
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="gx-btn gx-btn--tonal" :disabled="powerActionsBlocked" @click="rebootDevice">
+              <i class="bi" :class="powerBusy === 'reboot' ? 'bi-arrow-repeat gx-spin' : 'bi-arrow-clockwise'"></i> Reboot
+            </button>
+            <button type="button" class="gx-btn gx-btn--danger" :disabled="powerActionsBlocked" @click="powerOffDevice">
+              <i class="bi" :class="powerBusy === 'power_off' ? 'bi-arrow-repeat gx-spin' : 'bi-power'"></i> Power Off
+            </button>
+          </div>
+          <p class="gx-note" style="margin:0;">Only available while parked. Power Off shuts the device down until the car is next turned on.</p>
         </div>
       </GalaxySection>
 

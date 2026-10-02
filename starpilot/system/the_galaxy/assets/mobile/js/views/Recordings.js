@@ -67,8 +67,10 @@ export const Recordings = {
       current: 0,
       cameras: [],
       selectedCamera: "",
-      // Road camera plays the whole route (qcamera HLS); off = full-quality single segments.
+      // Every camera plays the whole route (HLS); off = the single-segment player, used after a playback error.
       wholeRoute: true,
+      // Road camera only: "low" = qcamera.ts, "full" = fcamera.hevc. Other cameras are always full quality.
+      quality: "low",
       logsRoute: null,
       logsData: null,
       onFirestar: isFirestarOrigin(),
@@ -90,7 +92,7 @@ export const Recordings = {
       }
     },
     usingRoutePlayer() {
-      return this.selectedCamera === "forward" && this.wholeRoute
+      return this.wholeRoute
     },
     visibleRoutes() {
       const list = this.routes.filter((r) => (!this.showPreservedOnly || r.is_preserved) && routeMatchesSearch(r, this.searchQuery))
@@ -223,6 +225,7 @@ export const Recordings = {
         this.cameras = cameras
         this.selectedCamera = cameras.includes("forward") ? "forward" : cameras[0]
         this.wholeRoute = true
+        this.quality = "low"
         this.$nextTick(() => this.playSegment())
       } catch (e) {
         this.playerError = e?.message || "Could not load route."
@@ -257,9 +260,17 @@ export const Recordings = {
       this.selectedCamera = camera
       this.$nextTick(() => this.playSegment())
     },
-    toggleWholeRoute() {
-      this.wholeRoute = !this.wholeRoute
-      this.$nextTick(() => this.playSegment())
+    toggleQuality() {
+      this.quality = this.quality === "low" ? "full" : "low"
+    },
+    playWholeRoute() {
+      // Back from the single-segment fallback: restart at the quality that plays everywhere.
+      this.quality = "low"
+      this.wholeRoute = true
+    },
+    onRoutePlayerFallbackLow() {
+      this.quality = "low"
+      showSnackbar("This browser cannot play full-quality video. Showing low quality instead.", "error")
     },
     onRoutePlayerError(message) {
       this.wholeRoute = false
@@ -483,7 +494,7 @@ export const Recordings = {
           <div v-if="playerError" class="gx-empty" style="color: var(--error);">{{ playerError }}</div>
           <div v-else-if="playerLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading video...</div>
           <template v-else-if="segments.length">
-            <RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" @error="onRoutePlayerError" />
+            <RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" :camera="selectedCamera" :quality="quality" @error="onRoutePlayerError" @fallback-low="onRoutePlayerFallbackLow" />
             <video v-else ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
             <div style="display:flex; flex-direction:column; gap:8px; padding: var(--sp-3) 0 0;">
               <div v-if="!usingRoutePlayer" class="gx-video-segment-controls">
@@ -495,7 +506,8 @@ export const Recordings = {
               </div>
               <div class="gx-video-actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                 <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectCamera(c)">{{ c }}</button>
-                <button v-if="selectedCamera==='forward'" type="button" class="gx-chip gx-video-whole-route" :title="wholeRoute ? 'Switch to full-quality single segments' : 'Play the whole route (low quality)'" @click="toggleWholeRoute">{{ wholeRoute ? 'Whole route' : 'Full quality' }}</button>
+                <button v-if="usingRoutePlayer && selectedCamera==='forward'" type="button" class="gx-chip gx-video-quality" :title="quality === 'low' ? 'Switch to full quality' : 'Switch to low quality'" @click="toggleQuality">{{ quality === 'low' ? 'Low quality' : 'Full quality' }}</button>
+                <button v-if="!usingRoutePlayer" type="button" class="gx-chip gx-video-whole-route" title="Play the whole route again" @click="playWholeRoute">Whole route</button>
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon gx-video-download" title="Download" style="margin-left:auto;" @click="downloadRoute"><i class="bi bi-download"></i></button>
               </div>
             </div>

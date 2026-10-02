@@ -200,26 +200,45 @@ def test_recordings_plays_the_whole_route_through_the_hls_route_player():
   player = (mobile / "components/RoutePlayer.js").read_text(encoding="utf-8")
   vendor = MODULE_DIR / "assets/vendor/hls.js"
 
-  # Road camera defaults to the whole-route player; other cameras and the full-quality toggle keep segments.
+  # Every camera uses the whole-route player; the road camera toggles low/full quality; segments are the error fallback.
   assert 'import { RoutePlayer } from "../components/RoutePlayer.js"' in recordings
-  assert '<RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" @error="onRoutePlayerError" />' in recordings
-  assert 'return this.selectedCamera === "forward" && this.wholeRoute' in recordings
+  assert ('<RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" :camera="selectedCamera" :quality="quality" '
+          '@error="onRoutePlayerError" @fallback-low="onRoutePlayerFallbackLow" />') in recordings
+  assert "usingRoutePlayer() {\n      return this.wholeRoute\n    }" in recordings
+  assert 'v-if="usingRoutePlayer && selectedCamera===\'forward\'" type="button" class="gx-chip gx-video-quality"' in recordings
+  assert 'v-if="!usingRoutePlayer" type="button" class="gx-chip gx-video-whole-route"' in recordings
   assert 'v-if="!usingRoutePlayer" class="gx-video-segment-controls"' in recordings
   assert "if (this.usingRoutePlayer || !this.segments[this.current]) return" in recordings
+  assert 'this.wholeRoute = true\n        this.quality = "low"' in recordings
+  assert 'playWholeRoute() {\n      // Back from the single-segment fallback: restart at the quality that plays everywhere.\n      this.quality = "low"' in recordings
 
-  # Playlist URL is built from the route name; hls.js comes from the local vendor copy, loaded only when needed.
-  assert "`/route-playback/${encodeURIComponent(route)}/qcamera.m3u8`" in player
+  # Playlist URL: qcamera for the road camera on low, else the camera's fMP4 playlist.
+  assert 'const playlist = camera === "forward" && quality === "low" ? "qcamera" : camera' in player
+  assert "`/route-playback/${encodeURIComponent(route)}/${encodeURIComponent(playlist)}.m3u8`" in player
   assert 'const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"' in player
   assert (vendor / "hls.light-1.7.3.min.js").is_file() and (vendor / "LICENSE").is_file()
   assert "import(HLS_MODULE_URL)" in player
 
-  # hls.js is preferred wherever MSE exists; native HLS is only the fallback.
-  assert player.index("window.MediaSource || window.ManagedMediaSource") < player.index("video.canPlayType(HLS_MIME)")
+  # Full quality needs HEVC decode: checked before loading; road camera falls back to low, others error.
+  assert "HEVC_MIME = 'video/mp4; codecs=\"hvc1.1.6.L150.B0\"'" in player
+  hevc_check = player.index("if (full && !mseHevc")
+  assert hevc_check < player.index("await loadHls()")
+  assert player.index('this.$emit("fallback-low")') > hevc_check
+
+  # hls.js is preferred wherever MSE exists (and can decode the stream); native HLS is only the fallback.
+  assert "if (mediaSource && (!full || mseHevc)) {" in player
+  assert player.index("await loadHls()") < player.index("if (!video.canPlayType(HLS_MIME)) {")
+
+  # Camera/quality switches keep the position; the resume handler is tied to its attach.
+  assert "camera() {\n      this.attach(true)" in player and "quality() {\n      this.attach(true)" in player
+  assert "const resumeAt = keepTime ? this._resumeAt || this.$refs.video?.currentTime || 0 : 0" in player
+  assert player.index("this._resumeAt = resumeAt") < player.index('this.$emit("fallback-low")')
+  assert "if (token === this._token) video.currentTime = resumeAt" in player
 
   # The hls.js instance is torn down on close/camera switch (unmount) and before re-attaching.
   assert "beforeUnmount() {\n    this.detach()" in player
   assert "this._hls?.destroy()" in player
-  assert "async attach() {\n      this.detach()" in player
+  assert player.index("const resumeAt") < player.index("this.detach()\n      const video")
 
 
 # --- Stage 2: full-quality fMP4 HLS over the raw .hevc cameras ---

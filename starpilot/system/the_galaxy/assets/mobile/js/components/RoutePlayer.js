@@ -1,9 +1,11 @@
-// Whole-route player: plays a route's qcamera.ts segments as one HLS stream with a single seekable timeline.
+// Whole-route player: plays a route as one HLS stream with a single seekable timeline. Low quality is the road
+// camera's qcamera.ts; full quality is the raw HEVC of any camera, remuxed per segment to fMP4 on the device.
 // Uses the vendored hls.js (loaded on first use) wherever Media Source Extensions exist, so every browser gets the
 // same playback and error handling; the browser's native HLS player is only the fallback (e.g. older iPhones).
 
 const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"
 const HLS_MIME = "application/vnd.apple.mpegurl"
+const HEVC_MIME = 'video/mp4; codecs="hvc1.1.6.L150.B0"'
 
 let hlsModule = null
 
@@ -15,19 +17,36 @@ function loadHls() {
   return hlsModule
 }
 
-export function routePlaylistUrl(route) {
-  return `/route-playback/${encodeURIComponent(route)}/qcamera.m3u8`
+export function routePlaylistUrl(route, camera = "forward", quality = "low") {
+  const playlist = camera === "forward" && quality === "low" ? "qcamera" : camera
+  return `/route-playback/${encodeURIComponent(route)}/${encodeURIComponent(playlist)}.m3u8`
 }
 
 export const RoutePlayer = {
   name: "RoutePlayer",
   props: {
     route: { type: String, required: true },
+    camera: { type: String, default: "forward" },
+    quality: { type: String, default: "low" },
   },
-  emits: ["error"],
+  emits: ["error", "fallback-low"],
+  computed: {
+    playlistUrl() {
+      return routePlaylistUrl(this.route, this.camera, this.quality)
+    },
+    fullQuality() {
+      return !this.playlistUrl.endsWith("/qcamera.m3u8")
+    },
+  },
   watch: {
     route() {
       this.attach()
+    },
+    camera() {
+      this.attach(true)
+    },
+    quality() {
+      this.attach(true)
     },
   },
   mounted() {
@@ -37,14 +56,33 @@ export const RoutePlayer = {
     this.detach()
   },
   methods: {
-    async attach() {
+    async attach(keepTime = false) {
+      // Camera/quality switches continue at the same point of the route, also across a fallback that never played.
+      const resumeAt = keepTime ? this._resumeAt || this.$refs.video?.currentTime || 0 : 0
+      this._resumeAt = 0
       this.detach()
       const video = this.$refs.video
-      const url = routePlaylistUrl(this.route)
+      const url = this.playlistUrl
+      const full = this.fullQuality
       const token = (this._token = (this._token || 0) + 1)
 
+      const mediaSource = window.ManagedMediaSource || window.MediaSource
+      const mseHevc = !!mediaSource?.isTypeSupported?.(HEVC_MIME)
+      if (full && !mseHevc && !(video.canPlayType(HLS_MIME) && video.canPlayType(HEVC_MIME))) {
+        // Full quality is HEVC. Without decode support the road camera drops to low quality; other cameras error.
+        this._resumeAt = resumeAt
+        if (this.camera === "forward") this.$emit("fallback-low")
+        else this.$emit("error", "This browser cannot play full-quality video.")
+        return
+      }
+      if (resumeAt > 0) {
+        video.addEventListener("loadedmetadata", () => {
+          if (token === this._token) video.currentTime = resumeAt
+        }, { once: true })
+      }
+
       let Hls = null
-      if (window.MediaSource || window.ManagedMediaSource) {
+      if (mediaSource && (!full || mseHevc)) {
         try {
           const loaded = await loadHls()
           if (loaded.isSupported()) Hls = loaded

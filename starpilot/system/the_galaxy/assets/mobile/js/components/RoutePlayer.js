@@ -2,6 +2,9 @@
 // camera's qcamera.ts; full quality is the raw HEVC of any camera, remuxed per segment to fMP4 on the device.
 // Uses the vendored hls.js (loaded on first use) wherever Media Source Extensions exist, so every browser gets the
 // same playback and error handling; the browser's native HLS player is only the fallback (e.g. older iPhones).
+// The route timeline (engagement and thumbnails) sits under the video and seeks it.
+
+import { RouteTimeline } from "./RouteTimeline.js"
 
 const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"
 const HLS_MIME = "application/vnd.apple.mpegurl"
@@ -24,12 +27,14 @@ export function routePlaylistUrl(route, camera = "forward", quality = "low") {
 
 export const RoutePlayer = {
   name: "RoutePlayer",
+  components: { RouteTimeline },
   props: {
     route: { type: String, required: true },
     camera: { type: String, default: "forward" },
     quality: { type: String, default: "low" },
   },
   emits: ["error", "fallback-low"],
+  data: () => ({ time: 0 }),
   computed: {
     playlistUrl() {
       return routePlaylistUrl(this.route, this.camera, this.quality)
@@ -126,6 +131,10 @@ export const RoutePlayer = {
       hls.attachMedia(video)
       video.play().catch(() => {})
     },
+    seek(seconds) {
+      this.time = seconds
+      this.$refs.video.currentTime = seconds
+    },
     onVideoError() {
       // hls.js reports its own errors; this covers the native fallback.
       if (this._native && !this.fallBackToLow()) this.$emit("error", "Could not play this route.")
@@ -152,5 +161,9 @@ export const RoutePlayer = {
       }
     },
   },
-  template: `<video ref="video" class="gx-video" controls muted playsinline preload="metadata" @error="onVideoError"></video>`,
+  template: `
+    <div class="gx-route-player">
+      <video ref="video" class="gx-video" controls muted playsinline preload="metadata" @error="onVideoError" @timeupdate="time = $event.target.currentTime"></video>
+      <RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" />
+    </div>`,
 }

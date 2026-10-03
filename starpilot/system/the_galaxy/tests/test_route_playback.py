@@ -915,3 +915,40 @@ def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, offroad, cut, last
   ]}
   with _get(client, _segment_url(40, "thumbnail.jpg")) as thumbnail:
     assert thumbnail.data == b"\xff\xd8synthetic"
+
+
+def test_route_player_shows_the_timeline_and_seeks_from_it():
+  mobile = MODULE_DIR / "assets/mobile/js/components"
+  player = (mobile / "RoutePlayer.js").read_text(encoding="utf-8")
+  timeline = (mobile / "RouteTimeline.js").read_text(encoding="utf-8")
+
+  # Under the video, fed the playing time; its seeks set the video's position.
+  assert 'import { RouteTimeline } from "./RouteTimeline.js"' in player
+  assert '@timeupdate="time = $event.target.currentTime"' in player
+  assert '<RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" />' in player
+  assert player.index("<video ref=\"video\"") < player.index("<RouteTimeline")
+  assert "this.$refs.video.currentTime = seconds" in player
+
+  # Endpoints match the backend.
+  assert "`/route-playback/${encodeURIComponent(this.route)}/timeline.json?${query}`" in timeline
+  assert "`/route-playback/segment/${encodeURIComponent(segment)}/${part}`" in timeline
+  assert 'segmentUrl(segment, "timeline.json")' in timeline
+  assert 'thumbnailAt != null ? segmentUrl(segment, "thumbnail.jpg") : null' in timeline
+
+  # A route change stops the old fetch loop; camera/quality only reload the segment list.
+  assert "route() {\n      this.reset()\n      this.load()" in timeline
+  assert 'camera: "load",\n    quality: "load",' in timeline
+  assert "if (token !== this._token || list !== this._list) return" in timeline
+
+  # One request at a time; onroad stops with the note, busy retries.
+  assert "if (this._fetching === token) return" in timeline
+  assert timeline.count("await fetch(") == 2
+  onroad = timeline.index('if (body?.reason === "onroad") {')
+  assert timeline.index("this.onroad = true\n              return", onroad) > onroad
+  assert "Timeline fills in after the drive" in timeline
+  assert "setTimeout(resolve, BUSY_RETRY_MS))\n            continue" in timeline
+
+  # Drag shows the time and seeks on release; keys step; vertical scrolling stays with the page.
+  assert 'role="slider"' in timeline and "touch-action:pan-y" in timeline
+  assert 'this.dragTime = null\n      this.$emit("seek", this.timeAt(event))' in timeline
+  assert '@pointercancel="dragTime = null"' in timeline

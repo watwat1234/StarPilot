@@ -73,16 +73,39 @@ export function routePlaylistUrl(route, camera = "forward", quality = "low") {
   return `/route-playback/${encodeURIComponent(route)}/${encodeURIComponent(playlist)}.m3u8`
 }
 
+// Its own component so the player's per-tick re-render (time changes on every timeupdate) doesn't patch it: Vue
+// rewrites every <option value> on each render, and Chromium redraws an open select popup when its options change.
+const SpeedSelect = {
+  name: "SpeedSelect",
+  props: { modelValue: { type: Number, required: true } },
+  emits: ["update:modelValue"],
+  data: () => ({ speeds: SPEEDS }),
+  computed: {
+    value: {
+      get() {
+        return this.modelValue
+      },
+      set(rate) {
+        this.$emit("update:modelValue", rate)
+      },
+    },
+  },
+  template: `
+    <select v-model.number="value" aria-label="Playback speed" title="Playback speed (< >)">
+      <option v-for="s in speeds" :key="s" :value="s">{{ s }}×</option>
+    </select>`,
+}
+
 export const RoutePlayer = {
   name: "RoutePlayer",
-  components: { RouteTimeline },
+  components: { RouteTimeline, SpeedSelect },
   props: {
     route: { type: String, required: true },
     camera: { type: String, default: "forward" },
     quality: { type: String, default: "low" },
   },
   emits: ["error", "fallback-low"],
-  data: () => ({ time: 0, duration: 0, segments: [], startedAt: null, paused: true, muted: true, rate: 1, speeds: SPEEDS }),
+  data: () => ({ time: 0, duration: 0, segments: [], startedAt: null, paused: true, muted: true, rate: 1 }),
   computed: {
     clockText() {
       return routeClock(this.time, this.segments, this.startedAt)
@@ -300,9 +323,7 @@ export const RoutePlayer = {
         <button type="button" :aria-label="paused ? 'Play' : 'Pause'" :title="(paused ? 'Play' : 'Pause') + ' (space)'" @click="togglePlay"><i class="bi" :class="paused ? 'bi-play-fill' : 'bi-pause-fill'" aria-hidden="true"></i></button>
         <button type="button" aria-label="Forward 10 seconds" title="Forward 10 s (L)" @click="skip(10)"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i><small>10</small></button>
         <span class="gx-route-controls__time" aria-live="off">{{ clockText }}</span>
-        <select v-model.number="rate" aria-label="Playback speed" title="Playback speed (< >)">
-          <option v-for="s in speeds" :key="s" :value="s">{{ s }}×</option>
-        </select>
+        <speed-select v-model="rate" />
         <button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" :title="(muted ? 'Unmute' : 'Mute') + ' (M)'" @click="toggleMute"><i class="bi" :class="muted ? 'bi-volume-mute-fill' : 'bi-volume-up-fill'" aria-hidden="true"></i></button>
         <button type="button" aria-label="Fullscreen" title="Fullscreen (F)" @click="toggleFullscreen"><i class="bi bi-fullscreen" aria-hidden="true"></i></button>
       </div>

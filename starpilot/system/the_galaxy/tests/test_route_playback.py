@@ -1282,9 +1282,11 @@ def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop
   # Only the route player's sheet gets the layout classes; the screen-recording sheet stays a bottom sheet.
   assert recordings.count('scrim-class="gx-route-player-scrim" sheet-class="gx-route-player-sheet"') == 1
   assert 'icon="bi-camera-video" bottomsheet scrim-class="gx-route-player-scrim"' in recordings
-  # Phones in landscape (wide but short) keep the bottom sheet.
-  assert "@media (min-width:768px) and (min-height:600px)" in player and ".gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center" in player
-  assert ".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none" in player
+  # Centered at every size (phones too); only the large width is desktop-only.
+  desktop = player.index("@media (min-width:768px) and (min-height:600px)")
+  assert player.index(".gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center") < desktop
+  assert ".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {max-height:calc(100dvh - 24px);border-radius:var(--radius-xl)}" in player
+  assert player.index(".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none") > desktop
 
   # No native controls on the route video (the per-segment fallback keeps them); the bar replaces them.
   video = player[player.index('<video ref="video"'):player.index("</video>")]

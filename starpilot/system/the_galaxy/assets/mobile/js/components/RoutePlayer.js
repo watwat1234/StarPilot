@@ -35,6 +35,8 @@ function installStyle() {
     .gx-route-player:-webkit-full-screen {display:flex;flex-direction:column;justify-content:center;padding:16px;background:#000;color:#fff}
     .gx-route-player:fullscreen .gx-video {flex:1;min-height:0;max-height:none}
     .gx-route-player:-webkit-full-screen .gx-video {flex:1;min-height:0;max-height:none}
+    .gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center;padding:12px}
+    .gx-route-player-scrim .gx-sheet.gx-route-player-sheet {max-height:calc(100dvh - 24px);border-radius:var(--radius-xl)}
     @media (max-width:767px) {
       .gx-route-controls button,.gx-route-controls select {min-width:32px;padding:0 4px}
       .gx-route-controls__time {margin:0 2px;font-size:.8rem}
@@ -46,8 +48,8 @@ function installStyle() {
       .gx-route-controls__time {margin:0}
     }
     @media (min-width:768px) and (min-height:600px) {
-      .gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center;padding:3dvh 3vw}
-      .gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none;max-height:94dvh;border-radius:var(--radius-xl)}
+      .gx-scrim--bottomsheet.gx-route-player-scrim {padding:3dvh 3vw}
+      .gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none;max-height:94dvh}
       .gx-route-player-sheet .gx-video {max-height:calc(94dvh - 300px)}
     }
   `

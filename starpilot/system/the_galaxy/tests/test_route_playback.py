@@ -13,7 +13,7 @@ from test_dashboard_stats import FakeParams, MODULE_DIR, _install_server_import_
 
 _install_server_import_stubs()
 
-from openpilot.starpilot.system.the_galaxy import route_playback
+from openpilot.starpilot.system.the_galaxy import route_playback, route_timeline
 
 
 ROUTE_NAME = "0000006a--9f0a7bdf9c"
@@ -596,3 +596,319 @@ def test_real_ffmpeg_remux_of_raw_hevc_gives_a_playable_fmp4_pair(tmp_path, monk
   assert "avg_frame_rate=20/1" in probe
   assert abs(float(probe.split("duration=")[1].split()[0]) - 2.0) < 0.1
   assert (target / "media.m4s").read_bytes()[4:8] == b"moof"
+
+
+# Stage 3: route timeline.
+
+
+def _state(enabled, active, alert="normal"):
+  return SimpleNamespace(enabled=enabled, active=active, alertStatus=alert)
+
+
+def _events(start_ns, *timed):
+  # initData carries the route start; the sentinel after it is the segment's t=0.
+  return [(1, "initData", None), (start_ns, "sentinel", None), *[(start_ns + int(t * 1e9), w, m) for t, w, m in timed]]
+
+
+def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_changes():
+  timeline, thumbnail = route_timeline.summarize(_events(
+    2433_000_000_000,
+    (-1.5, "selfdriveState", _state(False, False)),
+    (0.5, "selfdriveState", _state(False, False)),
+    (4.8, "thumbnail", SimpleNamespace(thumbnail=b"\xff\xd8first")),
+    (10.0, "selfdriveState", _state(True, True)),
+    (20.0, "selfdriveState", _state(True, True)),
+    (30.0, "selfdriveState", _state(True, False)),
+    (40.0, "selfdriveState", _state(True, True, "userPrompt")),
+    (45.0, "selfdriveState", _state(True, True, "critical")),
+    (50.0, "selfdriveState", _state(True, True)),
+    (59.9, "selfdriveState", _state(True, True)),
+    (59.95, "thumbnail", SimpleNamespace(thumbnail=b"\xff\xd8second")),
+  ))
+
+  assert timeline == {"thumbnailAt": 4.8, "spans": [
+    [0.0, 10.0, "disengaged", 0],
+    [10.0, 30.0, "engaged", 0],
+    [30.0, 40.0, "overriding", 0],
+    [40.0, 45.0, "engaged", 1],
+    [45.0, 50.0, "engaged", 2],
+    [50.0, 59.9, "engaged", 0],
+  ]}
+  assert thumbnail == b"\xff\xd8first"
+
+
+@pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", None))])
+def test_summarize_without_state_or_thumbnail_is_empty(events):
+  assert route_timeline.summarize(events) == ({"spans": [], "thumbnailAt": None}, None)
+
+
+def _make_log_segment(root, segment_num, qlog="qlog.zst", locked=False):
+  segment = root / f"{ROUTE_NAME}--{segment_num}"
+  segment.mkdir(parents=True, exist_ok=True)
+  (segment / qlog).write_bytes(b"qlog")
+  if locked:
+    (segment / "rlog.lock").touch()
+  return segment
+
+
+def _fake_parser(monkeypatch, thumbnail=b"\xff\xd8jpeg", failure=None, write=True):
+  calls = []
+  def run(cmd, **kwargs):
+    calls.append((cmd, kwargs))
+    if failure is not None:
+      raise failure
+    out_dir = cmd[-1]
+    if write:
+      with open(os.path.join(out_dir, "timeline.json"), "w") as file:
+        file.write('{"spans":[[0,60,"engaged",0]],"thumbnailAt":5}')
+      if thumbnail is not None:
+        with open(os.path.join(out_dir, "thumbnail.jpg"), "wb") as file:
+          file.write(thumbnail)
+    return SimpleNamespace(stdout="")
+  monkeypatch.setattr(route_playback.subprocess, "run", run)
+  return calls
+
+
+@pytest.fixture
+def offroad(monkeypatch):
+  params = FakeParams({"IsOnroad": False})
+  monkeypatch.setattr(route_playback.utilities, "params", params)
+  return params
+
+
+def _timeline_client(footage, cache_root, executor):
+  app = Flask(f"route_timeline_{time.monotonic_ns()}")
+  app.register_blueprint(route_playback.create_blueprint(
+    [str(footage) + "/"], parse_executor=executor, timeline_cache_root=cache_root))
+  return app.test_client()
+
+
+def _segment_url(num, part="timeline.json"):
+  return f"/route-playback/segment/{ROUTE_NAME}--{num}/{part}"
+
+
+def _get(client, url):
+  # Read and close, so send_file's handle doesn't leak.
+  with client.get(url) as response:
+    response.get_data()
+  return response
+
+
+@pytest.mark.parametrize(("query", "files"), [
+  ("", ("qcamera.ts",)),
+  ("?camera=forward&quality=full", ("fcamera.hevc", "qcamera.ts")),
+  ("?camera=wide&quality=low", ("ecamera.hevc", "qcamera.ts")),
+])
+def test_route_timeline_offsets_match_the_playlist(tmp_path, last_duration, query, files):
+  footage = tmp_path / "footage"
+  for num in (0, 1, 3):
+    segment = footage / f"{ROUTE_NAME}--{num}"
+    segment.mkdir(parents=True)
+    for name in files:
+      (segment / name).write_bytes(b"x")
+  playlist = {"": "qcamera", "?camera=forward&quality=full": "forward", "?camera=wide&quality=low": "wide"}[query]
+  client = _full_client(footage, tmp_path / "cache", FakeExecutor())
+
+  response = client.get(f"/route-playback/{ROUTE_NAME}/timeline.json{query}")
+
+  assert response.status_code == 200
+  extinf = [float(line[8:-1]) for line in client.get(f"/route-playback/{ROUTE_NAME}/{playlist}.m3u8").get_data(as_text=True).splitlines()
+            if line.startswith("#EXTINF:")]
+  assert response.get_json() == {"segments": [
+    {"segment": f"{ROUTE_NAME}--0", "start": 0.0, "duration": 60.0},
+    {"segment": f"{ROUTE_NAME}--1", "start": 60.0, "duration": 60.0},
+    {"segment": f"{ROUTE_NAME}--3", "start": 120.0, "duration": 23.5},
+  ]}
+  assert extinf == [60.0, 60.0, 23.5]
+
+
+def test_route_timeline_rejects_bad_requests(tmp_path, last_duration):
+  _make_segment(tmp_path, 0)
+  client = _client(tmp_path)
+
+  assert client.get("/route-playback/nope/timeline.json").status_code == 400
+  assert client.get(f"/route-playback/{ROUTE_NAME}/timeline.json?camera=rear").status_code == 400
+  assert client.get(f"/route-playback/{ROUTE_NAME}/timeline.json?quality=best").status_code == 400
+  assert client.get(f"/route-playback/{ROUTE_NAME}/timeline.json?camera=wide").status_code == 404
+  assert client.get("/route-playback/0000006a--0000000000/timeline.json").status_code == 404
+
+
+def test_segment_timeline_is_parsed_once_niced_then_cached(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  _make_log_segment(footage, 0)
+  calls = _fake_parser(monkeypatch)
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  response = _get(client, _segment_url(0))
+  assert response.status_code == 200
+  assert response.get_json() == {"spans": [[0, 60, "engaged", 0]], "thumbnailAt": 5}
+  with _get(client, _segment_url(0, "thumbnail.jpg")) as thumbnail:
+    assert thumbnail.status_code == 200
+    assert thumbnail.mimetype == "image/jpeg"
+    assert thumbnail.data == b"\xff\xd8jpeg"
+    assert thumbnail.cache_control.max_age == 86400
+
+  assert len(calls) == 1
+  cmd, kwargs = calls[0]
+  assert cmd[:4] == ["nice", "-n", "19", route_playback.sys.executable]
+  assert cmd[4:7] == ["-m", "openpilot.starpilot.system.the_galaxy.route_timeline", str(footage / f"{ROUTE_NAME}--0" / "qlog.zst")]
+  assert kwargs["timeout"] == route_playback.TIMELINE_PARSE_TIMEOUT_SECONDS
+  assert kwargs["check"] is True
+  assert str(route_playback.REPO_ROOT) in kwargs["env"]["PYTHONPATH"]
+  [entry] = list(cache_root.iterdir())
+  assert sorted(path.name for path in entry.iterdir()) == ["thumbnail.jpg", "timeline.json"]
+
+
+def test_segment_timeline_rejects_bad_names_missing_logs_and_recording_segments(tmp_path, monkeypatch, offroad):
+  footage = tmp_path / "footage"
+  _make_log_segment(footage, 0, locked=True)
+  _make_log_segment(footage, 1, qlog="qlog.bz2")
+  (footage / f"{ROUTE_NAME}--2").mkdir()
+  calls = _fake_parser(monkeypatch)
+  client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
+
+  assert client.get(f"/route-playback/segment/{ROUTE_NAME}/timeline.json").status_code == 400
+  assert _get(client, _segment_url(0, "rlog.zst")).status_code == 404
+  assert _get(client, _segment_url(0)).status_code == 409
+  assert _get(client, _segment_url(2)).status_code == 404
+  assert calls == []
+  assert _get(client, _segment_url(1)).status_code == 200
+  assert calls[0][0][6].endswith("qlog.bz2")
+
+
+def test_onroad_serves_only_the_cache(tmp_path, monkeypatch, offroad):
+  footage = tmp_path / "footage"
+  _make_log_segment(footage, 0)
+  _make_log_segment(footage, 1)
+  calls = _fake_parser(monkeypatch)
+  client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
+  assert _get(client, _segment_url(0)).status_code == 200
+
+  offroad.put("IsOnroad", True)
+
+  assert _get(client, _segment_url(0)).status_code == 200
+  response = _get(client, _segment_url(1))
+  assert response.status_code == 503
+  assert response.get_json()["reason"] == "onroad"
+  assert len(calls) == 1
+
+
+def test_a_parse_queued_offroad_does_not_run_once_onroad(tmp_path, monkeypatch, offroad):
+  footage = tmp_path / "footage"
+  _make_log_segment(footage, 0)
+  calls = _fake_parser(monkeypatch)
+  monkeypatch.setattr(route_playback, "TIMELINE_WAIT_SECONDS", 0.01)
+  executor = FakeExecutor(hold=True)
+  client = _timeline_client(footage, tmp_path / "cache", executor)
+  assert _get(client, _segment_url(0)).status_code == 503
+
+  offroad.put("IsOnroad", True)
+  fn, args, future = executor.submitted[0]
+  with pytest.raises(route_playback.Onroad):
+    fn(*args)
+  assert calls == []
+
+
+def test_concurrent_requests_share_one_parse_and_the_backlog_is_capped(tmp_path, monkeypatch, offroad):
+  footage = tmp_path / "footage"
+  for num in range(6):
+    _make_log_segment(footage, num)
+  _fake_parser(monkeypatch)
+  monkeypatch.setattr(route_playback, "TIMELINE_WAIT_SECONDS", 0.01)
+  executor = FakeExecutor(hold=True)
+  client = _timeline_client(footage, tmp_path / "cache", executor)
+
+  assert _get(client, _segment_url(0)).status_code == 503
+  assert _get(client, _segment_url(0)).status_code == 503
+  assert len(executor.submitted) == 1
+  assert [_get(client, _segment_url(num)).status_code for num in range(1, 6)] == [503] * 5
+  assert len(executor.submitted) == route_playback.MAX_QUEUED_PARSES == 4
+
+  fn, args, future = executor.submitted[0]
+  future.set_result(fn(*args))
+  assert _get(client, _segment_url(0)).status_code == 200
+
+
+@pytest.mark.parametrize("failure", [subprocess.CalledProcessError(1, "python"), subprocess.TimeoutExpired("python", 30), None])
+def test_a_failed_parse_is_an_error_and_leaves_no_partial_cache(tmp_path, monkeypatch, offroad, failure):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  _make_log_segment(footage, 0)
+  _fake_parser(monkeypatch, failure=failure, write=False)
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  assert _get(client, _segment_url(0)).status_code == 409
+  assert list(cache_root.iterdir()) == []
+
+
+def test_a_segment_without_a_thumbnail_answers_404_for_it(tmp_path, monkeypatch, offroad):
+  footage = tmp_path / "footage"
+  _make_log_segment(footage, 0)
+  _fake_parser(monkeypatch, thumbnail=None)
+  client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
+
+  assert _get(client, _segment_url(0, "thumbnail.jpg")).status_code == 404
+  assert _get(client, _segment_url(0)).status_code == 200
+
+
+def test_timeline_cache_is_pruned_to_its_own_budget(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  _make_log_segment(footage, 0)
+  _fake_parser(monkeypatch)
+  monkeypatch.setattr(route_playback, "TIMELINE_CACHE_MAX_BYTES", 150)
+  old = _cache_entry(cache_root, "old", 100, 1000)
+  recent = _cache_entry(cache_root, "recent", 100, 2000)
+
+  assert _get(_timeline_client(footage, cache_root, FakeExecutor()), _segment_url(0)).status_code == 200
+
+  assert not old.exists() and recent.exists()
+  assert len(list(cache_root.iterdir())) == 2
+
+
+SYNTHETIC_QLOG = """
+import sys
+import zstandard
+from cereal import log
+
+def event(seconds, which):
+  message = log.Event.new_message()
+  message.logMonoTime = int(seconds * 1e9)
+  return message, message.init(which)
+
+messages = [event(32.0, "initData")[0], event(2400.0, "sentinel")[0]]
+for tenth in range(600):
+  message, state = event(2400.0 + tenth / 10, "selfdriveState")
+  state.enabled = tenth >= 100
+  state.active = tenth >= 100 and not 300 <= tenth < 350
+  state.alertStatus = "critical" if 500 <= tenth < 520 else "normal"
+  messages.append(message)
+  if tenth == 50:
+    message, thumbnail = event(2405.0, "thumbnail")
+    thumbnail.frameId = 48100
+    thumbnail.thumbnail = b"\\xff\\xd8synthetic"
+    messages.append(message)
+with open(sys.argv[1], "wb") as file:
+  file.write(zstandard.ZstdCompressor().compress(b"".join(m.to_bytes() for m in messages)))
+"""
+
+
+def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, offroad):
+  footage = tmp_path / "footage"
+  segment = _make_log_segment(footage, 40)
+  env = route_playback.utilities._dashboard_worker_env(route_playback.REPO_ROOT)
+  subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst")],
+                 cwd=route_playback.REPO_ROOT, env=env, check=True, timeout=60)
+  client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
+
+  response = _get(client, _segment_url(40))
+
+  assert response.status_code == 200, response.get_data(as_text=True)
+  assert response.get_json() == {"thumbnailAt": 5.0, "spans": [
+    [0.0, 10.0, "disengaged", 0],
+    [10.0, 30.0, "engaged", 0],
+    [30.0, 35.0, "overriding", 0],
+    [35.0, 50.0, "engaged", 0],
+    [50.0, 52.0, "engaged", 2],
+    [52.0, 59.9, "engaged", 0],
+  ]}
+  with _get(client, _segment_url(40, "thumbnail.jpg")) as thumbnail:
+    assert thumbnail.data == b"\xff\xd8synthetic"

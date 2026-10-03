@@ -2,8 +2,9 @@
 
 Low quality: qcamera.ts is already an MPEG-TS with H.264 and real PTS, so each file is served as-is as an HLS
 media segment; nothing is remuxed. Full quality: the raw f/e/dcamera.hevc of a segment is stream-copied to a
-fragmented mp4 on first request and split into an fMP4 init + media part. Kept out of the_galaxy.py so upstream
-ingests don't conflict with it.
+fragmented mp4 on first request and split into an fMP4 init + media part. Timeline: each segment's qlog is parsed
+once, offroad, into engagement spans and its thumbnail. Kept out of the_galaxy.py so upstream ingests don't
+conflict with it.
 """
 import hashlib
 import math
@@ -11,14 +12,16 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 
-from flask import Blueprint, Response, send_file
+from flask import Blueprint, Response, request, send_file
 
-from openpilot.starpilot.system.the_galaxy import utilities
+from openpilot.starpilot.system.the_galaxy import route_timeline, utilities
 
 QCAMERA_FILENAME = "qcamera.ts"
 CAMERA_FILENAMES = {"forward": "fcamera.hevc", "wide": "ecamera.hevc", "driver": "dcamera.hevc"}
@@ -32,6 +35,17 @@ HLS_CACHE_MAX_BYTES = 512 * 1024 * 1024
 # Unfinished full-quality remuxes (queued or running) allowed on the shared executor at once.
 MAX_QUEUED_REMUXES = 2
 TEMP_DIR_PREFIX = ".tmp-"
+QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
+# A qlog parse takes ~1 s on the device; it runs on its own one-worker executor, never while onroad.
+TIMELINE_PARSE_TIMEOUT_SECONDS = 30
+TIMELINE_WAIT_SECONDS = TIMELINE_PARSE_TIMEOUT_SECONDS + 5
+TIMELINE_CACHE_MAX_BYTES = 32 * 1024 * 1024
+MAX_QUEUED_PARSES = 4
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class Onroad(Exception):
+  pass
 
 
 def _segment_lock_path(path):
@@ -69,11 +83,22 @@ def _last_segment_seconds(path):
   return seconds if math.isfinite(seconds) and seconds > 0 else SEGMENT_SECONDS
 
 
-def build_playlist(segments, last_seconds, camera=None):
-  """VOD playlist over [(segment, path)]: qcamera.ts parts, or fMP4 init + media parts for `camera`."""
-  durations = [SEGMENT_SECONDS] * len(segments)
-  durations[-1] = last_seconds
+def _route_entries(route_name, footage_paths, camera=None):
+  """([(segment, path)], [seconds]) of a route's playlist: qcamera.ts parts, or `camera`'s raw files.
 
+  The playlists and the timeline both use it, so timeline offsets are the video's.
+  """
+  segments = _playable_segments(route_name, footage_paths, QCAMERA_FILENAME if camera is None else CAMERA_FILENAMES[camera])
+  if not segments:
+    return [], []
+  # Listing never remuxes. The last segment's length comes from its qcamera.ts when there is one.
+  last_qcamera = os.path.join(os.path.dirname(segments[-1][1]), QCAMERA_FILENAME)
+  last_seconds = _last_segment_seconds(last_qcamera) if os.path.isfile(last_qcamera) else SEGMENT_SECONDS
+  return segments, [SEGMENT_SECONDS] * (len(segments) - 1) + [last_seconds]
+
+
+def build_playlist(segments, durations, camera=None):
+  """VOD playlist over [(segment, path)]: qcamera.ts parts, or fMP4 init + media parts for `camera`."""
   lines = [
     "#EXTM3U",
     "#EXT-X-VERSION:3" if camera is None else "#EXT-X-VERSION:7",
@@ -133,11 +158,12 @@ def _dir_size(path):
   return total
 
 
-def _prune_cache(cache_root, keep_path):
-  """Evict whole segment dirs oldest-first until the cache fits its budget.
+def _prune_cache(cache_root, keep_path, max_bytes=None):
+  """Evict whole segment dirs oldest-first until the cache fits its budget (default: the HLS one).
 
-  Runs on the one-worker remux executor before each new remux, so any leftover temp dir is from a crash.
+  Runs on the cache's one-worker executor before each new job, so any leftover temp dir is from a crash.
   """
+  max_bytes = HLS_CACHE_MAX_BYTES if max_bytes is None else max_bytes
   entries = []
   for path in cache_root.iterdir():
     if not path.is_dir() or path == keep_path:
@@ -152,7 +178,7 @@ def _prune_cache(cache_root, keep_path):
 
   total = sum(size for _, size, _ in entries)
   for _, size, path in sorted(entries):
-    if total <= HLS_CACHE_MAX_BYTES:
+    if total <= max_bytes:
       break
     shutil.rmtree(path, ignore_errors=True)
     total -= size
@@ -192,55 +218,119 @@ def _is_complete(target_dir):
   return (target_dir / INIT_FILENAME).is_file() and (target_dir / MEDIA_FILENAME).is_file()
 
 
+def _parse_timeline(qlog_path, target_dir, cache_root):
+  """Parse one qlog into target_dir/{timeline.json,thumbnail.jpg} in a nice'd subprocess. Runs on the parse executor."""
+  if (target_dir / route_timeline.TIMELINE_FILENAME).is_file():
+    return target_dir
+  # Queued offroad but reached after the drive started: leave it for later.
+  if utilities.params.get_bool("IsOnroad"):
+    raise Onroad()
+
+  cache_root.mkdir(parents=True, exist_ok=True)
+  shutil.rmtree(target_dir, ignore_errors=True)
+  _prune_cache(cache_root, keep_path=target_dir, max_bytes=TIMELINE_CACHE_MAX_BYTES)
+  temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX, dir=cache_root))
+  try:
+    subprocess.run([
+      "nice", "-n", "19", sys.executable or "python3", "-m", "openpilot.starpilot.system.the_galaxy.route_timeline",
+      str(qlog_path), str(temp_dir),
+    ], cwd=str(REPO_ROOT), env=utilities._dashboard_worker_env(REPO_ROOT), capture_output=True, check=True,
+       timeout=TIMELINE_PARSE_TIMEOUT_SECONDS)
+    if not (temp_dir / route_timeline.TIMELINE_FILENAME).is_file():
+      raise ValueError(f"No timeline written for {qlog_path}")
+    os.rename(temp_dir, target_dir)
+  except (OSError, ValueError, subprocess.SubprocessError) as error:
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    raise ValueError(f"Cannot read log file: {qlog_path}") from error
+  return target_dir
+
+
 def _cache_dir_for(cache_root, source_path):
   stat = os.stat(source_path)
   key = hashlib.md5(f"{source_path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()
   return cache_root / key
 
 
-def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
-  """remux_executor: the Galaxy's one-worker remux executor; without it full quality answers 503."""
+class _SharedJobs:
+  """One executor job per cache dir, shared by concurrent requests, with a cap on unfinished jobs."""
+  def __init__(self, executor, max_queued):
+    self.executor = executor
+    self.max_queued = max_queued
+    self.futures = {}
+    self.lock = threading.Lock()
+
+  def _forget(self, key, future):
+    with self.lock:
+      if self.futures.get(key) is future:
+        self.futures.pop(key, None)
+
+  def result(self, wait_seconds, fn, source_path, target_dir, cache_root):
+    """fn's result, or None if it is not done in time or the backlog is full."""
+    key = str(target_dir)
+    created = False
+    with self.lock:
+      future = self.futures.get(key)
+      if future is None:
+        # Seeking abandons requests but not their jobs. Cap our backlog; the 503 is retried by the client.
+        if len(self.futures) >= self.max_queued:
+          return None
+        future = self.executor.submit(fn, source_path, target_dir, cache_root)
+        self.futures[key] = future
+        created = True
+    # Outside the lock: a callback on an already finished future runs right here and takes the lock.
+    if created:
+      future.add_done_callback(lambda completed: self._forget(key, completed))
+
+    try:
+      return future.result(timeout=wait_seconds)
+    except FutureTimeoutError:
+      return None
+
+
+def _touched(target_dir):
+  # Cache hit: answered without queueing. Touch for the oldest-first prune; False if it was pruned just now.
+  try:
+    os.utime(target_dir)
+    return True
+  except FileNotFoundError:
+    return False
+
+
+def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_executor=None, timeline_cache_root=None):
+  """remux_executor: the Galaxy's one-worker remux executor (shared with /video); without it full quality answers
+  503. parse_executor: one worker for qlog parses, our own so a long route doesn't hold up remuxes."""
   blueprint = Blueprint("route_playback", __name__, url_prefix="/route-playback")
   cache_root = Path(cache_root) if cache_root is not None else Path(utilities.VIDEO_CACHE_PATH) / "route-hls"
-  remux_futures = {}
-  remux_lock = threading.Lock()
-
-  def forget_future(key, future):
-    with remux_lock:
-      if remux_futures.get(key) is future:
-        remux_futures.pop(key, None)
+  timeline_cache_root = (Path(timeline_cache_root) if timeline_cache_root is not None
+                         else Path(utilities.VIDEO_CACHE_PATH) / "route-timeline")
+  remux_jobs = _SharedJobs(remux_executor, MAX_QUEUED_REMUXES)
+  parse_jobs = _SharedJobs(parse_executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix="route-timeline"),
+                           MAX_QUEUED_PARSES)
 
   def remuxed_dir(source_path):
     """Cache dir with init.mp4 + media.m4s, or None if it is not ready in time or our backlog is full."""
     target_dir = _cache_dir_for(cache_root, source_path)
-    if _is_complete(target_dir):
-      # Cache hit: answered here, without queueing behind other remuxes. Touch for the oldest-first prune.
-      try:
-        os.utime(target_dir)
-        return target_dir
-      except FileNotFoundError:
-        pass  # pruned just now: remux again below
+    if _is_complete(target_dir) and _touched(target_dir):
+      return target_dir
+    return remux_jobs.result(REMUX_WAIT_SECONDS, _remux_to_fmp4, source_path, target_dir, cache_root)
 
-    key = str(target_dir)
-    created = False
-    with remux_lock:
-      future = remux_futures.get(key)
-      if future is None:
-        # Seeking abandons requests but not their jobs, and the executor is shared with /video. Cap our backlog;
-        # the 503 is retried by hls.js once the queue drains.
-        if len(remux_futures) >= MAX_QUEUED_REMUXES:
-          return None
-        future = remux_executor.submit(_remux_to_fmp4, source_path, target_dir, cache_root)
-        remux_futures[key] = future
-        created = True
-    # Outside the lock: a callback on an already finished future runs right here and takes the lock.
-    if created:
-      future.add_done_callback(lambda completed: forget_future(key, completed))
+  def timeline_dir(qlog_path):
+    """Cache dir with timeline.json (+ thumbnail.jpg), or None if not ready in time. Raises Onroad when uncached."""
+    target_dir = _cache_dir_for(timeline_cache_root, qlog_path)
+    if (target_dir / route_timeline.TIMELINE_FILENAME).is_file() and _touched(target_dir):
+      return target_dir
+    if utilities.params.get_bool("IsOnroad"):
+      raise Onroad()
+    return parse_jobs.result(TIMELINE_WAIT_SECONDS, _parse_timeline, qlog_path, target_dir, timeline_cache_root)
 
-    try:
-      return future.result(timeout=REMUX_WAIT_SECONDS)
-    except FutureTimeoutError:
-      return None
+  def segment_qlog(segment):
+    """(qlog path or None, recording) for a valid segment name."""
+    for footage_path in footage_paths:
+      for name in QLOG_FILENAMES:
+        path = os.path.join(footage_path, segment, name)
+        if os.path.isfile(path):
+          return path, os.path.exists(os.path.join(footage_path, segment, "rlog.lock"))
+    return None, False
 
   def playlist_response(body):
     response = Response(body, mimetype="application/vnd.apple.mpegurl")
@@ -252,11 +342,10 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
     if not utilities.ROUTE_RE.fullmatch(route_name or ""):
       return {"error": "Invalid route name"}, 400
 
-    segments = _playable_segments(route_name, footage_paths)
+    segments, durations = _route_entries(route_name, footage_paths)
     if not segments:
       return {"error": "No playable video for this route"}, 404
-
-    return playlist_response(build_playlist(segments, _last_segment_seconds(segments[-1][1])))
+    return playlist_response(build_playlist(segments, durations))
 
   @blueprint.route("/<route_name>/<camera>.m3u8", methods=["GET"])
   def camera_playlist(route_name, camera):
@@ -265,14 +354,29 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
     if camera not in CAMERA_FILENAMES:
       return {"error": "Invalid camera"}, 400
 
-    segments = _playable_segments(route_name, footage_paths, CAMERA_FILENAMES[camera])
+    segments, durations = _route_entries(route_name, footage_paths, camera)
     if not segments:
       return {"error": "No playable video for this route"}, 404
+    return playlist_response(build_playlist(segments, durations, camera=camera))
 
-    # Listing never remuxes. The last segment's length comes from its qcamera.ts when there is one.
-    last_qcamera = os.path.join(os.path.dirname(segments[-1][1]), QCAMERA_FILENAME)
-    last_seconds = _last_segment_seconds(last_qcamera) if os.path.isfile(last_qcamera) else SEGMENT_SECONDS
-    return playlist_response(build_playlist(segments, last_seconds, camera=camera))
+  @blueprint.route("/<route_name>/timeline.json", methods=["GET"])
+  def route_timeline_index(route_name):
+    """Where each segment starts in the playlist the player has open (no parsing)."""
+    camera = request.args.get("camera", "forward")
+    quality = request.args.get("quality", "low")
+    if not utilities.ROUTE_RE.fullmatch(route_name or ""):
+      return {"error": "Invalid route name"}, 400
+    if camera not in CAMERA_FILENAMES or quality not in ("low", "full"):
+      return {"error": "Invalid camera or quality"}, 400
+
+    segments, durations = _route_entries(route_name, footage_paths, None if (camera, quality) == ("forward", "low") else camera)
+    if not segments:
+      return {"error": "No playable video for this route"}, 404
+    starts = [sum(durations[:index]) for index in range(len(durations))]
+    return {"segments": [
+      {"segment": segment, "start": round(start, 3), "duration": round(seconds, 3)}
+      for (segment, _), start, seconds in zip(segments, starts, durations, strict=True)
+    ]}
 
   @blueprint.route("/segment/<segment>/qcamera.ts", methods=["GET"])
   def qcamera_segment(segment):
@@ -316,6 +420,33 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None):
         # Pruned between the remux and this read; the player retries and the next request remuxes again.
         return {"error": "Video is still being prepared"}, 503
     return {"error": "Video not found"}, 404
+
+  @blueprint.route("/segment/<segment>/<any(timeline.json, thumbnail.jpg):part>", methods=["GET"])
+  def segment_timeline(segment, part):
+    """A segment's engagement spans, or its thumbnail. Parsed once, offroad; the cache is served at any time."""
+    if not utilities.SEGMENT_RE.fullmatch(segment or ""):
+      return {"error": "Invalid segment name"}, 400
+    qlog_path, recording = segment_qlog(segment)
+    if qlog_path is None:
+      return {"error": "Log not found"}, 404
+    if recording:
+      return {"error": "Segment is still recording"}, 409
+
+    try:
+      target_dir = timeline_dir(qlog_path)
+    except Onroad:
+      return {"error": "Timeline is built after the drive", "reason": "onroad"}, 503
+    except (OSError, ValueError) as error:
+      return {"error": str(error)}, 409
+    if target_dir is None:
+      return {"error": "Timeline is still being prepared"}, 503
+    try:
+      if part == route_timeline.TIMELINE_FILENAME:
+        return send_file(target_dir / part, mimetype="application/json", conditional=True, max_age=0)
+      return send_file(target_dir / part, mimetype="image/jpeg", conditional=True, max_age=86400)
+    except FileNotFoundError:
+      # No thumbnail in this qlog, or pruned since; a pruned timeline is parsed again on the next request.
+      return {"error": "Not found"}, 404
 
   return blueprint
 

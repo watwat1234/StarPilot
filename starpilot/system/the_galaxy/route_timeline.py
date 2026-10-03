@@ -6,10 +6,18 @@ nice'd subprocess; cereal is only imported there, once per batch.
 import bz2
 import json
 import os
+import re
 import sys
 
+QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
 TIMELINE_FILENAME = "timeline.json"
 THUMBNAIL_FILENAME = "thumbnail.jpg"
+# Part of the timeline cache key: bump it when the parsed output changes, so cached minutes are parsed again.
+CACHE_VERSION = 2
+# The camera writes one thumbnail per minute, a few seconds in; one this far in is the next minute's, written just
+# before the rotation.
+LATE_THUMBNAIL_SECONDS = 30
+SEGMENT_DIR = re.compile(r"^(.+--.+)--(\d+)$")
 ALERT_LEVELS = {"normal": 0, "userPrompt": 1, "critical": 2}
 
 
@@ -20,14 +28,15 @@ def _state(selfdrive_state):
 
 
 def summarize(events):
-  """events: (logMonoTime ns, which, message) in log order -> (timeline dict, thumbnail bytes or None).
+  """events: (logMonoTime ns, which, message) in log order -> (timeline dict, thumbnail bytes or None, late thumbnail
+  bytes or None).
 
   Every segment's qlog starts with a copy of initData stamped at the *route* start; the next message (the logger's
   sentinel) is the segment's t=0. A few messages logged before it are clamped to 0.
   """
   start = None
   spans = []
-  thumbnail, thumbnail_at = None, None
+  thumbnail, thumbnail_at, late = None, None, None
   for mono_time, which, message in events:
     if start is None:
       if which != "initData":
@@ -42,9 +51,11 @@ def summarize(events):
         if spans:
           spans[-1][1] = seconds
         spans.append([seconds, seconds, *key])
+    elif which == "thumbnail" and seconds >= LATE_THUMBNAIL_SECONDS:
+      late = bytes(message.thumbnail)
     elif which == "thumbnail" and thumbnail is None:
       thumbnail, thumbnail_at = bytes(message.thumbnail), seconds
-  return {"spans": spans, "thumbnailAt": thumbnail_at}, thumbnail
+  return {"spans": spans, "thumbnailAt": thumbnail_at}, thumbnail, late
 
 
 def read_events(qlog_path):
@@ -67,8 +78,26 @@ def read_events(qlog_path):
     return  # cut off mid-message (power lost while recording): keep what was read, as LogReader does
 
 
+def previous_late_thumbnail(qlog_path):
+  """This minute's thumbnail when it landed at the end of the previous segment's qlog, or None."""
+  segment_dir = os.path.dirname(qlog_path)
+  match = SEGMENT_DIR.match(os.path.basename(segment_dir))
+  if match is None or int(match.group(2)) == 0:
+    return None
+  previous_dir = os.path.join(os.path.dirname(segment_dir), f"{match.group(1)}--{int(match.group(2)) - 1}")
+  try:
+    previous_qlog = next(path for name in QLOG_FILENAMES if os.path.isfile(path := os.path.join(previous_dir, name)))
+    return summarize(read_events(previous_qlog))[2]
+  except Exception:
+    return None
+
+
 def parse(qlog_path, out_dir):
-  timeline, thumbnail = summarize(read_events(qlog_path))
+  timeline, thumbnail, _ = summarize(read_events(qlog_path))
+  if thumbnail is None:
+    thumbnail = previous_late_thumbnail(qlog_path)
+    if thumbnail is not None:
+      timeline["thumbnailAt"] = 0.0  # written just before this minute started
   if thumbnail is not None:
     with open(os.path.join(out_dir, THUMBNAIL_FILENAME), "wb") as file:
       file.write(thumbnail)

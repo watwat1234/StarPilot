@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import shutil
 import struct
@@ -612,7 +614,7 @@ def _events(start_ns, *timed):
 
 
 def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_changes():
-  timeline, thumbnail = route_timeline.summarize(_events(
+  timeline, thumbnail, late = route_timeline.summarize(_events(
     2433_000_000_000,
     (-1.5, "selfdriveState", _state(False, False)),
     (0.5, "selfdriveState", _state(False, False)),
@@ -636,11 +638,20 @@ def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_ch
     [50.0, 59.9, "engaged", 0],
   ]}
   assert thumbnail == b"\xff\xd8first"
+  # The next minute's, written just before the rotation.
+  assert late == b"\xff\xd8second"
 
 
 @pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", None))])
 def test_summarize_without_state_or_thumbnail_is_empty(events):
-  assert route_timeline.summarize(events) == ({"spans": [], "thumbnailAt": None}, None)
+  assert route_timeline.summarize(events) == ({"spans": [], "thumbnailAt": None}, None, None)
+
+
+@pytest.mark.parametrize(("seconds", "own", "late"), [(0.3, b"t", None), (29.9, b"t", None), (30.0, None, b"t"), (59.97, None, b"t")])
+def test_summarize_takes_a_thumbnail_30_s_or_more_in_as_the_next_minutes(seconds, own, late):
+  timeline, thumbnail, late_thumbnail = route_timeline.summarize(_events(5, (seconds, "thumbnail", SimpleNamespace(thumbnail=b"t"))))
+  assert (thumbnail, late_thumbnail) == (own, late)
+  assert timeline["thumbnailAt"] == (seconds if own else None)
 
 
 def _make_log_segment(root, segment_num, qlog="qlog.zst", locked=False):
@@ -650,6 +661,59 @@ def _make_log_segment(root, segment_num, qlog="qlog.zst", locked=False):
   if locked:
     (segment / "rlog.lock").touch()
   return segment
+
+
+def _thumbnail_events(*thumbnails):
+  return _events(5, *[(seconds, "thumbnail", SimpleNamespace(thumbnail=data)) for seconds, data in thumbnails])
+
+
+def _parse_with(tmp_path, monkeypatch, qlogs, segment_num):
+  """route_timeline.parse of segment_num with fake qlogs {segment num: events, or an exception to raise}."""
+  def read_events(qlog_path):
+    events = qlogs[int(Path(qlog_path).parent.name.rsplit("--", 1)[1])]
+    if isinstance(events, Exception):
+      raise events
+    return events
+  reads = []
+  monkeypatch.setattr(route_timeline, "read_events", lambda qlog_path: reads.append(Path(qlog_path).parent.name) or read_events(qlog_path))
+  for num in qlogs:
+    _make_log_segment(tmp_path / "footage", num)
+  out_dir = tmp_path / "out"
+  out_dir.mkdir()
+  route_timeline.parse(str(tmp_path / "footage" / f"{ROUTE_NAME}--{segment_num}" / "qlog.zst"), str(out_dir))
+  thumbnail = out_dir / "thumbnail.jpg"
+  timeline = json.loads((out_dir / "timeline.json").read_text())
+  return timeline["thumbnailAt"], thumbnail.read_bytes() if thumbnail.exists() else None, reads
+
+
+def test_a_minute_without_its_thumbnail_takes_it_from_the_end_of_the_previous_qlog(tmp_path, monkeypatch):
+  qlogs = {11: _thumbnail_events((0.3, b"eleven"), (59.97, b"twelve")), 12: _thumbnail_events()}
+  assert _parse_with(tmp_path, monkeypatch, qlogs, 12) == (0.0, b"twelve", [f"{ROUTE_NAME}--12", f"{ROUTE_NAME}--11"])
+
+
+def test_a_minute_with_its_own_thumbnail_keeps_it_and_reads_no_other_qlog(tmp_path, monkeypatch):
+  qlogs = {12: _thumbnail_events((4.8, b"own")), 13: _thumbnail_events((4.8, b"thirteen"), (59.9, b"late"))}
+  assert _parse_with(tmp_path, monkeypatch, qlogs, 13) == (4.8, b"thirteen", [f"{ROUTE_NAME}--13"])
+
+
+@pytest.mark.parametrize("qlogs", [
+  {0: _thumbnail_events()},  # minute 0: no previous qlog to look in
+  {4: _thumbnail_events()},  # the previous segment is gone
+  {3: ValueError("corrupt"), 4: _thumbnail_events()},
+  {3: _thumbnail_events((0.3, b"own only")), 4: _thumbnail_events()},
+])
+def test_a_minute_without_a_thumbnail_anywhere_has_none(tmp_path, monkeypatch, qlogs):
+  assert _parse_with(tmp_path, monkeypatch, qlogs, max(qlogs))[:2] == (None, None)
+
+
+def test_the_timeline_cache_key_carries_the_parser_version_and_the_video_key_does_not(tmp_path):
+  source = tmp_path / "qlog.zst"
+  source.write_bytes(b"qlog")
+  stat = source.stat()
+  old_key = hashlib.md5(f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()
+  assert route_playback._cache_dir_for(tmp_path, source).name == old_key
+  assert route_playback._timeline_dir_for(tmp_path, source).name not in (old_key, "")
+  assert route_timeline.CACHE_VERSION == 2
 
 
 def _fake_parser(monkeypatch, thumbnail=b"\xff\xd8jpeg", failure=None, write=True, then_fail=None):
@@ -874,7 +938,7 @@ def test_timeline_cache_is_pruned_to_its_own_budget(tmp_path, monkeypatch, offro
 
 
 def _cache_timeline(cache_root, segment, body='{"spans":[],"thumbnailAt":null}'):
-  target_dir = route_playback._cache_dir_for(cache_root, segment / "qlog.zst")
+  target_dir = route_playback._timeline_dir_for(cache_root, segment / "qlog.zst")
   target_dir.mkdir(parents=True)
   (target_dir / "timeline.json").write_text(body)
   return target_dir
@@ -940,14 +1004,14 @@ def test_a_batch_keeps_the_pairs_that_finished(tmp_path, monkeypatch, offroad, t
   assert _get(client, _segment_url(1)).status_code == 200
 
   kept = {path.name for path in cache_root.iterdir()}
-  assert kept == {route_playback._cache_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (1, 2)}
+  assert kept == {route_playback._timeline_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (1, 2)}
 
 
 def test_a_neighbour_that_cannot_be_renamed_does_not_fail_the_request(tmp_path, monkeypatch, offroad):
   footage, cache_root = tmp_path / "footage", tmp_path / "cache"
   segments = {num: _make_log_segment(footage, num) for num in range(3)}
   _fake_parser(monkeypatch)
-  blocked = route_playback._cache_dir_for(cache_root, segments[0] / "qlog.zst")
+  blocked = route_playback._timeline_dir_for(cache_root, segments[0] / "qlog.zst")
   real_rename = route_playback.os.rename
   def rename(source, target):
     if Path(target) == blocked:
@@ -960,7 +1024,7 @@ def test_a_neighbour_that_cannot_be_renamed_does_not_fail_the_request(tmp_path, 
   assert _get(client, _segment_url(1)).status_code == 200
 
   kept = {path.name for path in cache_root.iterdir()}
-  assert kept == {route_playback._cache_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (1, 2)}
+  assert kept == {route_playback._timeline_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (1, 2)}
 
 
 def test_a_temp_dir_failure_partway_leaves_no_temp_dirs(tmp_path, monkeypatch, offroad):
@@ -992,7 +1056,7 @@ def test_a_failed_requested_pair_is_an_error_and_leaves_no_cache_for_it(tmp_path
 
   assert _get(client, _segment_url(0)).status_code == 409
 
-  assert [path.name for path in cache_root.iterdir()] == [route_playback._cache_dir_for(cache_root, segments[1] / "qlog.zst").name]
+  assert [path.name for path in cache_root.iterdir()] == [route_playback._timeline_dir_for(cache_root, segments[1] / "qlog.zst").name]
 
 
 def test_route_timeline_carries_the_cached_minutes_only(tmp_path, last_duration, monkeypatch, offroad):
@@ -1040,10 +1104,11 @@ for tenth in range(600):
   state.active = tenth >= 100 and not 300 <= tenth < 350
   state.alertStatus = "critical" if 500 <= tenth < 520 else "normal"
   messages.append(message)
-  if tenth == 50:
-    message, thumbnail = event(2405.0, "thumbnail")
-    thumbnail.frameId = 48100
-    thumbnail.thumbnail = b"\\xff\\xd8synthetic"
+  # Thumbnails at the given tenths of a second, each tagged with its tenth.
+  if str(tenth) in sys.argv[3].split(","):
+    message, thumbnail = event(2400.0 + tenth / 10, "thumbnail")
+    thumbnail.frameId = 48000 + tenth
+    thumbnail.thumbnail = b"\\xff\\xd8synthetic" + str(tenth).encode()
     messages.append(message)
 raw = b"".join(m.to_bytes() for m in messages)
 with open(sys.argv[1], "wb") as file:
@@ -1051,15 +1116,18 @@ with open(sys.argv[1], "wb") as file:
 """
 
 
+def _write_synthetic_qlog(segment, cut=0, thumbnails="50"):
+  env = route_playback.utilities._dashboard_worker_env(route_playback.REPO_ROOT)
+  subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst"), str(cut), thumbnails],
+                 cwd=route_playback.REPO_ROOT, env=env, check=True, timeout=60)
+
+
 # Cut 7 bytes: power lost mid-message. The partial last message is dropped and the rest is kept.
 @pytest.mark.parametrize(("cut", "last_end"), [(0, 59.9), (7, 59.8)])
 def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, monkeypatch, offroad, cut, last_end):
   footage = tmp_path / "footage"
-  env = route_playback.utilities._dashboard_worker_env(route_playback.REPO_ROOT)
   for num in (40, 41):
-    segment = _make_log_segment(footage, num)
-    subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst"), str(cut)],
-                   cwd=route_playback.REPO_ROOT, env=env, check=True, timeout=60)
+    _write_synthetic_qlog(_make_log_segment(footage, num), cut)
   runs = []
   real_run = route_playback.subprocess.run
   monkeypatch.setattr(route_playback.subprocess, "run", lambda cmd, **kwargs: runs.append(cmd) or real_run(cmd, **kwargs))
@@ -1081,7 +1149,21 @@ def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, monkeypatch, offro
     [52.0, last_end, "engaged", 0],
   ]}
   with _get(client, _segment_url(40, "thumbnail.jpg")) as thumbnail:
-    assert thumbnail.data == b"\xff\xd8synthetic"
+    assert thumbnail.data == b"\xff\xd8synthetic50"
+
+
+def test_real_parser_subprocess_takes_a_spilled_thumbnail_from_the_previous_qlog(tmp_path, monkeypatch, offroad):
+  footage = tmp_path / "footage"
+  _write_synthetic_qlog(_make_log_segment(footage, 40), thumbnails="3,599")
+  _write_synthetic_qlog(_make_log_segment(footage, 41), thumbnails="")
+  client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
+
+  assert _get(client, _segment_url(41)).get_json()["thumbnailAt"] == 0.0
+  with _get(client, _segment_url(41, "thumbnail.jpg")) as thumbnail:
+    assert thumbnail.data == b"\xff\xd8synthetic599"
+  assert _get(client, _segment_url(40)).get_json()["thumbnailAt"] == 0.3
+  with _get(client, _segment_url(40, "thumbnail.jpg")) as thumbnail:
+    assert thumbnail.data == b"\xff\xd8synthetic3"
 
 
 def test_route_player_shows_the_timeline_and_seeks_from_it():

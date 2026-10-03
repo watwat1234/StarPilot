@@ -36,7 +36,6 @@ HLS_CACHE_MAX_BYTES = 512 * 1024 * 1024
 # Unfinished full-quality remuxes (queued or running) allowed on the shared executor at once.
 MAX_QUEUED_REMUXES = 2
 TEMP_DIR_PREFIX = ".tmp-"
-QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
 # A qlog parse takes ~1.2 s on the device alone, ~0.6 s each in a batch (one interpreter + cereal import). Batches run
 # on their own one-worker executor and are never *started* while onroad (like upstream's dashboard analysis, a running
 # one finishes; the timeout bounds that).
@@ -282,10 +281,14 @@ def _parse_timeline(batch, target_dir, cache_root):
   return target_dir
 
 
-def _cache_dir_for(cache_root, source_path):
+def _cache_dir_for(cache_root, source_path, version=None):
   stat = os.stat(source_path)
-  key = hashlib.md5(f"{source_path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()
-  return cache_root / key
+  key = f"{source_path}|{stat.st_size}|{stat.st_mtime_ns}" + ("" if version is None else f"|{version}")
+  return cache_root / hashlib.md5(key.encode()).hexdigest()
+
+
+def _timeline_dir_for(cache_root, qlog_path):
+  return _cache_dir_for(cache_root, qlog_path, version=route_timeline.CACHE_VERSION)
 
 
 class _SharedJobs:
@@ -353,7 +356,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
 
   def timeline_dir(segment, qlog_path):
     """Cache dir with timeline.json (+ thumbnail.jpg), or None if not ready in time. Raises Onroad when uncached."""
-    target_dir = _cache_dir_for(timeline_cache_root, qlog_path)
+    target_dir = _timeline_dir_for(timeline_cache_root, qlog_path)
     if _has_timeline(target_dir) and _touched(target_dir):
       return target_dir
     if utilities.params.get_bool("IsOnroad"):
@@ -376,7 +379,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
       if qlog_path is None or recording:
         continue
       try:
-        pair_dir = _cache_dir_for(timeline_cache_root, qlog_path)
+        pair_dir = _timeline_dir_for(timeline_cache_root, qlog_path)
       except OSError:
         continue
       if not _has_timeline(pair_dir):
@@ -389,7 +392,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
     if qlog_path is None or recording:
       return None
     try:
-      target_dir = _cache_dir_for(timeline_cache_root, qlog_path)
+      target_dir = _timeline_dir_for(timeline_cache_root, qlog_path)
       with open(target_dir / route_timeline.TIMELINE_FILENAME) as file:
         timeline = json.load(file)
     except (OSError, ValueError):
@@ -399,7 +402,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
   def segment_qlog(segment):
     """(qlog path or None, recording) for a valid segment name."""
     for footage_path in footage_paths:
-      for name in QLOG_FILENAMES:
+      for name in route_timeline.QLOG_FILENAMES:
         path = os.path.join(footage_path, segment, name)
         if os.path.isfile(path):
           return path, os.path.exists(os.path.join(footage_path, segment, "rlog.lock"))

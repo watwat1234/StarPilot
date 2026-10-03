@@ -1293,7 +1293,12 @@ def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop
   assert " controls" not in video and '@click="togglePlay"' in video
   assert '<video v-else ref="player" class="gx-video" controls' in recordings
   assert "const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4, 8]" in player
-  assert 'aria-label="Playback speed"' in player and 'v-model.number="rate"' in player
+  assert 'aria-label="Playback speed"' in player and 'v-model.number="value"' in player
+  # The select is its own component bound only to the rate: inside the player's template it was re-patched on every
+  # timeupdate (all <option value> rewritten), which made an open speed menu flicker while the video played.
+  assert '<speed-select v-model="rate" />' in player
+  assert "const SpeedSelect = {" in player and "components: { RouteTimeline, SpeedSelect }" in player
+  assert "<select" not in player[player.index("export const RoutePlayer"):]
   # The speed survives source changes: load() resets playbackRate to the default, and metadata reapplies it.
   assert "video.defaultPlaybackRate = this.rate\n      video.playbackRate = this.rate" in player
   assert '@loadedmetadata="applyRate"' in player and 'rate: "applyRate"' in player

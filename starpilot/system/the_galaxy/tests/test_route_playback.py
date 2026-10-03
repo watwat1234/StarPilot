@@ -924,10 +924,13 @@ def test_route_player_shows_the_timeline_and_seeks_from_it():
 
   # Under the video, fed the playing time; its seeks set the video's position.
   assert 'import { RouteTimeline } from "./RouteTimeline.js"' in player
-  assert '@timeupdate="time = $event.target.currentTime"' in player
+  assert '@timeupdate="onTimeUpdate"' in player
+  assert "if (!this._resumeAt) this.time = this.$refs.video.currentTime" in player
   assert '<RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" />' in player
   assert player.index("<video ref=\"video\"") < player.index("<RouteTimeline")
   assert "this.$refs.video.currentTime = seconds" in player
+  # A seek during a camera/quality switch restarts the switch at that point instead of being overwritten.
+  assert "this._resumeAt = seconds\n        this.attach(true)" in player
 
   # Endpoints match the backend.
   assert "`/route-playback/${encodeURIComponent(this.route)}/timeline.json?${query}`" in timeline
@@ -940,15 +943,17 @@ def test_route_player_shows_the_timeline_and_seeks_from_it():
   assert 'camera: "load",\n    quality: "load",' in timeline
   assert "if (token !== this._token || list !== this._list) return" in timeline
 
-  # One request at a time; onroad stops with the note, busy retries.
+  # One request at a time; onroad shows the note and checks again slowly; busy or no connection retries soon.
   assert "if (this._fetching === token) return" in timeline
   assert timeline.count("await fetch(") == 2
-  onroad = timeline.index('if (body?.reason === "onroad") {')
-  assert timeline.index("this.onroad = true\n              return", onroad) > onroad
+  assert "if (!response || response.status === 503) {" in timeline
+  assert 'this.onroad = body?.reason === "onroad"' in timeline
+  assert "setTimeout(resolve, this.onroad ? ONROAD_RETRY_MS : BUSY_RETRY_MS))\n            continue" in timeline
   assert "Timeline fills in after the drive" in timeline
-  assert "setTimeout(resolve, BUSY_RETRY_MS))\n            continue" in timeline
 
   # Drag shows the time and seeks on release; keys step; vertical scrolling stays with the page.
   assert 'role="slider"' in timeline and "touch-action:pan-y" in timeline
   assert 'this.dragTime = null\n      this.$emit("seek", this.timeAt(event))' in timeline
-  assert '@pointercancel="dragTime = null"' in timeline
+  assert '@pointercancel="onPointerCancel"' in timeline
+  # Only the pointer that started the drag moves or ends it.
+  assert "if (this.dragTime === null || event.pointerId !== this._pointer) return" in timeline

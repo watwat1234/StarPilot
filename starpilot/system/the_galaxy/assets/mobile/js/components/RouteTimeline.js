@@ -2,6 +2,7 @@
 // each segment's qlog (parsed on the device, never started onroad). Drag or click along it to seek; arrows step 10 s.
 
 const BUSY_RETRY_MS = 3000
+const ONROAD_RETRY_MS = 60000
 const KEY_STEP_SECONDS = 10
 const STATE_COLORS = { engaged: "#178644", overriding: "#919b95", disengaged: "#173349" }
 const ALERT_COLORS = [null, "#da6f25", "#c92231"]
@@ -135,19 +136,17 @@ export const RouteTimeline = {
             response = await fetch(segmentUrl(segment, "timeline.json"))
             body = await response.json()
           } catch (error) {
-            // Network or parse failure: shown as an empty minute.
+            // No response (connection dropped): retried below. A bad body is shown as an empty minute.
           }
           if (token !== this._token) return
-          if (response?.status === 503) {
-            // Uncached while driving: nothing more until offroad. Otherwise the device is busy; try again shortly.
-            if (body?.reason === "onroad") {
-              this.onroad = true
-              return
-            }
-            await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS))
+          if (!response || response.status === 503) {
+            // Uncached while driving: check again now and then until offroad. Busy or unreachable: shortly.
+            this.onroad = body?.reason === "onroad"
+            await new Promise((resolve) => setTimeout(resolve, this.onroad ? ONROAD_RETRY_MS : BUSY_RETRY_MS))
             continue
           }
-          this.info[segment] = response?.ok ? body : null
+          this.onroad = false
+          this.info[segment] = response.ok ? body : null
         }
       } finally {
         if (this._fetching === token) this._fetching = null
@@ -158,17 +157,22 @@ export const RouteTimeline = {
       return Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1) * this.total
     },
     onPointerDown(event) {
-      if (!this.total || event.button > 0) return
+      if (!this.total || event.button > 0 || this.dragTime !== null) return
+      // Only the pointer that started the drag moves it (a second finger is ignored).
+      this._pointer = event.pointerId
       this.$refs.track.setPointerCapture?.(event.pointerId)
       this.dragTime = this.timeAt(event)
     },
     onPointerMove(event) {
-      if (this.dragTime !== null) this.dragTime = this.timeAt(event)
+      if (this.dragTime !== null && event.pointerId === this._pointer) this.dragTime = this.timeAt(event)
     },
     onPointerUp(event) {
-      if (this.dragTime === null) return
+      if (this.dragTime === null || event.pointerId !== this._pointer) return
       this.dragTime = null
       this.$emit("seek", this.timeAt(event))
+    },
+    onPointerCancel(event) {
+      if (event.pointerId === this._pointer) this.dragTime = null
     },
     onKey(event) {
       const step = { ArrowLeft: -KEY_STEP_SECONDS, ArrowDown: -KEY_STEP_SECONDS, ArrowRight: KEY_STEP_SECONDS, ArrowUp: KEY_STEP_SECONDS }[event.key]
@@ -182,7 +186,7 @@ export const RouteTimeline = {
     <div v-if="total" class="gx-route-timeline">
       <div ref="track" class="gx-route-timeline__track" role="slider" tabindex="0" aria-label="Route position"
         aria-valuemin="0" :aria-valuemax="Math.round(total)" :aria-valuenow="Math.round(shownTime)" :aria-valuetext="clock(shownTime)"
-        @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="dragTime = null" @keydown="onKey">
+        @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerCancel" @keydown="onKey">
         <div class="gx-route-timeline__bar"><span v-for="b in bars" :key="b.key" :style="{ ...b.style, background: b.color }"></span></div>
         <div class="gx-route-timeline__film"><span v-for="t in tiles" :key="t.key" :style="t.style"><img v-if="t.src" :src="t.src" alt="" draggable="false"></span></div>
         <div class="gx-route-timeline__playhead" :style="{ left: fraction * 100 + '%' }">

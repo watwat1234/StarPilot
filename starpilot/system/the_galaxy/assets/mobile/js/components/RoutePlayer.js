@@ -133,7 +133,17 @@ export const RoutePlayer = {
     },
     seek(seconds) {
       this.time = seconds
-      this.$refs.video.currentTime = seconds
+      if (this._resumeAt) {
+        // Mid-switch the new source isn't there yet (and would start at the old point): restart it here.
+        this._resumeAt = seconds
+        this.attach(true)
+      } else {
+        this.$refs.video.currentTime = seconds
+      }
+    },
+    onTimeUpdate() {
+      // During a switch the emptied video reports 0; the timeline keeps showing the resume point.
+      if (!this._resumeAt) this.time = this.$refs.video.currentTime
     },
     onVideoError() {
       // hls.js reports its own errors; this covers the native fallback.
@@ -163,7 +173,7 @@ export const RoutePlayer = {
   },
   template: `
     <div class="gx-route-player">
-      <video ref="video" class="gx-video" controls muted playsinline preload="metadata" @error="onVideoError" @timeupdate="time = $event.target.currentTime"></video>
+      <video ref="video" class="gx-video" controls muted playsinline preload="metadata" @error="onVideoError" @timeupdate="onTimeUpdate"></video>
       <RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" />
     </div>`,
 }

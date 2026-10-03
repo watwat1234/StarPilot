@@ -227,9 +227,9 @@ def _has_timeline(target_dir):
 
 
 def _neighbours(segments, segment):
-  """The route's other segments by distance from `segment`, the later one first on a tie (the client's order)."""
+  """The route's other segments by distance from `segment`, the earlier one first on a tie (the client's order)."""
   index = segments.index(segment)
-  return [segments[other] for distance in range(1, len(segments)) for other in (index + distance, index - distance)
+  return [segments[other] for distance in range(1, len(segments)) for other in (index - distance, index + distance)
           if 0 <= other < len(segments)]
 
 
@@ -250,7 +250,9 @@ def _parse_timeline(batch, target_dir, cache_root):
   _prune_cache(cache_root, keep_path=target_dir, max_bytes=TIMELINE_CACHE_MAX_BYTES)
   temp_dirs = []
   try:
-    temp_dirs = [Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX, dir=cache_root)) for _ in batch]
+    for _ in batch:
+      # One at a time, so a failure partway still leaves the earlier ones for `finally` to remove.
+      temp_dirs.append(Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX, dir=cache_root)))
     pairs = [str(path) for (qlog_path, _), temp_dir in zip(batch, temp_dirs, strict=True) for path in (qlog_path, temp_dir)]
     try:
       subprocess.run([
@@ -261,9 +263,15 @@ def _parse_timeline(batch, target_dir, cache_root):
     except subprocess.SubprocessError:
       pass  # a timeout: the pairs finished before it are kept below
     # Rename each finished pair into place (timeline.json is written last and atomically); the rest is removed.
-    for (_, pair_dir), temp_dir in zip(batch, temp_dirs, strict=True):
-      if _has_timeline(temp_dir):
+    for index, ((_, pair_dir), temp_dir) in enumerate(zip(batch, temp_dirs, strict=True)):
+      if not _has_timeline(temp_dir):
+        continue
+      try:
         os.rename(temp_dir, pair_dir)
+      except OSError:
+        if index == 0:
+          raise
+        # A neighbour that can't be put in place is parsed again when it is requested; it never fails this one.
   except OSError as error:
     raise ValueError(f"Cannot read log file: {batch[0][0]}") from error
   finally:

@@ -4,6 +4,7 @@ import struct
 import subprocess
 import time
 from concurrent.futures import Future
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -883,8 +884,8 @@ def _batch_segments(calls):
   return [os.path.basename(os.path.dirname(qlog)) for qlog in calls[0][0][6::2]]
 
 
-def test_neighbours_go_outward_later_first():
-  assert route_playback._neighbours(["a", "b", "c", "d", "e"], "b") == ["c", "a", "d", "e"]
+def test_neighbours_go_outward_earlier_first_like_the_client():
+  assert route_playback._neighbours(["a", "b", "c", "d", "e"], "b") == ["a", "c", "d", "e"]
   assert route_playback._neighbours(["a", "b", "c"], "c") == ["b", "a"]
   assert route_playback._neighbours(["a"], "a") == []
 
@@ -903,14 +904,14 @@ def test_a_parse_batches_the_nearest_uncached_finished_segments_of_the_route(tmp
 
   assert _get(client, _segment_url(4)).status_code == 200
 
-  # Order 5 (recording), 3 (cached), 6 (no qlog), 2, 7, 1, 8 -> capped at 5 pairs in one subprocess.
+  # Order 3 (cached), 5 (recording), 2, 6 (no qlog), 1, 7, 0, 8 -> capped at 5 pairs in one subprocess.
   assert len(calls) == 1
-  assert _batch_segments(calls) == [f"{ROUTE_NAME}--{num}" for num in (4, 2, 7, 1, 8)]
+  assert _batch_segments(calls) == [f"{ROUTE_NAME}--{num}" for num in (4, 2, 1, 7, 0)]
   assert len(calls[0][0][6:]) == 2 * route_playback.TIMELINE_BATCH_SIZE
-  assert all(_get(client, _segment_url(num)).status_code == 200 for num in (1, 2, 7, 8))
+  assert all(_get(client, _segment_url(num)).status_code == 200 for num in (0, 1, 2, 7))
   assert len(calls) == 1
-  assert _get(client, _segment_url(0)).status_code == 200
-  assert _batch_segments(calls[1:]) == [f"{ROUTE_NAME}--0"]
+  assert _get(client, _segment_url(8)).status_code == 200
+  assert _batch_segments(calls[1:]) == [f"{ROUTE_NAME}--8"]
 
 
 def test_a_queued_batch_skips_neighbours_parsed_meanwhile(tmp_path, monkeypatch, offroad):
@@ -935,11 +936,52 @@ def test_a_batch_keeps_the_pairs_that_finished(tmp_path, monkeypatch, offroad, t
   _fake_parser(monkeypatch, write={0, 2}, then_fail=then_fail)
   client = _timeline_client(footage, cache_root, FakeExecutor())
 
-  # Batch 1, 2, 0: the requested one and segment 0 finished, segment 2 did not.
+  # Batch 1, 0, 2: the requested one and segment 2 finished, segment 0 did not.
   assert _get(client, _segment_url(1)).status_code == 200
 
   kept = {path.name for path in cache_root.iterdir()}
-  assert kept == {route_playback._cache_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (0, 1)}
+  assert kept == {route_playback._cache_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (1, 2)}
+
+
+def test_a_neighbour_that_cannot_be_renamed_does_not_fail_the_request(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  segments = {num: _make_log_segment(footage, num) for num in range(3)}
+  _fake_parser(monkeypatch)
+  blocked = route_playback._cache_dir_for(cache_root, segments[0] / "qlog.zst")
+  real_rename = route_playback.os.rename
+  def rename(source, target):
+    if Path(target) == blocked:
+      raise OSError("rename failed")
+    real_rename(source, target)
+  monkeypatch.setattr(route_playback.os, "rename", rename)
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  # Batch 1, 0, 2: segment 0's rename fails; 1 is served and 2 is still kept.
+  assert _get(client, _segment_url(1)).status_code == 200
+
+  kept = {path.name for path in cache_root.iterdir()}
+  assert kept == {route_playback._cache_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (1, 2)}
+
+
+def test_a_temp_dir_failure_partway_leaves_no_temp_dirs(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  for num in range(3):
+    _make_log_segment(footage, num)
+  calls = _fake_parser(monkeypatch)
+  real_mkdtemp = route_playback.tempfile.mkdtemp
+  made = []
+  def mkdtemp(**kwargs):
+    if len(made) == 2:
+      raise OSError("no space")
+    made.append(real_mkdtemp(**kwargs))
+    return made[-1]
+  monkeypatch.setattr(route_playback.tempfile, "mkdtemp", mkdtemp)
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  assert _get(client, _segment_url(1)).status_code == 409
+
+  assert calls == [] and len(made) == 2
+  assert list(cache_root.iterdir()) == []
 
 
 def test_a_failed_requested_pair_is_an_error_and_leaves_no_cache_for_it(tmp_path, monkeypatch, offroad):

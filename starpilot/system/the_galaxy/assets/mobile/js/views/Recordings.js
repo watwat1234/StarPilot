@@ -407,7 +407,7 @@ export const Recordings = {
         <article v-for="r in visibleRoutes" :key="r.name" class="gx-row gx-recordings-row" :class="{ 'gx-recordings-row--preserved': r.is_preserved }" style="cursor:pointer;" @click="openPlayer(r)">
           <div class="gx-row__info">
             <span class="gx-row__label">{{ r.displayName }}</span>
-            <span class="gx-row__desc"><template v-if="r.isCustomName">{{ r.displayDate }} · </template>{{ fmtDuration(r.approxDurationSeconds) }} · {{ r.segmentCount }} segments</span>
+            <span class="gx-row__desc"><template v-if="r.isCustomName">{{ r.displayDate }} · </template><span style="white-space:nowrap;">{{ r.name }}</span> · {{ fmtDuration(r.approxDurationSeconds) }} · {{ r.segmentCount }} segments</span>
             <span v-if="r.is_preserved" class="gx-chip gx-chip--dev gx-recordings-preserved-chip">Preserved</span>
           </div>
           <div class="gx-row__actions">

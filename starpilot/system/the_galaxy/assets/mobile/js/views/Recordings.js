@@ -3,6 +3,7 @@ import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySheet } from "../components/GalaxySheet.js"
 import { GalaxyTabs } from "../components/GalaxyTabs.js"
 import { GxNotice } from "../components/GxNotice.js"
+import { RoutePlayer } from "../components/RoutePlayer.js"
 import { isFirestarOrigin } from "../components/PwaInstallSection.js"
 import { normalizeRoute, routeMatchesSearch, sortRoutes } from "../../../components/recordings/dashcam_routes_helpers.js"
 
@@ -48,7 +49,7 @@ function localDeviceUrl(ip, route = "/") {
 
 export const Recordings = {
   name: "Recordings",
-  components: { GalaxyTabs, GxNotice, GalaxySheet },
+  components: { GalaxyTabs, GxNotice, GalaxySheet, RoutePlayer },
   data() {
     return {
       sub: "routes",
@@ -66,6 +67,10 @@ export const Recordings = {
       current: 0,
       cameras: [],
       selectedCamera: "",
+      // Every camera plays the whole route (HLS); off = the single-segment player, used after a playback error.
+      wholeRoute: true,
+      // Road camera only: "low" = qcamera.ts, "full" = fcamera.hevc. Other cameras are always full quality.
+      quality: "low",
       logsRoute: null,
       logsData: null,
       onFirestar: isFirestarOrigin(),
@@ -85,6 +90,9 @@ export const Recordings = {
         formattedDuration: fmtDuration(this.routes.reduce((n, r) => n + r.approxDurationSeconds, 0)),
         preservedCount: this.routes.filter((r) => r.is_preserved).length,
       }
+    },
+    usingRoutePlayer() {
+      return this.wholeRoute
     },
     visibleRoutes() {
       const list = this.routes.filter((r) => (!this.showPreservedOnly || r.is_preserved) && routeMatchesSearch(r, this.searchQuery))
@@ -216,6 +224,8 @@ export const Recordings = {
         this.current = 0
         this.cameras = cameras
         this.selectedCamera = cameras.includes("forward") ? "forward" : cameras[0]
+        this.wholeRoute = true
+        this.quality = "low"
         this.$nextTick(() => this.playSegment())
       } catch (e) {
         this.playerError = e?.message || "Could not load route."
@@ -230,7 +240,7 @@ export const Recordings = {
     },
     playSegment() {
       const video = this.$refs.player
-      if (!this.segments[this.current]) return
+      if (this.usingRoutePlayer || !this.segments[this.current]) return
       // The player mounts inside a Teleport + transition after openPlayer clears
       // playerLoading, so the video element may not exist on the very first call.
       if (!video) {
@@ -245,6 +255,24 @@ export const Recordings = {
       video.src = this.cameraUrl(this.segments[this.current])
       video.load()
       video.play().catch(() => {})
+    },
+    selectCamera(camera) {
+      this.selectedCamera = camera
+      this.$nextTick(() => this.playSegment())
+    },
+    playWholeRoute() {
+      // Back from the single-segment fallback: restart at the quality that plays everywhere.
+      this.quality = "low"
+      this.wholeRoute = true
+    },
+    onRoutePlayerFallbackLow() {
+      this.quality = "low"
+      showSnackbar("This browser cannot play full-quality video. Showing low quality instead.", "error")
+    },
+    onRoutePlayerError(message) {
+      this.wholeRoute = false
+      showSnackbar(`${message} Trying single segments instead.`, "error")
+      this.$nextTick(() => this.playSegment())
     },
     selectSegment(i) {
       if (i === this.current) return
@@ -379,7 +407,7 @@ export const Recordings = {
         <article v-for="r in visibleRoutes" :key="r.name" class="gx-row gx-recordings-row" :class="{ 'gx-recordings-row--preserved': r.is_preserved }" style="cursor:pointer;" @click="openPlayer(r)">
           <div class="gx-row__info">
             <span class="gx-row__label">{{ r.displayName }}</span>
-            <span class="gx-row__desc"><template v-if="r.isCustomName">{{ r.displayDate }} · </template>{{ fmtDuration(r.approxDurationSeconds) }} · {{ r.segmentCount }} segments</span>
+            <span class="gx-row__desc"><template v-if="r.isCustomName">{{ r.displayDate }} · </template><span style="white-space:nowrap;">{{ r.name }}</span> · {{ fmtDuration(r.approxDurationSeconds) }} · {{ r.segmentCount }} segments</span>
             <span v-if="r.is_preserved" class="gx-chip gx-chip--dev gx-recordings-preserved-chip">Preserved</span>
           </div>
           <div class="gx-row__actions">
@@ -458,14 +486,15 @@ export const Recordings = {
       </section>
       </template>
 
-      <GalaxySheet :open="sub === 'routes' && !!playerRoute" :title="playerRoute?.displayName || ''" icon="bi-camera-video" bottomsheet @close="closePlayer">
+      <GalaxySheet :open="sub === 'routes' && !!playerRoute" :title="playerRoute?.displayName || ''" icon="bi-camera-video" bottomsheet scrim-class="gx-route-player-scrim" sheet-class="gx-route-player-sheet" @close="closePlayer">
         <div style="padding: var(--sp-3);">
           <div v-if="playerError" class="gx-empty" style="color: var(--error);">{{ playerError }}</div>
           <div v-else-if="playerLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading video...</div>
           <template v-else-if="segments.length">
-            <video ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
+            <RoutePlayer v-if="usingRoutePlayer" :route="playerRoute.name" :camera="selectedCamera" :quality="quality" @error="onRoutePlayerError" @fallback-low="onRoutePlayerFallbackLow" />
+            <video v-else ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
             <div style="display:flex; flex-direction:column; gap:8px; padding: var(--sp-3) 0 0;">
-              <div class="gx-video-segment-controls">
+              <div v-if="!usingRoutePlayer" class="gx-video-segment-controls">
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon" aria-label="Previous segment" :disabled="current<=0" @click="current--; playSegment()"><i class="bi bi-chevron-left"></i></button>
                 <GalaxySelect class="gx-field gx-video-segment-select" aria-label="Video segment" :value="String(current)" :disabled="!segments.length" @change="selectSegment(Number($event.target.value))">
                   <option v-for="(s, i) in segments" :key="i" :value="String(i)">Segment {{ i + 1 }} of {{ segments.length }}</option>
@@ -473,7 +502,14 @@ export const Recordings = {
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon" aria-label="Next segment" :disabled="current>=segments.length-1" @click="current++; playSegment()"><i class="bi bi-chevron-right"></i></button>
               </div>
               <div class="gx-video-actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectedCamera=c; playSegment()">{{ c }}</button>
+                <template v-for="c in cameras" :key="c">
+                  <button type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectCamera(c)">{{ c }}</button>
+                  <!-- Road camera quality, next to its chip: both options shown, the active one outlined. -->
+                  <span v-if="c==='forward' && usingRoutePlayer && selectedCamera==='forward'" class="gx-video-quality" role="group" aria-label="Road camera quality" title="Road camera quality" style="display:inline-flex; gap:2px; padding:1px; border:1px solid var(--glass-border); border-radius:var(--radius-full);">
+                    <button v-for="q in ['low', 'full']" :key="q" type="button" class="gx-chip" :aria-pressed="String(quality===q)" :style="quality===q?'border-color:var(--primary);color:var(--primary);':'border-color:transparent;background:transparent;'" @click="quality = q">{{ q === 'low' ? 'Low' : 'Full' }}</button>
+                  </span>
+                </template>
+                <button v-if="!usingRoutePlayer" type="button" class="gx-chip gx-video-whole-route" title="Play the whole route again" @click="playWholeRoute">Whole route</button>
                 <button type="button" class="gx-btn gx-btn--tonal gx-btn--icon gx-video-download" title="Download" style="margin-left:auto;" @click="downloadRoute"><i class="bi bi-download"></i></button>
               </div>
             </div>

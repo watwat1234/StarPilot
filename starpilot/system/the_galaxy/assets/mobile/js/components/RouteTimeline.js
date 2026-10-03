@@ -118,6 +118,10 @@ export const RouteTimeline = {
       }
       if (token !== this._token || list !== this._list) return
       this.segments = segments
+      // Minutes the device already parsed come with the list; only the rest are fetched one by one.
+      for (const { segment, timeline } of segments) {
+        if (timeline && !this.info[segment]) this.info[segment] = timeline
+      }
       this.fetchSegments(token)
     },
     async fetchSegments(token) {

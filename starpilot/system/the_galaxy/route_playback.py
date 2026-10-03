@@ -7,6 +7,7 @@ once (started only offroad) into engagement spans and its thumbnail. Kept out of
 ingests don't conflict with it.
 """
 import hashlib
+import json
 import math
 import os
 import shutil
@@ -36,8 +37,10 @@ HLS_CACHE_MAX_BYTES = 512 * 1024 * 1024
 MAX_QUEUED_REMUXES = 2
 TEMP_DIR_PREFIX = ".tmp-"
 QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
-# A qlog parse takes ~1 s on the device; it runs on its own one-worker executor and is never *started* while onroad
-# (like upstream's dashboard analysis, a running one finishes; the timeout bounds that).
+# A qlog parse takes ~1.2 s on the device alone, ~0.6 s each in a batch (one interpreter + cereal import). Batches run
+# on their own one-worker executor and are never *started* while onroad (like upstream's dashboard analysis, a running
+# one finishes; the timeout bounds that).
+TIMELINE_BATCH_SIZE = 5
 TIMELINE_PARSE_TIMEOUT_SECONDS = 10
 TIMELINE_WAIT_SECONDS = TIMELINE_PARSE_TIMEOUT_SECONDS + 5
 TIMELINE_CACHE_MAX_BYTES = 32 * 1024 * 1024
@@ -219,30 +222,55 @@ def _is_complete(target_dir):
   return (target_dir / INIT_FILENAME).is_file() and (target_dir / MEDIA_FILENAME).is_file()
 
 
-def _parse_timeline(qlog_path, target_dir, cache_root):
-  """Parse one qlog into target_dir/{timeline.json,thumbnail.jpg} in a nice'd subprocess. Runs on the parse executor."""
-  if (target_dir / route_timeline.TIMELINE_FILENAME).is_file():
+def _has_timeline(target_dir):
+  return (target_dir / route_timeline.TIMELINE_FILENAME).is_file()
+
+
+def _neighbours(segments, segment):
+  """The route's other segments by distance from `segment`, the later one first on a tie (the client's order)."""
+  index = segments.index(segment)
+  return [segments[other] for distance in range(1, len(segments)) for other in (index + distance, index - distance)
+          if 0 <= other < len(segments)]
+
+
+def _parse_timeline(batch, target_dir, cache_root):
+  """Parse [(qlog, cache dir)] into each dir's {timeline.json,thumbnail.jpg} in one nice'd subprocess. The first pair
+  is the requested one (target_dir). Runs on the parse executor."""
+  if _has_timeline(target_dir):
     return target_dir
   # Queued offroad but reached after the drive started: leave it for later.
   if utilities.params.get_bool("IsOnroad"):
     raise Onroad()
+  # Neighbours an earlier batch parsed while this one waited are not parsed again.
+  batch = batch[:1] + [(qlog_path, pair_dir) for qlog_path, pair_dir in batch[1:] if not _has_timeline(pair_dir)]
 
   cache_root.mkdir(parents=True, exist_ok=True)
-  shutil.rmtree(target_dir, ignore_errors=True)
+  for _, pair_dir in batch:
+    shutil.rmtree(pair_dir, ignore_errors=True)
   _prune_cache(cache_root, keep_path=target_dir, max_bytes=TIMELINE_CACHE_MAX_BYTES)
-  temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX, dir=cache_root))
+  temp_dirs = []
   try:
-    subprocess.run([
-      "nice", "-n", "19", sys.executable or "python3", "-m", "openpilot.starpilot.system.the_galaxy.route_timeline",
-      str(qlog_path), str(temp_dir),
-    ], cwd=str(REPO_ROOT), env=utilities._dashboard_worker_env(REPO_ROOT), capture_output=True, check=True,
-       timeout=TIMELINE_PARSE_TIMEOUT_SECONDS)
-    if not (temp_dir / route_timeline.TIMELINE_FILENAME).is_file():
-      raise ValueError(f"No timeline written for {qlog_path}")
-    os.rename(temp_dir, target_dir)
-  except (OSError, ValueError, subprocess.SubprocessError) as error:
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    raise ValueError(f"Cannot read log file: {qlog_path}") from error
+    temp_dirs = [Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX, dir=cache_root)) for _ in batch]
+    pairs = [str(path) for (qlog_path, _), temp_dir in zip(batch, temp_dirs, strict=True) for path in (qlog_path, temp_dir)]
+    try:
+      subprocess.run([
+        "nice", "-n", "19", sys.executable or "python3", "-m", "openpilot.starpilot.system.the_galaxy.route_timeline",
+        *pairs,
+      ], cwd=str(REPO_ROOT), env=utilities._dashboard_worker_env(REPO_ROOT), capture_output=True,
+         timeout=TIMELINE_PARSE_TIMEOUT_SECONDS)
+    except subprocess.SubprocessError:
+      pass  # a timeout: the pairs finished before it are kept below
+    # Rename each finished pair into place (timeline.json is written last and atomically); the rest is removed.
+    for (_, pair_dir), temp_dir in zip(batch, temp_dirs, strict=True):
+      if _has_timeline(temp_dir):
+        os.rename(temp_dir, pair_dir)
+  except OSError as error:
+    raise ValueError(f"Cannot read log file: {batch[0][0]}") from error
+  finally:
+    for temp_dir in temp_dirs:
+      shutil.rmtree(temp_dir, ignore_errors=True)
+  if not _has_timeline(target_dir):
+    raise ValueError(f"Cannot read log file: {batch[0][0]}")
   return target_dir
 
 
@@ -315,14 +343,50 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
       return target_dir
     return remux_jobs.result(REMUX_WAIT_SECONDS, _remux_to_fmp4, source_path, target_dir, cache_root)
 
-  def timeline_dir(qlog_path):
+  def timeline_dir(segment, qlog_path):
     """Cache dir with timeline.json (+ thumbnail.jpg), or None if not ready in time. Raises Onroad when uncached."""
     target_dir = _cache_dir_for(timeline_cache_root, qlog_path)
-    if (target_dir / route_timeline.TIMELINE_FILENAME).is_file() and _touched(target_dir):
+    if _has_timeline(target_dir) and _touched(target_dir):
       return target_dir
     if utilities.params.get_bool("IsOnroad"):
       raise Onroad()
-    return parse_jobs.result(TIMELINE_WAIT_SECONDS, _parse_timeline, qlog_path, target_dir, timeline_cache_root)
+    batch = [(qlog_path, target_dir), *uncached_neighbours(segment, os.path.dirname(os.path.dirname(qlog_path)))]
+    return parse_jobs.result(TIMELINE_WAIT_SECONDS, _parse_timeline, batch, target_dir, timeline_cache_root)
+
+  def uncached_neighbours(segment, footage_path):
+    """Up to TIMELINE_BATCH_SIZE - 1 [(qlog, cache dir)] of the route's nearest finished, unparsed other segments."""
+    try:
+      segments = utilities.get_segments_in_route(segment.rsplit("--", 1)[0], footage_path)
+      neighbours = _neighbours(segments, segment)
+    except (OSError, ValueError):
+      return []
+    batch = []
+    for neighbour in neighbours:
+      if len(batch) == TIMELINE_BATCH_SIZE - 1:
+        break
+      qlog_path, recording = segment_qlog(neighbour)
+      if qlog_path is None or recording:
+        continue
+      try:
+        pair_dir = _cache_dir_for(timeline_cache_root, qlog_path)
+      except OSError:
+        continue
+      if not _has_timeline(pair_dir):
+        batch.append((qlog_path, pair_dir))
+    return batch
+
+  def cached_timeline(segment):
+    """A finished segment's parsed timeline from the cache only (never parses), or None."""
+    qlog_path, recording = segment_qlog(segment)
+    if qlog_path is None or recording:
+      return None
+    try:
+      target_dir = _cache_dir_for(timeline_cache_root, qlog_path)
+      with open(target_dir / route_timeline.TIMELINE_FILENAME) as file:
+        timeline = json.load(file)
+    except (OSError, ValueError):
+      return None
+    return timeline if _touched(target_dir) else None
 
   def segment_qlog(segment):
     """(qlog path or None, recording) for a valid segment name."""
@@ -362,7 +426,8 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
 
   @blueprint.route("/<route_name>/timeline.json", methods=["GET"])
   def route_timeline_index(route_name):
-    """Where each segment starts in the playlist the player has open (no parsing)."""
+    """Where each segment starts in the playlist the player has open, with the timelines already parsed (cache only,
+    so it is served onroad too)."""
     camera = request.args.get("camera", "forward")
     quality = request.args.get("quality", "low")
     if not utilities.ROUTE_RE.fullmatch(route_name or ""):
@@ -374,10 +439,14 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
     if not segments:
       return {"error": "No playable video for this route"}, 404
     starts = [sum(durations[:index]) for index in range(len(durations))]
-    return {"segments": [
-      {"segment": segment, "start": round(start, 3), "duration": round(seconds, 3)}
-      for (segment, _), start, seconds in zip(segments, starts, durations, strict=True)
-    ]}
+    entries = []
+    for (segment, _), start, seconds in zip(segments, starts, durations, strict=True):
+      entry = {"segment": segment, "start": round(start, 3), "duration": round(seconds, 3)}
+      timeline = cached_timeline(segment)
+      if timeline is not None:
+        entry["timeline"] = timeline
+      entries.append(entry)
+    return {"segments": entries}
 
   @blueprint.route("/segment/<segment>/qcamera.ts", methods=["GET"])
   def qcamera_segment(segment):
@@ -434,7 +503,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
       return {"error": "Segment is still recording"}, 409
 
     try:
-      target_dir = timeline_dir(qlog_path)
+      target_dir = timeline_dir(segment, qlog_path)
     except Onroad:
       return {"error": "Timeline is built after the drive", "reason": "onroad"}, 503
     except (OSError, ValueError) as error:

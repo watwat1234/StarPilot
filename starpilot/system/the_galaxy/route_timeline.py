@@ -1,7 +1,7 @@
 """Engagement spans and the thumbnail of one segment's qlog, for the Galaxy route timeline.
 
-Run as `python -m openpilot.starpilot.system.the_galaxy.route_timeline <qlog> <out_dir>` in a nice'd subprocess;
-cereal is only imported there.
+Run as `python -m openpilot.starpilot.system.the_galaxy.route_timeline <qlog> <out_dir> [<qlog> <out_dir> ...]` in a
+nice'd subprocess; cereal is only imported there, once per batch.
 """
 import bz2
 import json
@@ -67,14 +67,31 @@ def read_events(qlog_path):
     return  # cut off mid-message (power lost while recording): keep what was read, as LogReader does
 
 
-def main(qlog_path, out_dir):
+def parse(qlog_path, out_dir):
   timeline, thumbnail = summarize(read_events(qlog_path))
   if thumbnail is not None:
     with open(os.path.join(out_dir, THUMBNAIL_FILENAME), "wb") as file:
       file.write(thumbnail)
-  with open(os.path.join(out_dir, TIMELINE_FILENAME), "w") as file:
+  # timeline.json marks a finished pair (kept even if the batch is killed later), so it appears whole or not at all.
+  partial_path = os.path.join(out_dir, TIMELINE_FILENAME + ".partial")
+  with open(partial_path, "w") as file:
     json.dump(timeline, file, separators=(",", ":"))
+  os.replace(partial_path, os.path.join(out_dir, TIMELINE_FILENAME))
+
+
+def main(args):
+  """Parse (qlog, out_dir) pairs in order. A failed pair doesn't stop the rest; only the first (requested) one sets
+  the exit status."""
+  status = 0
+  for index in range(0, len(args) - 1, 2):
+    try:
+      parse(args[index], args[index + 1])
+    except Exception as error:
+      print(f"route_timeline: {args[index]}: {error!r}", file=sys.stderr)
+      if index == 0:
+        status = 1
+  return status
 
 
 if __name__ == "__main__":
-  main(sys.argv[1], sys.argv[2])
+  sys.exit(main(sys.argv[1:]))

@@ -651,19 +651,26 @@ def _make_log_segment(root, segment_num, qlog="qlog.zst", locked=False):
   return segment
 
 
-def _fake_parser(monkeypatch, thumbnail=b"\xff\xd8jpeg", failure=None, write=True):
+def _fake_parser(monkeypatch, thumbnail=b"\xff\xd8jpeg", failure=None, write=True, then_fail=None):
+  """write: True, False, or the indices of the (qlog, out dir) pairs that get a timeline. then_fail: raised after writing."""
   calls = []
   def run(cmd, **kwargs):
     calls.append((cmd, kwargs))
     if failure is not None:
       raise failure
-    out_dir = cmd[-1]
-    if write:
-      with open(os.path.join(out_dir, "timeline.json"), "w") as file:
-        file.write('{"spans":[[0,60,"engaged",0]],"thumbnailAt":5}')
-      if thumbnail is not None:
+    for index, out_dir in enumerate(cmd[7::2]):
+      if write is True or (write and index in write):
+        if thumbnail is not None:
+          with open(os.path.join(out_dir, "thumbnail.jpg"), "wb") as file:
+            file.write(thumbnail)
+        with open(os.path.join(out_dir, "timeline.json"), "w") as file:
+          file.write('{"spans":[[0,60,"engaged",0]],"thumbnailAt":5}')
+      elif thumbnail is not None:
+        # A pair cut off mid-way: thumbnail written, timeline not.
         with open(os.path.join(out_dir, "thumbnail.jpg"), "wb") as file:
           file.write(thumbnail)
+    if then_fail is not None:
+      raise then_fail
     return SimpleNamespace(stdout="")
   monkeypatch.setattr(route_playback.subprocess, "run", run)
   return calls
@@ -753,7 +760,8 @@ def test_segment_timeline_is_parsed_once_niced_then_cached(tmp_path, monkeypatch
   assert cmd[:4] == ["nice", "-n", "19", route_playback.sys.executable]
   assert cmd[4:7] == ["-m", "openpilot.starpilot.system.the_galaxy.route_timeline", str(footage / f"{ROUTE_NAME}--0" / "qlog.zst")]
   assert kwargs["timeout"] == route_playback.TIMELINE_PARSE_TIMEOUT_SECONDS
-  assert kwargs["check"] is True
+  # The exit status isn't checked: each pair's timeline.json is.
+  assert "check" not in kwargs
   assert str(route_playback.REPO_ROOT) in kwargs["env"]["PYTHONPATH"]
   [entry] = list(cache_root.iterdir())
   assert sorted(path.name for path in entry.iterdir()) == ["thumbnail.jpg", "timeline.json"]
@@ -779,10 +787,10 @@ def test_segment_timeline_rejects_bad_names_missing_logs_and_recording_segments(
 def test_onroad_serves_only_the_cache(tmp_path, monkeypatch, offroad):
   footage = tmp_path / "footage"
   _make_log_segment(footage, 0)
-  _make_log_segment(footage, 1)
   calls = _fake_parser(monkeypatch)
   client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
   assert _get(client, _segment_url(0)).status_code == 200
+  _make_log_segment(footage, 1)
 
   offroad.put("IsOnroad", True)
 
@@ -864,6 +872,115 @@ def test_timeline_cache_is_pruned_to_its_own_budget(tmp_path, monkeypatch, offro
   assert len(list(cache_root.iterdir())) == 2
 
 
+def _cache_timeline(cache_root, segment, body='{"spans":[],"thumbnailAt":null}'):
+  target_dir = route_playback._cache_dir_for(cache_root, segment / "qlog.zst")
+  target_dir.mkdir(parents=True)
+  (target_dir / "timeline.json").write_text(body)
+  return target_dir
+
+
+def _batch_segments(calls):
+  return [os.path.basename(os.path.dirname(qlog)) for qlog in calls[0][0][6::2]]
+
+
+def test_neighbours_go_outward_later_first():
+  assert route_playback._neighbours(["a", "b", "c", "d", "e"], "b") == ["c", "a", "d", "e"]
+  assert route_playback._neighbours(["a", "b", "c"], "c") == ["b", "a"]
+  assert route_playback._neighbours(["a"], "a") == []
+
+
+def test_a_parse_batches_the_nearest_uncached_finished_segments_of_the_route(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  segments = {num: _make_log_segment(footage, num) for num in (0, 1, 2, 3, 4, 7, 8)}
+  _cache_timeline(cache_root, segments[3])
+  _make_log_segment(footage, 5, locked=True)
+  (footage / f"{ROUTE_NAME}--6").mkdir()  # no qlog
+  other_route = footage / "0000006b--0123456789--4"
+  other_route.mkdir()
+  (other_route / "qlog.zst").write_bytes(b"qlog")
+  calls = _fake_parser(monkeypatch)
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  assert _get(client, _segment_url(4)).status_code == 200
+
+  # Order 5 (recording), 3 (cached), 6 (no qlog), 2, 7, 1, 8 -> capped at 5 pairs in one subprocess.
+  assert len(calls) == 1
+  assert _batch_segments(calls) == [f"{ROUTE_NAME}--{num}" for num in (4, 2, 7, 1, 8)]
+  assert len(calls[0][0][6:]) == 2 * route_playback.TIMELINE_BATCH_SIZE
+  assert all(_get(client, _segment_url(num)).status_code == 200 for num in (1, 2, 7, 8))
+  assert len(calls) == 1
+  assert _get(client, _segment_url(0)).status_code == 200
+  assert _batch_segments(calls[1:]) == [f"{ROUTE_NAME}--0"]
+
+
+def test_a_queued_batch_skips_neighbours_parsed_meanwhile(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  segments = {num: _make_log_segment(footage, num) for num in range(3)}
+  calls = _fake_parser(monkeypatch)
+  monkeypatch.setattr(route_playback, "TIMELINE_WAIT_SECONDS", 0.01)
+  executor = FakeExecutor(hold=True)
+  assert _get(_timeline_client(footage, cache_root, executor), _segment_url(1)).status_code == 503
+
+  _cache_timeline(cache_root, segments[2])
+  fn, args, future = executor.submitted[0]
+  fn(*args)
+
+  assert _batch_segments(calls) == [f"{ROUTE_NAME}--1", f"{ROUTE_NAME}--0"]
+
+
+@pytest.mark.parametrize("then_fail", [None, subprocess.TimeoutExpired("python", 10)])
+def test_a_batch_keeps_the_pairs_that_finished(tmp_path, monkeypatch, offroad, then_fail):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  segments = {num: _make_log_segment(footage, num) for num in range(3)}
+  _fake_parser(monkeypatch, write={0, 2}, then_fail=then_fail)
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  # Batch 1, 2, 0: the requested one and segment 0 finished, segment 2 did not.
+  assert _get(client, _segment_url(1)).status_code == 200
+
+  kept = {path.name for path in cache_root.iterdir()}
+  assert kept == {route_playback._cache_dir_for(cache_root, segments[num] / "qlog.zst").name for num in (0, 1)}
+
+
+def test_a_failed_requested_pair_is_an_error_and_leaves_no_cache_for_it(tmp_path, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  segments = {num: _make_log_segment(footage, num) for num in range(2)}
+  _fake_parser(monkeypatch, write={1})
+  client = _timeline_client(footage, cache_root, FakeExecutor())
+
+  assert _get(client, _segment_url(0)).status_code == 409
+
+  assert [path.name for path in cache_root.iterdir()] == [route_playback._cache_dir_for(cache_root, segments[1] / "qlog.zst").name]
+
+
+def test_route_timeline_carries_the_cached_minutes_only(tmp_path, last_duration, monkeypatch, offroad):
+  footage, cache_root = tmp_path / "footage", tmp_path / "cache"
+  for num in range(4):
+    segment = _make_segment(footage, num)
+    (segment / "qlog.zst").write_bytes(b"qlog")
+  segments = {num: footage / f"{ROUTE_NAME}--{num}" for num in range(4)}
+  cached = _cache_timeline(cache_root, segments[0], '{"spans":[[0,60,"engaged",0]],"thumbnailAt":5}')
+  os.utime(cached, (1000, 1000))
+  _cache_timeline(cache_root, segments[1], "{not json")
+  _cache_timeline(cache_root, segments[2])
+  (segments[2] / "rlog.lock").touch()
+  app = Flask(f"route_timeline_{time.monotonic_ns()}")
+  app.register_blueprint(route_playback.create_blueprint(
+    [str(footage) + "/"], parse_executor=FakeExecutor(), timeline_cache_root=cache_root))
+  client = app.test_client()
+  offroad.put("IsOnroad", True)
+  executor_calls = len(last_duration["calls"])
+
+  body = client.get(f"/route-playback/{ROUTE_NAME}/timeline.json").get_json()
+
+  # Cached: carried and touched. Unreadable, recording, uncached: no key (the client fetches those). Never parses.
+  assert [entry.get("timeline") for entry in body["segments"]] == [
+    {"spans": [[0, 60, "engaged", 0]], "thumbnailAt": 5}, None, None, None]
+  assert ["timeline" in entry for entry in body["segments"]] == [True, False, False, False]
+  assert cached.stat().st_mtime > 1000
+  assert len(last_duration["calls"]) == executor_calls + 1  # the last segment's ffprobe only
+
+
 SYNTHETIC_QLOG = """
 import sys
 import zstandard
@@ -894,17 +1011,25 @@ with open(sys.argv[1], "wb") as file:
 
 # Cut 7 bytes: power lost mid-message. The partial last message is dropped and the rest is kept.
 @pytest.mark.parametrize(("cut", "last_end"), [(0, 59.9), (7, 59.8)])
-def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, offroad, cut, last_end):
+def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, monkeypatch, offroad, cut, last_end):
   footage = tmp_path / "footage"
-  segment = _make_log_segment(footage, 40)
   env = route_playback.utilities._dashboard_worker_env(route_playback.REPO_ROOT)
-  subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst"), str(cut)],
-                 cwd=route_playback.REPO_ROOT, env=env, check=True, timeout=60)
+  for num in (40, 41):
+    segment = _make_log_segment(footage, num)
+    subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst"), str(cut)],
+                   cwd=route_playback.REPO_ROOT, env=env, check=True, timeout=60)
+  runs = []
+  real_run = route_playback.subprocess.run
+  monkeypatch.setattr(route_playback.subprocess, "run", lambda cmd, **kwargs: runs.append(cmd) or real_run(cmd, **kwargs))
   client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
 
   response = _get(client, _segment_url(40))
 
   assert response.status_code == 200, response.get_data(as_text=True)
+  # One interpreter parsed both minutes; the neighbour is now cached.
+  assert len(runs) == 1 and len(runs[0]) == 10
+  assert _get(client, _segment_url(41)).get_json() == response.get_json()
+  assert len(runs) == 1
   assert response.get_json() == {"thumbnailAt": 5.0, "spans": [
     [0.0, 10.0, "disengaged", 0],
     [10.0, 30.0, "engaged", 0],
@@ -937,6 +1062,11 @@ def test_route_player_shows_the_timeline_and_seeks_from_it():
   assert "`/route-playback/segment/${encodeURIComponent(segment)}/${part}`" in timeline
   assert 'segmentUrl(segment, "timeline.json")' in timeline
   assert 'thumbnailAt != null ? segmentUrl(segment, "thumbnail.jpg") : null' in timeline
+  # Minutes already parsed come with the segment list; fetchSegments skips minutes in info.
+  assert "this.segments = segments\n" in timeline
+  assert "for (const { segment, timeline } of segments) {\n        if (timeline && !this.info[segment]) this.info[segment] = timeline" in timeline
+  assert timeline.index("this.info[segment] = timeline") < timeline.index("this.fetchSegments(token)\n    },")
+  assert ".filter(([s]) => !(s.segment in this.info))" in timeline
 
   # A route change stops the old fetch loop; camera/quality only reload the segment list.
   assert "route() {\n      this.reset()\n      this.load()" in timeline

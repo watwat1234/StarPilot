@@ -32,7 +32,9 @@ function installStyle() {
     .gx-route-controls select option {background:var(--surface-container-high,#2b313b)}
     .gx-route-controls__time {flex:1;min-width:0;margin:0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
     .gx-route-player:fullscreen {display:flex;flex-direction:column;justify-content:center;padding:16px;background:#000;color:#fff}
+    .gx-route-player:-webkit-full-screen {display:flex;flex-direction:column;justify-content:center;padding:16px;background:#000;color:#fff}
     .gx-route-player:fullscreen .gx-video {flex:1;min-height:0;max-height:none}
+    .gx-route-player:-webkit-full-screen .gx-video {flex:1;min-height:0;max-height:none}
     @media (max-width:767px) {
       .gx-route-controls button,.gx-route-controls select {min-width:32px;padding:0 4px}
       .gx-route-controls__time {margin:0 2px;font-size:.8rem}
@@ -43,7 +45,7 @@ function installStyle() {
       .gx-route-controls select {width:40px;padding:0}
       .gx-route-controls__time {margin:0}
     }
-    @media (min-width:768px) {
+    @media (min-width:768px) and (min-height:600px) {
       .gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center;padding:3dvh 3vw}
       .gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none;max-height:94dvh;border-radius:var(--radius-xl)}
       .gx-route-player-sheet .gx-video {max-height:calc(94dvh - 300px)}
@@ -78,14 +80,14 @@ export const RoutePlayer = {
     quality: { type: String, default: "low" },
   },
   emits: ["error", "fallback-low"],
-  data: () => ({ time: 0, segments: [], startedAt: null, paused: true, muted: true, rate: 1, speeds: SPEEDS }),
+  data: () => ({ time: 0, duration: 0, segments: [], startedAt: null, paused: true, muted: true, rate: 1, speeds: SPEEDS }),
   computed: {
     clockText() {
       return routeClock(this.time, this.segments, this.startedAt)
     },
     total() {
       const last = this.segments.at(-1)
-      return last ? last.start + last.duration : this.$refs.video?.duration || 0
+      return last ? last.start + last.duration : Number.isFinite(this.duration) ? this.duration : 0
     },
     playlistUrl() {
       return routePlaylistUrl(this.route, this.camera, this.quality)
@@ -231,12 +233,16 @@ export const RoutePlayer = {
         wrapper.webkitRequestFullscreen()
       } else {
         // iPhone: only the video itself goes fullscreen, with the system's controls.
-        this.$refs.video.webkitEnterFullscreen?.()
+        try {
+          this.$refs.video.webkitEnterFullscreen?.()
+        } catch (error) {
+          // Not before the video has metadata.
+        }
       }
     },
     onKey(event) {
       if (event.ctrlKey || event.metaKey || event.altKey || editable(event.target)) return
-      // Space on a focused button presses that button.
+      // Space on a button (only reachable by keyboard, see onBarMouseDown) presses that button.
       if (event.key === " " && event.target instanceof HTMLButtonElement) return
       const actions = {
         " ": () => this.togglePlay(), k: () => this.togglePlay(), j: () => this.skip(-SKIP_SECONDS), l: () => this.skip(SKIP_SECONDS),
@@ -246,6 +252,12 @@ export const RoutePlayer = {
       if (!action) return
       event.preventDefault()
       action()
+    },
+    onBarMouseDown(event) {
+      // A clicked button doesn't take focus, so space still plays/pauses instead of pressing it again.
+      if (!event.target.closest("button")) return
+      event.preventDefault()
+      this.$refs.wrapper.focus({ preventScroll: true })
     },
     onTimeUpdate() {
       // During a switch the emptied video reports 0; the timeline keeps showing the resume point.
@@ -280,8 +292,8 @@ export const RoutePlayer = {
   template: `
     <div ref="wrapper" class="gx-route-player" tabindex="-1" @keydown="onKey">
       <video ref="video" class="gx-video" muted playsinline preload="metadata" @click="togglePlay" @error="onVideoError" @timeupdate="onTimeUpdate"
-        @loadedmetadata="applyRate" @play="paused = false" @pause="paused = true" @volumechange="muted = $refs.video.muted"></video>
-      <div class="gx-route-controls">
+        @loadedmetadata="applyRate" @durationchange="duration = $refs.video.duration" @ratechange="rate = $refs.video.playbackRate" @play="paused = false" @pause="paused = true" @volumechange="muted = $refs.video.muted"></video>
+      <div class="gx-route-controls" @mousedown="onBarMouseDown">
         <button type="button" aria-label="Back 10 seconds" title="Back 10 s (J)" @click="skip(-10)"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><small>10</small></button>
         <button type="button" :aria-label="paused ? 'Play' : 'Pause'" :title="(paused ? 'Play' : 'Pause') + ' (space)'" @click="togglePlay"><i class="bi" :class="paused ? 'bi-play-fill' : 'bi-pause-fill'" aria-hidden="true"></i></button>
         <button type="button" aria-label="Forward 10 seconds" title="Forward 10 s (L)" @click="skip(10)"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i><small>10</small></button>

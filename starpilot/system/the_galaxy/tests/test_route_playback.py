@@ -1282,7 +1282,8 @@ def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop
   # Only the route player's sheet gets the layout classes; the screen-recording sheet stays a bottom sheet.
   assert recordings.count('scrim-class="gx-route-player-scrim" sheet-class="gx-route-player-sheet"') == 1
   assert 'icon="bi-camera-video" bottomsheet scrim-class="gx-route-player-scrim"' in recordings
-  assert "@media (min-width:768px)" in player and ".gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center" in player
+  # Phones in landscape (wide but short) keep the bottom sheet.
+  assert "@media (min-width:768px) and (min-height:600px)" in player and ".gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center" in player
   assert ".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none" in player
 
   # No native controls on the route video (the per-segment fallback keeps them); the bar replaces them.
@@ -1303,6 +1304,11 @@ def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop
   # Fullscreen: the whole player, or on iPhone the video with the system's controls.
   assert "wrapper.requestFullscreen().catch(() => {})" in player
   assert "this.$refs.video.webkitEnterFullscreen?.()" in player
+  assert ".gx-route-player:-webkit-full-screen .gx-video {flex:1" in player
+  # A clicked bar button doesn't keep focus, so space plays/pauses instead of pressing it again.
+  assert '<div class="gx-route-controls" @mousedown="onBarMouseDown">' in player
+  # Speed changed elsewhere (iPhone's own fullscreen controls) shows in the menu; duration clamps ±10 s without a timeline.
+  assert '@ratechange="rate = $refs.video.playbackRate"' in player and '@durationchange="duration = $refs.video.duration"' in player
   assert "{{ clockText }}" in player and "routeClock(this.time, this.segments, this.startedAt)" in player
 
   # The timeline hands its segment list and start time to the player (no second fetch), and shows the time on hover.

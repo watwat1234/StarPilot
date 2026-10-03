@@ -486,7 +486,7 @@ export const Recordings = {
       </section>
       </template>
 
-      <GalaxySheet :open="sub === 'routes' && !!playerRoute" :title="playerRoute?.displayName || ''" icon="bi-camera-video" bottomsheet @close="closePlayer">
+      <GalaxySheet :open="sub === 'routes' && !!playerRoute" :title="playerRoute?.displayName || ''" icon="bi-camera-video" bottomsheet scrim-class="gx-route-player-scrim" sheet-class="gx-route-player-sheet" @close="closePlayer">
         <div style="padding: var(--sp-3);">
           <div v-if="playerError" class="gx-empty" style="color: var(--error);">{{ playerError }}</div>
           <div v-else-if="playerLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading video...</div>

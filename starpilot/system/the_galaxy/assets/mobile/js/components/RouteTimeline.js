@@ -1,9 +1,11 @@
 // Route timeline under the whole-route video: an engagement bar and one road camera thumbnail per minute, both from
 // each segment's qlog (parsed on the device, never started onroad). Drag or click along it to seek; arrows step 10 s.
+// A mouse hovering over it shows the time there.
 
 const BUSY_RETRY_MS = 3000
 const ONROAD_RETRY_MS = 60000
 const KEY_STEP_SECONDS = 10
+const SEGMENT_SECONDS = 60
 const STATE_COLORS = { engaged: "#178644", overriding: "#919b95", disengaged: "#173349" }
 const ALERT_COLORS = [null, "#da6f25", "#c92231"]
 
@@ -21,7 +23,8 @@ function installStyle() {
     .gx-route-timeline__bar span,.gx-route-timeline__film span {position:absolute;top:0;bottom:0}
     .gx-route-timeline__film span {box-sizing:border-box;border-left:1px solid #0008;overflow:hidden}
     .gx-route-timeline__film img {display:block;width:100%;height:100%;object-fit:cover;pointer-events:none}
-    .gx-route-timeline__playhead {position:absolute;z-index:2;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 3px #000;pointer-events:none}
+    .gx-route-timeline__playhead,.gx-route-timeline__hover {position:absolute;z-index:2;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 3px #000;pointer-events:none}
+    .gx-route-timeline__hover {z-index:3;background:#fff9;box-shadow:none}
     .gx-route-timeline__label {position:absolute;bottom:100%;left:0;margin-bottom:4px;padding:1px 6px;border-radius:4px;background:#000c;color:#fff;font-size:.75rem;white-space:nowrap;font-variant-numeric:tabular-nums}
     .gx-route-timeline__note {margin-top:6px;font-size:.8rem;color:var(--on-surface-variant,#aab)}
   `
@@ -35,6 +38,19 @@ export function clock(seconds) {
   return s >= 3600 ? `${Math.floor(s / 3600)}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`
 }
 
+// "16:59:34 – 12": time of day (24 h) and segment number at `seconds` into the playlist. Segment numbers count
+// minutes from the route start, so gaps (aged-out segments) still give the right time. Without a start time the
+// time is since the route start.
+export function routeClock(seconds, segments, startedAt) {
+  const segment = segments.findLast((s) => s.start <= seconds) || segments[0]
+  if (!segment) return clock(seconds)
+  const number = Number(segment.segment.split("--").pop())
+  const sinceStart = number * SEGMENT_SECONDS + Math.max(0, seconds - segment.start)
+  const time = startedAt == null ? clock(sinceStart)
+    : new Date((startedAt + sinceStart) * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
+  return `${time} – ${number}`
+}
+
 const segmentUrl = (segment, part) => `/route-playback/segment/${encodeURIComponent(segment)}/${part}`
 
 export const RouteTimeline = {
@@ -45,8 +61,8 @@ export const RouteTimeline = {
     quality: { type: String, default: "low" },
     time: { type: Number, default: 0 },
   },
-  emits: ["seek"],
-  data: () => ({ segments: [], info: {}, onroad: false, dragTime: null }),
+  emits: ["seek", "loaded"],
+  data: () => ({ segments: [], startedAt: null, info: {}, onroad: false, dragTime: null, hoverTime: null }),
   computed: {
     total() {
       const last = this.segments.at(-1)
@@ -57,6 +73,9 @@ export const RouteTimeline = {
     },
     fraction() {
       return this.total ? this.shownTime / this.total : 0
+    },
+    hoverFraction() {
+      return this.total ? Math.min(this.hoverTime, this.total) / this.total : 0
     },
     bars() {
       const bars = []
@@ -92,7 +111,9 @@ export const RouteTimeline = {
     this._token++
   },
   methods: {
-    clock,
+    label(seconds) {
+      return routeClock(seconds, this.segments, this.startedAt)
+    },
     place(start, duration) {
       return { left: `${(start / this.total) * 100}%`, width: `${(Math.max(0, duration) / this.total) * 100}%` }
     },
@@ -100,24 +121,28 @@ export const RouteTimeline = {
       // Stops the fetch loop of the previous route; segment data is per segment, so it survives camera/quality changes.
       this._token = (this._token || 0) + 1
       this.segments = []
+      this.startedAt = null
       this.info = {}
       this.onroad = false
       this.dragTime = null
+      this.hoverTime = null
     },
     async load() {
       // Only the segment list (offsets match the playlist that is playing) depends on camera and quality.
       const token = this._token
       const list = (this._list = (this._list || 0) + 1)
       const query = new URLSearchParams({ camera: this.camera, quality: this.quality })
-      let segments = []
+      let segments = [], startedAt = null
       try {
         const response = await fetch(`/route-playback/${encodeURIComponent(this.route)}/timeline.json?${query}`)
-        if (response.ok) segments = (await response.json()).segments
+        if (response.ok) ({ segments, startedAt = null } = await response.json())
       } catch (error) {
         // No timeline; the video still plays.
       }
       if (token !== this._token || list !== this._list) return
       this.segments = segments
+      this.startedAt = startedAt
+      this.$emit("loaded", { segments, startedAt })
       // Minutes the device already parsed come with the list; only the rest are fetched one by one.
       for (const { segment, timeline } of segments) {
         if (timeline && !this.info[segment]) this.info[segment] = timeline
@@ -169,10 +194,13 @@ export const RouteTimeline = {
     },
     onPointerMove(event) {
       if (this.dragTime !== null && event.pointerId === this._pointer) this.dragTime = this.timeAt(event)
+      // Touch has no hover: a finger only shows the time while dragging.
+      else if (this.dragTime === null && event.pointerType === "mouse" && this.total) this.hoverTime = this.timeAt(event)
     },
     onPointerUp(event) {
       if (this.dragTime === null || event.pointerId !== this._pointer) return
       this.dragTime = null
+      this.hoverTime = event.pointerType === "mouse" ? this.timeAt(event) : null
       this.$emit("seek", this.timeAt(event))
     },
     onPointerCancel(event) {
@@ -189,12 +217,16 @@ export const RouteTimeline = {
   template: `
     <div v-if="total" class="gx-route-timeline">
       <div ref="track" class="gx-route-timeline__track" role="slider" tabindex="0" aria-label="Route position"
-        aria-valuemin="0" :aria-valuemax="Math.round(total)" :aria-valuenow="Math.round(shownTime)" :aria-valuetext="clock(shownTime)"
-        @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerCancel" @keydown="onKey">
+        aria-valuemin="0" :aria-valuemax="Math.round(total)" :aria-valuenow="Math.round(shownTime)" :aria-valuetext="label(shownTime)"
+        @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerCancel"
+        @pointerleave="hoverTime = null" @keydown="onKey">
         <div class="gx-route-timeline__bar"><span v-for="b in bars" :key="b.key" :style="{ ...b.style, background: b.color }"></span></div>
         <div class="gx-route-timeline__film"><span v-for="t in tiles" :key="t.key" :style="t.style"><img v-if="t.src" :src="t.src" alt="" draggable="false"></span></div>
         <div class="gx-route-timeline__playhead" :style="{ left: fraction * 100 + '%' }">
-          <span v-if="dragTime !== null" class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + fraction * 100 + '%)' }">{{ clock(dragTime) }}</span>
+          <span v-if="dragTime !== null" class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + fraction * 100 + '%)' }">{{ label(dragTime) }}</span>
+        </div>
+        <div v-if="hoverTime !== null && dragTime === null" class="gx-route-timeline__hover" :style="{ left: hoverFraction * 100 + '%' }">
+          <span class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + hoverFraction * 100 + '%)' }">{{ label(hoverTime) }}</span>
         </div>
       </div>
       <div v-if="onroad" class="gx-route-timeline__note">Timeline fills in after the drive</div>

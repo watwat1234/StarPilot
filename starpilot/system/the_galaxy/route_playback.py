@@ -457,7 +457,11 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
       if timeline is not None:
         entry["timeline"] = timeline
       entries.append(entry)
-    return {"segments": entries}
+    # Segment 0's start as epoch seconds (the browser shows it in its own time zone), or None when undatable.
+    footage_path = os.path.dirname(os.path.dirname(segments[0][1]))
+    numbers = [int(segment.rsplit("--", 1)[1]) for segment, _ in segments]
+    started = utilities.get_route_start_time_for_route(route_name, footage_path, numbers)
+    return {"segments": entries, "startedAt": None if started is None else round(started.timestamp(), 3)}
 
   @blueprint.route("/segment/<segment>/qcamera.ts", methods=["GET"])
   def qcamera_segment(segment):

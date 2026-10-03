@@ -6,6 +6,7 @@ import struct
 import subprocess
 import time
 from concurrent.futures import Future
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -779,7 +780,7 @@ def _get(client, url):
   ("?camera=forward&quality=full", ("fcamera.hevc", "qcamera.ts")),
   ("?camera=wide&quality=low", ("ecamera.hevc", "qcamera.ts")),
 ])
-def test_route_timeline_offsets_match_the_playlist(tmp_path, last_duration, query, files):
+def test_route_timeline_offsets_match_the_playlist(tmp_path, last_duration, monkeypatch, query, files):
   footage = tmp_path / "footage"
   for num in (0, 1, 3):
     segment = footage / f"{ROUTE_NAME}--{num}"
@@ -787,6 +788,7 @@ def test_route_timeline_offsets_match_the_playlist(tmp_path, last_duration, quer
     for name in files:
       (segment / name).write_bytes(b"x")
   playlist = {"": "qcamera", "?camera=forward&quality=full": "forward", "?camera=wide&quality=low": "wide"}[query]
+  monkeypatch.setattr(route_playback.utilities, "get_route_start_time_for_route", lambda *args: None)
   client = _full_client(footage, tmp_path / "cache", FakeExecutor())
 
   response = client.get(f"/route-playback/{ROUTE_NAME}/timeline.json{query}")
@@ -798,8 +800,24 @@ def test_route_timeline_offsets_match_the_playlist(tmp_path, last_duration, quer
     {"segment": f"{ROUTE_NAME}--0", "start": 0.0, "duration": 60.0},
     {"segment": f"{ROUTE_NAME}--1", "start": 60.0, "duration": 60.0},
     {"segment": f"{ROUTE_NAME}--3", "start": 120.0, "duration": 23.5},
-  ]}
+  ], "startedAt": None}
   assert extinf == [60.0, 60.0, 23.5]
+
+
+@pytest.mark.parametrize(("started", "expected"), [
+  (datetime(2026, 10, 1, 14, 8, 36, 500000), datetime(2026, 10, 1, 14, 8, 36, 500000).timestamp()),
+  (None, None),
+])
+def test_route_timeline_carries_the_route_start_as_epoch_seconds(tmp_path, last_duration, monkeypatch, started, expected):
+  for num in (1, 4):
+    _make_segment(tmp_path, num)
+  calls = []
+  monkeypatch.setattr(route_playback.utilities, "get_route_start_time_for_route", lambda *args: calls.append(args) or started)
+
+  body = _client(tmp_path).get(f"/route-playback/{ROUTE_NAME}/timeline.json").get_json()
+
+  assert body["startedAt"] == expected
+  assert calls == [(ROUTE_NAME, str(tmp_path), [1, 4])]
 
 
 def test_route_timeline_rejects_bad_requests(tmp_path, last_duration):
@@ -1180,10 +1198,10 @@ def test_route_player_shows_the_timeline_and_seeks_from_it():
   timeline = (mobile / "RouteTimeline.js").read_text(encoding="utf-8")
 
   # Under the video, fed the playing time; its seeks set the video's position.
-  assert 'import { RouteTimeline } from "./RouteTimeline.js"' in player
+  assert 'import { RouteTimeline, routeClock } from "./RouteTimeline.js"' in player
   assert '@timeupdate="onTimeUpdate"' in player
   assert "if (!this._resumeAt) this.time = this.$refs.video.currentTime" in player
-  assert '<RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" />' in player
+  assert '<RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" @loaded="onTimelineLoaded" />' in player
   assert player.index("<video ref=\"video\"") < player.index("<RouteTimeline")
   assert "this.$refs.video.currentTime = seconds" in player
   # A seek during a camera/quality switch restarts the switch at that point instead of being overwritten.
@@ -1215,7 +1233,81 @@ def test_route_player_shows_the_timeline_and_seeks_from_it():
 
   # Drag shows the time and seeks on release; keys step; vertical scrolling stays with the page.
   assert 'role="slider"' in timeline and "touch-action:pan-y" in timeline
-  assert 'this.dragTime = null\n      this.$emit("seek", this.timeAt(event))' in timeline
+  release = 'this.dragTime = null\n      this.hoverTime = event.pointerType === "mouse" ? this.timeAt(event) : null\n'
+  assert release + '      this.$emit("seek", this.timeAt(event))' in timeline
   assert '@pointercancel="onPointerCancel"' in timeline
   # Only the pointer that started the drag moves or ends it.
   assert "if (this.dragTime === null || event.pointerId !== this._pointer) return" in timeline
+
+
+# --- Stage 4: player UI (layout, own controls, hover time, time of day + segment) ---
+
+TIMELINE_JS = MODULE_DIR / "assets/mobile/js/components/RouteTimeline.js"
+
+
+def _route_clock(snippet, tz="America/Los_Angeles"):
+  node = shutil.which("node")
+  if node is None:
+    pytest.skip("node is not installed")
+  # Imported from its source as a data: URL (it has no imports), so any node reads it as an ES module.
+  load = "const { routeClock } = await import('data:text/javascript,' + encodeURIComponent(process.env.SOURCE))"
+  harness = f"{load}\nprocess.stdout.write(JSON.stringify({snippet}))"
+  result = subprocess.run([node, "--input-type=module"], input=harness, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "TZ": tz, "SOURCE": TIMELINE_JS.read_text(encoding="utf-8")})
+  assert result.returncode == 0, result.stderr
+  return json.loads(result.stdout)
+
+
+def test_route_clock_shows_the_time_of_day_and_segment_number():
+  # 2026-10-01 14:08:36 PDT; segments 0, 1 and (after an aged-out gap) 5 back to back in the playlist.
+  segments = json.dumps([{"segment": "r--0", "start": 0, "duration": 60}, {"segment": "r--1", "start": 60, "duration": 60},
+                         {"segment": "r--5", "start": 120, "duration": 30}])
+  started = datetime(2026, 10, 1, 21, 8, 36, tzinfo=UTC).timestamp()
+
+  assert _route_clock(f"[0, 59.9, 60, 130].map((t) => routeClock(t, {segments}, {started}))") == [
+    "14:08:36 – 0", "14:09:35 – 0", "14:09:36 – 1", "14:13:46 – 5"]
+  # No start time: time since the route start; no segment list yet: just the time.
+  assert _route_clock(f"[routeClock(130, {segments}, null), routeClock(75, [], null)]") == ["5:10 – 5", "1:15"]
+  # A drive across midnight wraps to 00:.
+  late = datetime(2026, 10, 2, 6, 59, 30, tzinfo=UTC).timestamp()
+  assert _route_clock(f"routeClock(45, {segments}, {late})") == "00:00:15 – 0"
+
+
+def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop():
+  mobile = MODULE_DIR / "assets/mobile/js"
+  recordings = (mobile / "views/Recordings.js").read_text(encoding="utf-8")
+  player = (mobile / "components/RoutePlayer.js").read_text(encoding="utf-8")
+  timeline = TIMELINE_JS.read_text(encoding="utf-8")
+
+  # Only the route player's sheet gets the layout classes; the screen-recording sheet stays a bottom sheet.
+  assert recordings.count('scrim-class="gx-route-player-scrim" sheet-class="gx-route-player-sheet"') == 1
+  assert 'icon="bi-camera-video" bottomsheet scrim-class="gx-route-player-scrim"' in recordings
+  assert "@media (min-width:768px)" in player and ".gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center" in player
+  assert ".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none" in player
+
+  # No native controls on the route video (the per-segment fallback keeps them); the bar replaces them.
+  video = player[player.index('<video ref="video"'):player.index("</video>")]
+  assert " controls" not in video and '@click="togglePlay"' in video
+  assert '<video v-else ref="player" class="gx-video" controls' in recordings
+  assert "const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4, 8]" in player
+  assert 'aria-label="Playback speed"' in player and 'v-model.number="rate"' in player
+  # The speed survives source changes: load() resets playbackRate to the default, and metadata reapplies it.
+  assert "video.defaultPlaybackRate = this.rate\n      video.playbackRate = this.rate" in player
+  assert '@loadedmetadata="applyRate"' in player and 'rate: "applyRate"' in player
+  # ±10 s and keys seek through seek(), so a seek mid-switch still restarts the switch.
+  assert "this.seek(this.total ? Math.min(target, this.total) : target)" in player
+  assert 'aria-label="Back 10 seconds"' in player and 'aria-label="Forward 10 seconds"' in player
+  # Keys never fire from inputs or with modifiers; space on a button stays that button's.
+  assert 'event.ctrlKey || event.metaKey || event.altKey || editable(event.target)' in player
+  assert 'target.closest("input, select, textarea, [contenteditable]")' in player
+  # Fullscreen: the whole player, or on iPhone the video with the system's controls.
+  assert "wrapper.requestFullscreen().catch(() => {})" in player
+  assert "this.$refs.video.webkitEnterFullscreen?.()" in player
+  assert "{{ clockText }}" in player and "routeClock(this.time, this.segments, this.startedAt)" in player
+
+  # The timeline hands its segment list and start time to the player (no second fetch), and shows the time on hover.
+  assert 'this.$emit("loaded", { segments, startedAt })' in timeline
+  assert timeline.count("await fetch(") == 2
+  assert 'else if (this.dragTime === null && event.pointerType === "mouse" && this.total) this.hoverTime = this.timeAt(event)' in timeline
+  assert '@pointerleave="hoverTime = null"' in timeline
+  assert '{{ label(hoverTime) }}' in timeline and '{{ label(dragTime) }}' in timeline

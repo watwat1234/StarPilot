@@ -2,15 +2,59 @@
 // camera's qcamera.ts; full quality is the raw HEVC of any camera, remuxed per segment to fMP4 on the device.
 // Uses the vendored hls.js (loaded on first use) wherever Media Source Extensions exist, so every browser gets the
 // same playback and error handling; the browser's native HLS player is only the fallback (e.g. older iPhones).
-// The route timeline (engagement and thumbnails) sits under the video and seeks it.
+// The route timeline (engagement and thumbnails) sits under the video and seeks it; a control bar (±10 s, time of day
+// and segment, speed, mute, fullscreen) replaces the browser's controls, like connect's player.
 
-import { RouteTimeline } from "./RouteTimeline.js"
+import { RouteTimeline, routeClock } from "./RouteTimeline.js"
 
 const HLS_MODULE_URL = "/assets/vendor/hls.js/hls.light-1.7.3.min.js"
 const HLS_MIME = "application/vnd.apple.mpegurl"
 const HEVC_MIME = 'video/mp4; codecs="hvc1.1.6.L150.B0"'
 
+const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4, 8]
+const SKIP_SECONDS = 10
+
 let hlsModule = null
+
+function installStyle() {
+  if (document.getElementById("gx-route-player-style")) return
+  const style = document.createElement("style")
+  style.id = "gx-route-player-style"
+  style.textContent = `
+    .gx-route-player:focus {outline:none}
+    .gx-route-player .gx-video {cursor:pointer}
+    .gx-route-controls {display:flex;align-items:center;gap:2px;margin-top:8px}
+    .gx-route-controls button,.gx-route-controls select {display:inline-flex;align-items:center;justify-content:center;gap:1px;min-width:40px;height:40px;padding:0 8px;border:0;border-radius:20px;background:transparent;color:inherit;font:inherit;font-size:.9rem;cursor:pointer;appearance:none;-webkit-appearance:none}
+    .gx-route-controls button:hover,.gx-route-controls select:hover {background:var(--surface-container-highest,#363d48)}
+    .gx-route-controls button .bi {font-size:1.15rem}
+    .gx-route-controls small {font-size:.7rem}
+    .gx-route-controls select {text-align:center;text-align-last:center}
+    .gx-route-controls select option {background:var(--surface-container-high,#2b313b)}
+    .gx-route-controls__time {flex:1;min-width:0;margin:0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+    .gx-route-player:fullscreen {display:flex;flex-direction:column;justify-content:center;padding:16px;background:#000;color:#fff}
+    .gx-route-player:fullscreen .gx-video {flex:1;min-height:0;max-height:none}
+    @media (max-width:767px) {
+      .gx-route-controls button,.gx-route-controls select {min-width:32px;padding:0 4px}
+      .gx-route-controls__time {margin:0 2px;font-size:.8rem}
+    }
+    @media (max-width:399px) {
+      .gx-route-controls {gap:0}
+      .gx-route-controls small {display:none}
+      .gx-route-controls select {width:40px;padding:0}
+      .gx-route-controls__time {margin:0}
+    }
+    @media (min-width:768px) {
+      .gx-scrim--bottomsheet.gx-route-player-scrim {align-items:center;padding:3dvh 3vw}
+      .gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none;max-height:94dvh;border-radius:var(--radius-xl)}
+      .gx-route-player-sheet .gx-video {max-height:calc(94dvh - 300px)}
+    }
+  `
+  document.head.appendChild(style)
+}
+
+function editable(target) {
+  return target instanceof Element && !!target.closest("input, select, textarea, [contenteditable]")
+}
 
 function loadHls() {
   hlsModule ||= import(HLS_MODULE_URL).then((module) => module.default).catch((error) => {
@@ -34,8 +78,15 @@ export const RoutePlayer = {
     quality: { type: String, default: "low" },
   },
   emits: ["error", "fallback-low"],
-  data: () => ({ time: 0 }),
+  data: () => ({ time: 0, segments: [], startedAt: null, paused: true, muted: true, rate: 1, speeds: SPEEDS }),
   computed: {
+    clockText() {
+      return routeClock(this.time, this.segments, this.startedAt)
+    },
+    total() {
+      const last = this.segments.at(-1)
+      return last ? last.start + last.duration : this.$refs.video?.duration || 0
+    },
     playlistUrl() {
       return routePlaylistUrl(this.route, this.camera, this.quality)
     },
@@ -53,8 +104,10 @@ export const RoutePlayer = {
     quality() {
       this.attach(true)
     },
+    rate: "applyRate",
   },
   mounted() {
+    installStyle()
     this.attach()
   },
   beforeUnmount() {
@@ -141,6 +194,59 @@ export const RoutePlayer = {
         this.$refs.video.currentTime = seconds
       }
     },
+    onTimelineLoaded({ segments, startedAt }) {
+      this.segments = segments
+      this.startedAt = startedAt
+    },
+    applyRate() {
+      // load() (every source change) resets playbackRate to the default, so both are set; loadedmetadata reapplies.
+      const video = this.$refs.video
+      if (!video) return
+      video.defaultPlaybackRate = this.rate
+      video.playbackRate = this.rate
+    },
+    stepRate(step) {
+      const index = SPEEDS.indexOf(this.rate) + step
+      this.rate = SPEEDS[Math.min(Math.max(index, 0), SPEEDS.length - 1)]
+    },
+    skip(seconds) {
+      const target = Math.max(this.time + seconds, 0)
+      this.seek(this.total ? Math.min(target, this.total) : target)
+    },
+    togglePlay() {
+      const video = this.$refs.video
+      if (video.paused) video.play().catch(() => {})
+      else video.pause()
+    },
+    toggleMute() {
+      this.$refs.video.muted = !this.$refs.video.muted
+    },
+    toggleFullscreen() {
+      const wrapper = this.$refs.wrapper
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document)?.catch?.(() => {})
+      } else if (wrapper.requestFullscreen) {
+        wrapper.requestFullscreen().catch(() => {})
+      } else if (wrapper.webkitRequestFullscreen) {
+        wrapper.webkitRequestFullscreen()
+      } else {
+        // iPhone: only the video itself goes fullscreen, with the system's controls.
+        this.$refs.video.webkitEnterFullscreen?.()
+      }
+    },
+    onKey(event) {
+      if (event.ctrlKey || event.metaKey || event.altKey || editable(event.target)) return
+      // Space on a focused button presses that button.
+      if (event.key === " " && event.target instanceof HTMLButtonElement) return
+      const actions = {
+        " ": () => this.togglePlay(), k: () => this.togglePlay(), j: () => this.skip(-SKIP_SECONDS), l: () => this.skip(SKIP_SECONDS),
+        "<": () => this.stepRate(-1), ">": () => this.stepRate(1), m: () => this.toggleMute(), f: () => this.toggleFullscreen(),
+      }
+      const action = actions[event.key.length === 1 ? event.key.toLowerCase() : event.key]
+      if (!action) return
+      event.preventDefault()
+      action()
+    },
     onTimeUpdate() {
       // During a switch the emptied video reports 0; the timeline keeps showing the resume point.
       if (!this._resumeAt) this.time = this.$refs.video.currentTime
@@ -172,8 +278,20 @@ export const RoutePlayer = {
     },
   },
   template: `
-    <div class="gx-route-player">
-      <video ref="video" class="gx-video" controls muted playsinline preload="metadata" @error="onVideoError" @timeupdate="onTimeUpdate"></video>
-      <RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" />
+    <div ref="wrapper" class="gx-route-player" tabindex="-1" @keydown="onKey">
+      <video ref="video" class="gx-video" muted playsinline preload="metadata" @click="togglePlay" @error="onVideoError" @timeupdate="onTimeUpdate"
+        @loadedmetadata="applyRate" @play="paused = false" @pause="paused = true" @volumechange="muted = $refs.video.muted"></video>
+      <div class="gx-route-controls">
+        <button type="button" aria-label="Back 10 seconds" title="Back 10 s (J)" @click="skip(-10)"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><small>10</small></button>
+        <button type="button" :aria-label="paused ? 'Play' : 'Pause'" :title="(paused ? 'Play' : 'Pause') + ' (space)'" @click="togglePlay"><i class="bi" :class="paused ? 'bi-play-fill' : 'bi-pause-fill'" aria-hidden="true"></i></button>
+        <button type="button" aria-label="Forward 10 seconds" title="Forward 10 s (L)" @click="skip(10)"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i><small>10</small></button>
+        <span class="gx-route-controls__time" aria-live="off">{{ clockText }}</span>
+        <select v-model.number="rate" aria-label="Playback speed" title="Playback speed (< >)">
+          <option v-for="s in speeds" :key="s" :value="s">{{ s }}×</option>
+        </select>
+        <button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" :title="(muted ? 'Unmute' : 'Mute') + ' (M)'" @click="toggleMute"><i class="bi" :class="muted ? 'bi-volume-mute-fill' : 'bi-volume-up-fill'" aria-hidden="true"></i></button>
+        <button type="button" aria-label="Fullscreen" title="Fullscreen (F)" @click="toggleFullscreen"><i class="bi bi-fullscreen" aria-hidden="true"></i></button>
+      </div>
+      <RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" @loaded="onTimelineLoaded" />
     </div>`,
 }

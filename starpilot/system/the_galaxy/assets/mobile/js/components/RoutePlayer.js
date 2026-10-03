@@ -3,7 +3,8 @@
 // Uses the vendored hls.js (loaded on first use) wherever Media Source Extensions exist, so every browser gets the
 // same playback and error handling; the browser's native HLS player is only the fallback (e.g. older iPhones).
 // The route timeline (engagement and thumbnails) sits under the video and seeks it; a control bar (±10 s, time of day
-// and segment, speed, mute, fullscreen) replaces the browser's controls, like connect's player.
+// and segment, speed, fullscreen) sits next to the browser's own controls (play, volume, buffering, picture in
+// picture), which stay on the video; the native fullscreen button is hidden because ours takes the whole player.
 
 import { RouteTimeline, routeClock } from "./RouteTimeline.js"
 
@@ -105,7 +106,7 @@ export const RoutePlayer = {
     quality: { type: String, default: "low" },
   },
   emits: ["error", "fallback-low"],
-  data: () => ({ time: 0, duration: 0, segments: [], startedAt: null, paused: true, muted: true, rate: 1 }),
+  data: () => ({ time: 0, duration: 0, segments: [], startedAt: null, rate: 1 }),
   computed: {
     clockText() {
       return routeClock(this.time, this.segments, this.startedAt)
@@ -269,6 +270,8 @@ export const RoutePlayer = {
       if (event.ctrlKey || event.metaKey || event.altKey || editable(event.target)) return
       // Space on a button (only reachable by keyboard, see onBarMouseDown) presses that button.
       if (event.key === " " && event.target instanceof HTMLButtonElement) return
+      // Space on the focused video is the native controls' own play/pause; handling it too would toggle twice.
+      if (event.key === " " && event.target === this.$refs.video) return
       const actions = {
         " ": () => this.togglePlay(), k: () => this.togglePlay(), j: () => this.skip(-SKIP_SECONDS), l: () => this.skip(SKIP_SECONDS),
         "<": () => this.stepRate(-1), ">": () => this.stepRate(1), m: () => this.toggleMute(), f: () => this.toggleFullscreen(),
@@ -316,15 +319,13 @@ export const RoutePlayer = {
   },
   template: `
     <div ref="wrapper" class="gx-route-player" tabindex="-1" @keydown="onKey">
-      <video ref="video" class="gx-video" muted playsinline preload="metadata" @click="togglePlay" @error="onVideoError" @timeupdate="onTimeUpdate"
-        @loadedmetadata="applyRate" @durationchange="duration = $refs.video.duration" @ratechange="rate = $refs.video.playbackRate" @play="paused = false" @pause="paused = true" @volumechange="muted = $refs.video.muted"></video>
+      <video ref="video" class="gx-video" muted playsinline controls controlsList="nodownload nofullscreen" preload="metadata" @error="onVideoError" @timeupdate="onTimeUpdate"
+        @loadedmetadata="applyRate" @durationchange="duration = $refs.video.duration" @ratechange="rate = $refs.video.playbackRate"></video>
       <div class="gx-route-controls" @mousedown="onBarMouseDown">
         <button type="button" aria-label="Back 10 seconds" title="Back 10 s (J)" @click="skip(-10)"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><small>10</small></button>
-        <button type="button" :aria-label="paused ? 'Play' : 'Pause'" :title="(paused ? 'Play' : 'Pause') + ' (space)'" @click="togglePlay"><i class="bi" :class="paused ? 'bi-play-fill' : 'bi-pause-fill'" aria-hidden="true"></i></button>
         <button type="button" aria-label="Forward 10 seconds" title="Forward 10 s (L)" @click="skip(10)"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i><small>10</small></button>
         <span class="gx-route-controls__time" aria-live="off">{{ clockText }}</span>
         <speed-select v-model="rate" />
-        <button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" :title="(muted ? 'Unmute' : 'Mute') + ' (M)'" @click="toggleMute"><i class="bi" :class="muted ? 'bi-volume-mute-fill' : 'bi-volume-up-fill'" aria-hidden="true"></i></button>
         <button type="button" aria-label="Fullscreen" title="Fullscreen (F)" @click="toggleFullscreen"><i class="bi bi-fullscreen" aria-hidden="true"></i></button>
       </div>
       <RouteTimeline :route="route" :camera="camera" :quality="quality" :time="time" @seek="seek" @loaded="onTimelineLoaded" />

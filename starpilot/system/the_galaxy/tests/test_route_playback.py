@@ -886,16 +886,19 @@ for tenth in range(600):
     thumbnail.frameId = 48100
     thumbnail.thumbnail = b"\\xff\\xd8synthetic"
     messages.append(message)
+raw = b"".join(m.to_bytes() for m in messages)
 with open(sys.argv[1], "wb") as file:
-  file.write(zstandard.ZstdCompressor().compress(b"".join(m.to_bytes() for m in messages)))
+  file.write(zstandard.ZstdCompressor().compress(raw[:len(raw) - int(sys.argv[2])]))
 """
 
 
-def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, offroad):
+# Cut 7 bytes: power lost mid-message. The partial last message is dropped and the rest is kept.
+@pytest.mark.parametrize(("cut", "last_end"), [(0, 59.9), (7, 59.8)])
+def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, offroad, cut, last_end):
   footage = tmp_path / "footage"
   segment = _make_log_segment(footage, 40)
   env = route_playback.utilities._dashboard_worker_env(route_playback.REPO_ROOT)
-  subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst")],
+  subprocess.run([route_playback.sys.executable, "-c", SYNTHETIC_QLOG, str(segment / "qlog.zst"), str(cut)],
                  cwd=route_playback.REPO_ROOT, env=env, check=True, timeout=60)
   client = _timeline_client(footage, tmp_path / "cache", FakeExecutor())
 
@@ -908,7 +911,7 @@ def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, offroad):
     [30.0, 35.0, "overriding", 0],
     [35.0, 50.0, "engaged", 0],
     [50.0, 52.0, "engaged", 2],
-    [52.0, 59.9, "engaged", 0],
+    [52.0, last_end, "engaged", 0],
   ]}
   with _get(client, _segment_url(40, "thumbnail.jpg")) as thumbnail:
     assert thumbnail.data == b"\xff\xd8synthetic"

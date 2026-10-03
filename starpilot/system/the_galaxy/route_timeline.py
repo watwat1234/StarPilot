@@ -48,6 +48,7 @@ def summarize(events):
 
 
 def read_events(qlog_path):
+  import capnp
   from cereal import log
 
   with open(qlog_path, "rb") as file:
@@ -58,9 +59,12 @@ def read_events(qlog_path):
       data = bz2.decompress(file.read())
     else:
       data = file.read()
-  for event in log.Event.read_multiple_bytes(data):
-    which = event.which()
-    yield event.logMonoTime, which, getattr(event, which) if which in ("selfdriveState", "thumbnail") else None
+  try:
+    for event in log.Event.read_multiple_bytes(data):
+      which = event.which()
+      yield event.logMonoTime, which, getattr(event, which) if which in ("selfdriveState", "thumbnail") else None
+  except capnp.KjException:
+    return  # cut off mid-message (power lost while recording): keep what was read, as LogReader does
 
 
 def main(qlog_path, out_dir):

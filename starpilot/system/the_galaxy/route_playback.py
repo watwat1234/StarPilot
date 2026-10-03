@@ -3,8 +3,8 @@
 Low quality: qcamera.ts is already an MPEG-TS with H.264 and real PTS, so each file is served as-is as an HLS
 media segment; nothing is remuxed. Full quality: the raw f/e/dcamera.hevc of a segment is stream-copied to a
 fragmented mp4 on first request and split into an fMP4 init + media part. Timeline: each segment's qlog is parsed
-once, offroad, into engagement spans and its thumbnail. Kept out of the_galaxy.py so upstream ingests don't
-conflict with it.
+once (started only offroad) into engagement spans and its thumbnail. Kept out of the_galaxy.py so upstream
+ingests don't conflict with it.
 """
 import hashlib
 import math
@@ -36,8 +36,9 @@ HLS_CACHE_MAX_BYTES = 512 * 1024 * 1024
 MAX_QUEUED_REMUXES = 2
 TEMP_DIR_PREFIX = ".tmp-"
 QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
-# A qlog parse takes ~1 s on the device; it runs on its own one-worker executor, never while onroad.
-TIMELINE_PARSE_TIMEOUT_SECONDS = 30
+# A qlog parse takes ~1 s on the device; it runs on its own one-worker executor and is never *started* while onroad
+# (like upstream's dashboard analysis, a running one finishes; the timeout bounds that).
+TIMELINE_PARSE_TIMEOUT_SECONDS = 10
 TIMELINE_WAIT_SECONDS = TIMELINE_PARSE_TIMEOUT_SECONDS + 5
 TIMELINE_CACHE_MAX_BYTES = 32 * 1024 * 1024
 MAX_QUEUED_PARSES = 4
@@ -423,7 +424,7 @@ def create_blueprint(footage_paths, remux_executor=None, cache_root=None, parse_
 
   @blueprint.route("/segment/<segment>/<any(timeline.json, thumbnail.jpg):part>", methods=["GET"])
   def segment_timeline(segment, part):
-    """A segment's engagement spans, or its thumbnail. Parsed once, offroad; the cache is served at any time."""
+    """A segment's engagement spans, or its thumbnail. Parsed once, started only offroad; the cache is served at any time."""
     if not utilities.SEGMENT_RE.fullmatch(segment or ""):
       return {"error": "Invalid segment name"}, 400
     qlog_path, recording = segment_qlog(segment)

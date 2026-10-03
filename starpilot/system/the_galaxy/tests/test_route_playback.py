@@ -1288,9 +1288,11 @@ def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop
   assert ".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {max-height:calc(100dvh - 24px);border-radius:var(--radius-xl)}" in player
   assert player.index(".gx-route-player-scrim .gx-sheet.gx-route-player-sheet {width:min(1280px,94vw);max-width:none") > desktop
 
-  # No native controls on the route video (the per-segment fallback keeps them); the bar replaces them.
+  # Native controls stay on the route video (play, volume, buffering, picture in picture); the bar adds what they lack.
+  # Their fullscreen button is hidden because ours takes the whole player, and the click toggle would double up with theirs.
   video = player[player.index('<video ref="video"'):player.index("</video>")]
-  assert " controls" not in video and '@click="togglePlay"' in video
+  assert ' controls controlsList="nodownload nofullscreen"' in video and "@click" not in video
+  assert 'aria-label="Fullscreen"' in player and "bi-play-fill" not in player and "bi-volume" not in player
   assert '<video v-else ref="player" class="gx-video" controls' in recordings
   assert "const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4, 8]" in player
   assert 'aria-label="Playback speed"' in player and 'v-model.number="value"' in player
@@ -1308,6 +1310,7 @@ def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop
   # Keys never fire from inputs or with modifiers; space on a button stays that button's.
   assert 'event.ctrlKey || event.metaKey || event.altKey || editable(event.target)' in player
   assert 'target.closest("input, select, textarea, [contenteditable]")' in player
+  assert 'event.key === " " && event.target === this.$refs.video' in player
   # Fullscreen: the whole player, or on iPhone the video with the system's controls.
   assert "wrapper.requestFullscreen().catch(() => {})" in player
   assert "this.$refs.video.webkitEnterFullscreen?.()" in player

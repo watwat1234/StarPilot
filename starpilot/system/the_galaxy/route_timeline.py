@@ -29,7 +29,7 @@ def _state(selfdrive_state):
 
 def summarize(events):
   """events: (logMonoTime ns, which, message) in log order -> (timeline dict, thumbnail bytes or None, late thumbnail
-  bytes or None).
+  (seconds, bytes) or None).
 
   Every segment's qlog starts with a copy of initData stamped at the *route* start; the next message (the logger's
   sentinel) is the segment's t=0. A few messages logged before it are clamped to 0.
@@ -52,7 +52,7 @@ def summarize(events):
           spans[-1][1] = seconds
         spans.append([seconds, seconds, *key])
     elif which == "thumbnail" and seconds >= LATE_THUMBNAIL_SECONDS:
-      late = bytes(message.thumbnail)
+      late = seconds, bytes(message.thumbnail)
     elif which == "thumbnail" and thumbnail is None:
       thumbnail, thumbnail_at = bytes(message.thumbnail), seconds
   return {"spans": spans, "thumbnailAt": thumbnail_at}, thumbnail, late
@@ -87,17 +87,21 @@ def previous_late_thumbnail(qlog_path):
   previous_dir = os.path.join(os.path.dirname(segment_dir), f"{match.group(1)}--{int(match.group(2)) - 1}")
   try:
     previous_qlog = next(path for name in QLOG_FILENAMES if os.path.isfile(path := os.path.join(previous_dir, name)))
-    return summarize(read_events(previous_qlog))[2]
+    late = summarize(read_events(previous_qlog))[2]
   except Exception:
     return None
+  return None if late is None else late[1]
 
 
 def parse(qlog_path, out_dir):
-  timeline, thumbnail, _ = summarize(read_events(qlog_path))
+  timeline, thumbnail, late = summarize(read_events(qlog_path))
   if thumbnail is None:
     thumbnail = previous_late_thumbnail(qlog_path)
     if thumbnail is not None:
       timeline["thumbnailAt"] = 0.0  # written just before this minute started
+    elif late is not None:
+      # None of its own anywhere (e.g. a route's first minute): the next minute's, from this minute's end, is closest.
+      timeline["thumbnailAt"], thumbnail = late
   if thumbnail is not None:
     with open(os.path.join(out_dir, THUMBNAIL_FILENAME), "wb") as file:
       file.write(thumbnail)

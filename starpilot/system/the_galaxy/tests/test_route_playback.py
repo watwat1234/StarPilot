@@ -639,7 +639,7 @@ def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_ch
   ]}
   assert thumbnail == b"\xff\xd8first"
   # The next minute's, written just before the rotation.
-  assert late == b"\xff\xd8second"
+  assert late == (59.95, b"\xff\xd8second")
 
 
 @pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", None))])
@@ -647,7 +647,7 @@ def test_summarize_without_state_or_thumbnail_is_empty(events):
   assert route_timeline.summarize(events) == ({"spans": [], "thumbnailAt": None}, None, None)
 
 
-@pytest.mark.parametrize(("seconds", "own", "late"), [(0.3, b"t", None), (29.9, b"t", None), (30.0, None, b"t"), (59.97, None, b"t")])
+@pytest.mark.parametrize(("seconds", "own", "late"), [(0.3, b"t", None), (29.9, b"t", None), (30.0, None, (30.0, b"t")), (59.97, None, (59.97, b"t"))])
 def test_summarize_takes_a_thumbnail_30_s_or_more_in_as_the_next_minutes(seconds, own, late):
   timeline, thumbnail, late_thumbnail = route_timeline.summarize(_events(5, (seconds, "thumbnail", SimpleNamespace(thumbnail=b"t"))))
   assert (thumbnail, late_thumbnail) == (own, late)
@@ -704,6 +704,14 @@ def test_a_minute_with_its_own_thumbnail_keeps_it_and_reads_no_other_qlog(tmp_pa
 ])
 def test_a_minute_without_a_thumbnail_anywhere_has_none(tmp_path, monkeypatch, qlogs):
   assert _parse_with(tmp_path, monkeypatch, qlogs, max(qlogs))[:2] == (None, None)
+
+
+@pytest.mark.parametrize("qlogs", [
+  {0: _thumbnail_events((59.01, b"late"))},  # a route's first minute: its only thumbnail is the next minute's
+  {3: _thumbnail_events((0.3, b"own only")), 4: _thumbnail_events((59.01, b"late"))},
+])
+def test_a_minute_with_none_of_its_own_anywhere_falls_back_to_the_next_minutes_from_its_end(tmp_path, monkeypatch, qlogs):
+  assert _parse_with(tmp_path, monkeypatch, qlogs, max(qlogs))[:2] == (59.01, b"late")
 
 
 def test_the_timeline_cache_key_carries_the_parser_version_and_the_video_key_does_not(tmp_path):

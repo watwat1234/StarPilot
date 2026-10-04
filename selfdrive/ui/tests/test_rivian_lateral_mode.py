@@ -324,7 +324,7 @@ def test_non_mici_wheel_icon_turns_green_when_accelerating(monkeypatch):
   button._render(FakeRectangle(0, 0, 192, 192))
 
   texture_color = draws["textures"][0][-1]
-  assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (22, 127, 64, 255)
+  assert (texture_color.r, texture_color.g, texture_color.b, texture_color.a) == (48, 255, 156, 255)
 
 
 def test_non_mici_wheel_icon_green_is_proportional_to_accel(monkeypatch):
@@ -339,9 +339,9 @@ def test_non_mici_wheel_icon_green_is_proportional_to_accel(monkeypatch):
   button._render(FakeRectangle(0, 0, 192, 192))
 
   texture_color = draws["textures"][0][-1]
-  assert 22 < texture_color.r < 0x4D
-  assert 127 < texture_color.g < 0x9D
-  assert 64 < texture_color.b < 255
+  assert 48 < texture_color.r < 0x4D
+  assert 0x9D < texture_color.g < 255
+  assert 156 < texture_color.b < 255
 
 
 def test_wheel_pedal_intensity_mapping(monkeypatch):
@@ -372,7 +372,7 @@ def test_wheel_pedal_intensity_mapping(monkeypatch):
   assert f(True, False, acceleration=-0.2) == 0.0
   assert f(True, False, acceleration=-0.25) == 0.0
   assert -0.05 < f(True, False, acceleration=-0.27) < 0.0
-  assert f(True, False, acceleration=-0.625) == pytest.approx(-0.25)
+  assert f(True, False, acceleration=-0.625) == pytest.approx(-(0.5 ** 1.5))
   assert f(True, False, acceleration=-2.0) == -1.0
   assert f(True, False, acceleration=-0.4) > f(True, False, acceleration=-0.8)
   assert f(True, False, acceleration=1.0) == 0.0
@@ -384,7 +384,7 @@ def test_wheel_pedal_intensity_mapping(monkeypatch):
   assert f(True, True, acceleration=-1.0, commanded_accel=0.05) == 0.0
   assert f(True, True, commanded_accel=-2.0) == -1.0
   assert -1.0 < f(True, True, commanded_accel=-0.5) < 0.0
-  assert f(True, True, commanded_accel=-0.525) == pytest.approx(-0.25)
+  assert f(True, True, commanded_accel=-0.525) == pytest.approx(-(0.5 ** 1.5))
   assert 0.0 < f(True, True, commanded_accel=0.5) < 1.0
   assert f(True, True, commanded_gas=1.0) == 1.0
 

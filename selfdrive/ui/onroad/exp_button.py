@@ -14,12 +14,12 @@ from openpilot.starpilot.common.experimental_state import (
 
 
 BRAKE_WHEEL_COLOR = rl.Color(255, 0, 0, 255)
-ACCEL_WHEEL_COLOR = rl.Color(22, 127, 64, 255)
+ACCEL_WHEEL_COLOR = rl.Color(48, 255, 156, 255)
 COMMAND_ACCEL_THRESHOLD = 0.05
 FULL_TINT_ACCEL = 1.0  # m/s^2 at which the wheel reaches full red/green
 PEDAL_MIN_INTENSITY = 0.15  # faint tint for any pedal press, even at steady speed
 COAST_ACCEL_THRESHOLD = 0.25  # m/s^2 of measured decel before coasting tints red
-TINT_CURVE = 2.0  # ease-in: subtle for light accel, full color saved for hard accel/braking
+TINT_CURVE = 1.5  # ease-in: subtle for light accel, full color saved for hard accel/braking
 WHEEL_TINT_TAU = 0.3  # seconds
 
 

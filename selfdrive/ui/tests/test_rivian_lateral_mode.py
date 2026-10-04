@@ -364,9 +364,17 @@ def test_wheel_pedal_intensity_mapping(monkeypatch):
   assert f(True, True, driver_braking=True, gas_pressed=True, acceleration=-2.0) == -1.0
   assert f(True, True, driver_braking=True, acceleration=-2.0, commanded_accel=1.0) == -1.0
 
-  # driver-controlled without a pedal press is neutral, whatever the car is doing
+  # the floor still covers light presses that fall below the eased-in curve
+  assert f(True, False, gas_pressed=True, acceleration=0.2) == floor
+
+  # driver-controlled without a pedal: red only past the coast threshold, eased in from 0, never green
   assert f(True, False) == 0.0
-  assert f(True, False, acceleration=-1.0) == 0.0
+  assert f(True, False, acceleration=-0.2) == 0.0
+  assert f(True, False, acceleration=-0.25) == 0.0
+  assert -0.05 < f(True, False, acceleration=-0.27) < 0.0
+  assert f(True, False, acceleration=-0.625) == pytest.approx(-0.25)
+  assert f(True, False, acceleration=-2.0) == -1.0
+  assert f(True, False, acceleration=-0.4) > f(True, False, acceleration=-0.8)
   assert f(True, False, acceleration=1.0) == 0.0
   assert f(True, False, commanded_accel=-1.0, commanded_gas=1.0) == 0.0
 
@@ -376,6 +384,7 @@ def test_wheel_pedal_intensity_mapping(monkeypatch):
   assert f(True, True, acceleration=-1.0, commanded_accel=0.05) == 0.0
   assert f(True, True, commanded_accel=-2.0) == -1.0
   assert -1.0 < f(True, True, commanded_accel=-0.5) < 0.0
+  assert f(True, True, commanded_accel=-0.525) == pytest.approx(-0.25)
   assert 0.0 < f(True, True, commanded_accel=0.5) < 1.0
   assert f(True, True, commanded_gas=1.0) == 1.0
 
@@ -417,7 +426,7 @@ def test_non_mici_wheel_icon_ignores_brake_lights_alone(monkeypatch):
   module.ui_state.sm = FakeUiSubMaster(module.ui_state.sm)
   module.ui_state.sm.valid = {"starpilotCarState": True}
   module.ui_state.sm["starpilotCarState"] = SimpleNamespace(brakeLights=True)
-  module.ui_state.sm["carState"].aEgo = -1.5
+  module.ui_state.sm["carState"].aEgo = -0.2  # below the coast threshold, so only brake lights could tint
   module.ui_state.ui_params.get_bool = lambda key, *args, **kwargs: key == "PedalsOnUI"
   button._update_state()
 

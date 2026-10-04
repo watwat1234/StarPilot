@@ -18,11 +18,14 @@ ACCEL_WHEEL_COLOR = rl.Color(22, 127, 64, 255)
 COMMAND_ACCEL_THRESHOLD = 0.05
 FULL_TINT_ACCEL = 1.0  # m/s^2 at which the wheel reaches full red/green
 PEDAL_MIN_INTENSITY = 0.15  # faint tint for any pedal press, even at steady speed
+COAST_ACCEL_THRESHOLD = 0.25  # m/s^2 of measured decel before coasting tints red
+TINT_CURVE = 2.0  # ease-in: subtle for light accel, full color saved for hard accel/braking
 WHEEL_TINT_TAU = 0.3  # seconds
 
 
-def _accel_magnitude(accel: float) -> float:
-  return min(1.0, max(0.0, (accel - COMMAND_ACCEL_THRESHOLD) / (FULL_TINT_ACCEL - COMMAND_ACCEL_THRESHOLD)))
+def _accel_magnitude(accel: float, start: float = COMMAND_ACCEL_THRESHOLD) -> float:
+  t = min(1.0, max(0.0, (accel - start) / (FULL_TINT_ACCEL - start)))
+  return t ** TINT_CURVE
 
 
 def get_wheel_pedal_intensity(pedal_feedback_enabled: bool, long_active: bool,
@@ -31,8 +34,9 @@ def get_wheel_pedal_intensity(pedal_feedback_enabled: bool, long_active: bool,
                               commanded_gas: float = 0.0) -> float:
   """Signed pedal intensity in [-1, 1]: negative is braking, positive is accelerating.
 
-  A driver pedal press always wins and scales with measured accel. Otherwise, only the
-  longitudinal controller's command tints the wheel, so coasting stays neutral.
+  A driver pedal press always wins and scales with measured accel. With long engaged, only
+  the longitudinal controller's command tints the wheel. With long off and no pedal, the
+  wheel shows red only for real decel (coast/regen), never green.
   """
   if not pedal_feedback_enabled:
     return 0.0
@@ -41,6 +45,8 @@ def get_wheel_pedal_intensity(pedal_feedback_enabled: bool, long_active: bool,
   if gas_pressed:
     return max(PEDAL_MIN_INTENSITY, _accel_magnitude(acceleration))
   if not long_active:
+    if acceleration < -COAST_ACCEL_THRESHOLD:
+      return -_accel_magnitude(-acceleration, COAST_ACCEL_THRESHOLD)
     return 0.0
 
   signal = commanded_accel if abs(commanded_accel) > COMMAND_ACCEL_THRESHOLD else 0.0

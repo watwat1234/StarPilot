@@ -10,6 +10,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.pid import PIDController
+from openpilot.selfdrive.controls.lib.bolt_low_speed_p import get_bolt_low_speed_p_scale
 from openpilot.selfdrive.controls.lib.drive_helpers import MIN_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import *  # noqa: F403
@@ -294,6 +295,8 @@ class LatControlTorque(LatControl):
 
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error_with_lsf)
+      if self.is_bolt_2022_2023:
+        pid_log.error = float(pid_log.error * get_bolt_low_speed_p_scale(CS.vEgo))
       ff = gravity_adjusted_future_lateral_accel
       # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
       ff -= self.torque_params.latAccelOffset * roll_offset_fade

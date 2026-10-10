@@ -69,7 +69,9 @@ class StarPilotEvents:
     # actual distinction comes from starpilot_cem's own lead-awareness (lead_relevant,
     # trackable_stop_approach, etc.) in stop_light_detected, so use a live check instead.
     if not self.starpilot_planner.lead_one.status and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
-      if not self.starpilot_planner.model_stopped and self.stopped_for_light and starpilot_toggles.green_light_alert:
+      # Skip it if the driver is already on the gas: standstill (wheel speed) lags the pedal, so
+      # there's a short window where they've already reacted but the car hasn't moved yet.
+      if not self.starpilot_planner.model_stopped and self.stopped_for_light and starpilot_toggles.green_light_alert and not sm["carState"].gasPressed:
         self.events.add(StarPilotEventName.greenLight)
 
       self.stopped_for_light = self.starpilot_planner.starpilot_cem.stop_light_detected
@@ -91,7 +93,8 @@ class StarPilotEvents:
       lead_departing = self.starpilot_planner.lead_one.dRel - self.tracked_lead_distance >= 1
       lead_departing &= self.starpilot_planner.lead_one.vLead >= 1
 
-      if lead_departing and starpilot_toggles.lead_departing_alert:
+      # Same gas-pedal gate as greenLight above.
+      if lead_departing and starpilot_toggles.lead_departing_alert and not sm["carState"].gasPressed:
         self.events.add(StarPilotEventName.leadDeparting)
     else:
       self.tracked_lead_distance = 0

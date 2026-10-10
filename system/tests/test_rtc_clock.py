@@ -31,6 +31,7 @@ def test_time_from_rtc_adds_elapsed_rtc():
   (saved(utc=REAL_UTC - 60 * 86400), RTC, "out of range"),
   (None, RTC, "no saved offset"),
   (saved(), None, "no RTC"),
+  (saved(utc=10**20), RTC, "bad saved offset"),
 ])
 def test_time_from_rtc_rejects(s, rtc_now, reason):
   t, why = time_from_rtc(s, rtc_now)
@@ -95,6 +96,14 @@ def test_restore_sets_time(tmp_path, monkeypatch):
   assert c.restored
 
 
+def test_restore_survives_absurd_offset(tmp_path, monkeypatch):
+  env = Env(tmp_path, monkeypatch)
+  save_offset(RTC, 10**20, "ntp", str(env.offset_path))
+  calls = []
+  env.clock().restore(calls.append)
+  assert calls == []
+
+
 def test_restore_skips_valid_clock_and_reset_rtc(tmp_path, monkeypatch):
   env = Env(tmp_path, monkeypatch, valid=True)
   save_offset(RTC, REAL_UTC, "ntp", str(env.offset_path))
@@ -134,10 +143,11 @@ def test_gps_trusted_only_if_clock_matches(tmp_path, monkeypatch):
   c.update()
   assert env.saved() is None
 
+  # clock 5 s behind GPS: set_time leaves it, so the save uses GPS time
   env.mono += 60
-  c.gps_set(REAL_TIME + datetime.timedelta(seconds=1))
+  c.gps_set(REAL_TIME + datetime.timedelta(seconds=5))
   c.update()
-  assert env.saved()["source"] == "gps"
+  assert env.saved() == {"rtc": RTC, "utc": REAL_UTC + 5, "source": "gps"}
 
 
 def test_update_resaves_on_drift_or_age_only(tmp_path, monkeypatch):

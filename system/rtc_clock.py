@@ -71,7 +71,10 @@ def time_from_rtc(saved, rtc_now):
     return None, f"RTC reset ({rtc_now} < {saved['rtc']})"
   if rtc_now - saved["rtc"] > MAX_AGE:
     return None, f"saved offset too old ({(rtc_now - saved['rtc']) // 86400} days)"
-  t = datetime.datetime.fromtimestamp(saved["utc"] + rtc_now - saved["rtc"], datetime.UTC).replace(tzinfo=None)
+  try:
+    t = datetime.datetime.fromtimestamp(saved["utc"] + rtc_now - saved["rtc"], datetime.UTC).replace(tzinfo=None)
+  except (OverflowError, ValueError, OSError):
+    return None, "bad saved offset"
   if not (min_date() <= t <= MAX_DATE):
     return None, f"out of range ({t})"
   return t, None
@@ -92,6 +95,7 @@ class RtcClock:
     self.restored = False
     self.correction_logged = False
     self.gps_trusted = False
+    self.gps_error_s = 0  # GPS - system clock at the last gps_set
 
   def restore(self, set_time):
     if system_time_valid():
@@ -108,10 +112,15 @@ class RtcClock:
     self.restored = True
 
   def gps_set(self, gps_time):
-    """Call after timed's set_time(gps_time). Trusts GPS only if the clock now matches it (date -s can fail)."""
+    """Call after timed's set_time(gps_time). Trusts GPS only if the clock now matches it (date -s can fail).
+
+    set_time leaves errors under 10 s (e.g. from a restore), so the save uses GPS time, not the system clock.
+    """
     now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-    if abs(now - gps_time) < datetime.timedelta(seconds=GPS_MATCH_S):
+    error = gps_time - now
+    if abs(error) < datetime.timedelta(seconds=GPS_MATCH_S):
       self.gps_trusted = True
+      self.gps_error_s = round(error.total_seconds())
 
   def update(self):
     """Save the offset when the clock is trusted: on the first trusted cycle of the boot, then when it drifts.
@@ -128,7 +137,7 @@ class RtcClock:
     rtc = read_rtc(self.rtc_path)
     if rtc is None:
       return
-    utc = time.time_ns() // 1_000_000_000
+    utc = time.time_ns() // 1_000_000_000 + (self.gps_error_s if source == "gps" else 0)
     if self.saved_this_boot and self.saved is not None:
       drift = abs((utc - rtc) - (self.saved["utc"] - self.saved["rtc"]))
       if drift < RESAVE_DRIFT_S and rtc - self.saved["rtc"] < RESAVE_AGE:

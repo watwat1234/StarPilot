@@ -10,8 +10,9 @@ import numpy as np
 
 ENABLED = True
 
-# vEgo (m/s) -> scale. 1.0 at creep speed and from ~29 mph up; 0.4 over ~7-27 mph.
-SCALE_BP = [2.0, 3.0, 12.0, 13.0]
+# vEgo (m/s) -> scale. 1.0 at creep speed and from ~29 mph up; 0.4 over ~7-20 mph. The 9-13 m/s ramp keeps the
+# scaled P from jumping back up 2.3x over 2 mph at ~28 mph (with 12-13 it rose 1.4 -> 3.2 per m/s^2).
+SCALE_BP = [2.0, 3.0, 9.0, 13.0]
 SCALE_V = [1.0, 0.4, 0.4, 1.0]
 MIN_SCALE = 0.3
 

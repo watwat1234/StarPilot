@@ -33,9 +33,11 @@ class TestBoltLowSpeedP:
     assert get_bolt_low_speed_p_scale(v_ego) == 1.0
 
   def test_scale_bounds(self):
+    assert min(bolt_low_speed_p.SCALE_V) >= bolt_low_speed_p.MIN_SCALE
     for v_ego in np.linspace(0.0, 40.0, 401):
       assert bolt_low_speed_p.MIN_SCALE <= get_bolt_low_speed_p_scale(v_ego) <= 1.0
     assert get_bolt_low_speed_p_scale(5.0) == pytest.approx(0.4)
+    assert get_bolt_low_speed_p_scale(11.0) == pytest.approx(0.7)
 
   def test_scale_is_one_when_disabled(self, monkeypatch):
     monkeypatch.setattr(bolt_low_speed_p, "ENABLED", False)

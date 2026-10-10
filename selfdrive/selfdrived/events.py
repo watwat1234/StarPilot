@@ -1188,7 +1188,7 @@ STARPILOT_EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "Light Turned Green",
       "",
       StarPilotAlertStatus.starpilot, AlertSize.small,
-      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 3.),
+      Priority.MID, VisualAlert.none, StarPilotAudibleAlert.departure, 3.),
   },
 
   StarPilotEventName.holidayActive: {
@@ -1208,7 +1208,7 @@ STARPILOT_EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "Lead Departed",
       "",
       StarPilotAlertStatus.starpilot, AlertSize.small,
-      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 3.),
+      Priority.MID, VisualAlert.none, StarPilotAudibleAlert.departure, 3.),
   },
 
   StarPilotEventName.nnffLoaded: {

@@ -49,13 +49,15 @@ def make_planner(*, lead_status: bool, lead_dRel: float, lead_vLead: float, stan
   )
 
 
-def make_sm(*, standstill: bool, gear_shifter="drive"):
+def make_sm(*, standstill: bool, gear_shifter="drive", gas_pressed: bool = False):
   sm = FakeSM({
     "selfdriveState": SimpleNamespace(enabled=True, alertType="", alertText1="", alertText2=""),
     "starpilotSelfdriveState": SimpleNamespace(alertText1="", alertText2="", alertSound=0),
     "deviceState": SimpleNamespace(started=True),
     "carControl": SimpleNamespace(actuators=SimpleNamespace(accel=0.0)),
-    "carState": SimpleNamespace(standstill=standstill, gearShifter=gear_shifter, vEgo=0.0, vCruise=0.0, vCruiseCluster=0.0),
+    "carParams": SimpleNamespace(carFingerprint="MOCK"),
+    "carState": SimpleNamespace(standstill=standstill, gearShifter=gear_shifter, gasPressed=gas_pressed, vEgo=0.0, vCruise=0.0,
+                                vCruiseCluster=0.0),
     "starpilotCarState": SimpleNamespace(alwaysOnLateralAllowed=False, trafficModeEnabled=False),
     "starpilotModelV2": SimpleNamespace(turnDirection=0),
   })
@@ -136,5 +138,31 @@ def test_green_light_does_not_fire_behind_a_lead():
   events.update(True, 0.0, make_sm(standstill=True), toggles)
   planner.model_stopped = False
   events.update(True, 0.0, make_sm(standstill=True), toggles)
+
+  assert StarPilotEventName.greenLight not in events.events.names
+
+
+def test_lead_departing_does_not_fire_while_gas_pressed():
+  planner = make_planner(lead_status=True, lead_dRel=10.0, lead_vLead=0.0, standstill=True)
+  events = make_events(planner)
+  toggles = make_toggles()
+
+  events.update(True, 0.0, make_sm(standstill=True), toggles)
+  planner.lead_one.dRel = 12.0
+  planner.lead_one.vLead = 1.5
+  events.update(True, 0.0, make_sm(standstill=True, gas_pressed=True), toggles)
+
+  assert StarPilotEventName.leadDeparting not in events.events.names
+
+
+def test_green_light_does_not_fire_while_gas_pressed():
+  planner = make_planner(lead_status=False, lead_dRel=float("inf"), lead_vLead=0.0, standstill=True,
+                          model_stopped=True, stop_light_detected=True)
+  events = make_events(planner)
+  toggles = make_toggles()
+
+  events.update(True, 0.0, make_sm(standstill=True), toggles)
+  planner.model_stopped = False
+  events.update(True, 0.0, make_sm(standstill=True, gas_pressed=True), toggles)
 
   assert StarPilotEventName.greenLight not in events.events.names

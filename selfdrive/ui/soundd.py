@@ -127,6 +127,8 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   starpilot_alert_key(StarPilotAudibleAlert.startup): ("startup.wav", 1, MAX_VOLUME),
   starpilot_alert_key(StarPilotAudibleAlert.thisIsFine): ("this_is_fine.wav", 1, MAX_VOLUME),
   starpilot_alert_key(StarPilotAudibleAlert.uwu): ("uwu.wav", 1, MAX_VOLUME),
+
+  starpilot_alert_key(StarPilotAudibleAlert.departure): ("departure.wav", 1, MAX_VOLUME),
 }
 if HARDWARE.get_device_type() in ("tici", "tizi"):
   sound_list.update({
@@ -528,6 +530,7 @@ class Soundd:
       AudibleAlert.warningSoft: settings["WarningSoftVolume"] / 100.0,
       AudibleAlert.warningImmediate: settings["WarningImmediateVolume"] / 100.0,
 
+      starpilot_alert_key(StarPilotAudibleAlert.departure): settings["PromptVolume"] / 100.0,
       starpilot_alert_key(StarPilotAudibleAlert.goat): settings["PromptVolume"] / 100.0,
       starpilot_alert_key(StarPilotAudibleAlert.startup): settings["EngageVolume"] / 100.0
     }

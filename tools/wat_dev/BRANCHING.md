@@ -1,9 +1,9 @@
 # wat branch scheme
 
 ```
-master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebuild)
+master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat + rebuilt firmware)
                               │
-                              ├────> wat-ioniq      (Dom-wat + CAN/SBU wake + Ioniq tune + Ioniq torqued; only branch that rebuilds firmware)
+                              ├────> wat-ioniq      (Dom-wat + Ioniq tune + Ioniq torqued + rebuilt firmware)
                               └────> wat-analysis ──> wat-analysis-bolt   (+ wat-bolt)
                                                  └──> wat-analysis-ioniq  (+ wat-ioniq)
 ```
@@ -11,19 +11,20 @@ master/Dom (upstream) ──> Dom-wat ──> wat-bolt      (== Dom-wat, no rebu
 | Branch | Contents | Deployed to |
 |---|---|---|
 | `Dom` | fast-forward mirror of upstream `master/Dom` | nothing |
-| `Dom-wat` | upstream Dom + common wat work: lateral controller unwind fix, `Paths.log_root` fix, blind-spot / PiP, Sentry, dev-container env + CI | nothing directly |
-| `wat-bolt` | exactly `Dom-wat` (the Bolt 2022/2023 tune is upstream's own). Carries upstream's stock firmware. | Bolt (devices track `github` `wat-bolt`) |
-| `wat-ioniq` | `Dom-wat` + CAN/SBU wake + GPIOC11 bootkick, custom Ioniq 6 tune, Ioniq 6 torqued changes. It is the only branch that regenerates panda firmware, and that commit is added separately (see the rule below). | Ioniq (`github` `wat-ioniq`), only when the rule below is met |
+| `Dom-wat` | upstream Dom + common wat work: lateral controller unwind fix, `Paths.log_root` fix, blind-spot / PiP, Sentry, comma four CAN/SBU wake + GPIOC11 bootkick (source only; carries upstream's stock firmware objects), dev-container env + CI | nothing directly |
+| `wat-bolt` | `Dom-wat` (the Bolt 2022/2023 tune is upstream's own) + a `panda: regenerate firmware for wat-bolt` commit (see the rule below). | Bolt (devices track `github` `wat-bolt`), only when the rule below is met |
+| `wat-ioniq` | `Dom-wat` + custom Ioniq 6 tune, Ioniq 6 torqued changes + a `panda: regenerate firmware for wat-ioniq` commit (see the rule below). | Ioniq (`github` `wat-ioniq`), only when the rule below is met |
 | `wat-analysis*` | analyzers, notes, plans, route scripts. Never deployed. | nothing |
 
-## Rule: `wat-ioniq` is deployed only with firmware built from its own panda source
+## Rule: car branches are deployed only with firmware built from their own panda source
 
-`wat-ioniq` is the only branch that rebuilds panda firmware (only the Ioniq has the CAN/SBU wake). Never push it to
-`github` or flash it unless its tip contains a `panda: regenerate firmware for wat-ioniq` commit that is newer than the last
-change to `panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without that carries the wake *source* but stale
-(upstream stock) firmware objects and is not deployable. The rebuild runs in the `starpilot-dev` container
-(`git switch wat-ioniq && sp-build`, verify the panda targets built, commit only `panda/board/obj/**`), and afterwards
-`git diff origin/wat-ioniq -- panda/board/obj` must be non-empty while the source files still match the previous Ioniq build.
+`Dom-wat` carries the CAN/SBU wake *source* but upstream's stock firmware objects, so both car branches rebuild panda
+firmware. Never push `wat-<car>` to `github` or flash it unless its tip contains a
+`panda: regenerate firmware for wat-<car>` commit that is newer than the last change to
+`panda/board/{main.c,power_saving.h,boards/cuatro.h}`. A tip without that carries the wake source but stale (upstream
+stock) firmware objects and is not deployable. The rebuild runs in the `starpilot-dev` container (`sp-panda-build` in
+the car's worktree; verify the stamp matches HEAD and only `panda/board/obj/**` is dirty, then commit only that), and
+afterwards `git diff github/wat-<car> -- panda/board/obj` must be non-empty.
 
 ## Flows
 
@@ -106,9 +107,9 @@ upstream `build` commits regenerate them wholesale. A local build embeds the git
 tracked files and binaries conflict on every merge. Policy:
 
 - On merge conflicts in those paths, take upstream's side; never hand-merge binaries.
-- Firmware is per car. Only `wat-ioniq` rebuilds panda firmware (only the Ioniq has the wake), and only in the dev container.
+- Firmware is per car. Both car branches rebuild panda firmware (both carry the wake), only in the dev container.
 - `git-hooks/pre-commit` rejects staged files under those paths, except while finishing an upstream merge and on
-  `wat-ioniq`. Override deliberately with `WAT_ALLOW_BUILD_ARTIFACTS=1`. It also always rejects a staged
+  `wat-ioniq` (not yet `wat-bolt`). Override deliberately with `WAT_ALLOW_BUILD_ARTIFACTS=1`. It also always rejects a staged
   `panda/board/obj/version` containing `unknown` (only `--no-verify` skips that).
 - **Build through `sp-build` (or `sp-panda-build` for firmware only), as the checkout's owner.** In a worktree the build
   container cannot see git, so a direct `./build` or `scripts/laptop_device_build.sh` stamps firmware

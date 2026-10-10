@@ -48,6 +48,9 @@ struct StarPilotCarControl @0x81c2f05a394cf4af {
       startup @20;
       thisIsFine @21;
       uwu @22;
+
+      # Lead Departed / Light Turned Green
+      departure @23;
     }
   }
 

@@ -11,6 +11,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.gps import GPS_LOCATION_SERVICES, get_gps_location_service
 from openpilot.system.hardware import AGNOS
+from openpilot.system.rtc_clock import RtcClock
 
 try:
   from timezonefinder import TimezoneFinder
@@ -155,6 +156,11 @@ def main() -> NoReturn:
   if last_timezone is not None:
     set_timezone(last_timezone)
 
+  # StarPilot variables
+  # valid clock at boot without network or GPS fix
+  rtc_clock = RtcClock()
+  rtc_clock.restore(set_time)
+
   while True:
     sm.update(1000)
 
@@ -166,6 +172,9 @@ def main() -> NoReturn:
     gps, gps_time = usable_gps(sm, gps_services)
 
     # StarPilot variables
+    # NTP or GPS only: never the car clock or the restore itself
+    rtc_clock.update()
+
     # only corrects an invalid clock, so GPS and NTP always win
     if gps is None and not system_time_valid():
       if not last_timezone and not car_clock_tz_logged:
@@ -180,7 +189,9 @@ def main() -> NoReturn:
     if gps is None:
       continue
 
+    rtc_clock.log_gps_correction(gps_time)
     set_time(gps_time)
+    rtc_clock.gps_set(gps_time)
 
     # StarPilot variables
     if tf is not None:

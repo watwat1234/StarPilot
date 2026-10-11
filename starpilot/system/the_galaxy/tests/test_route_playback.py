@@ -1245,12 +1245,12 @@ def test_route_player_shows_the_timeline_and_seeks_from_it():
 TIMELINE_JS = MODULE_DIR / "assets/mobile/js/components/RouteTimeline.js"
 
 
-def _route_clock(snippet, tz="America/Los_Angeles"):
+def _timeline_js(snippet, tz="America/Los_Angeles"):
   node = shutil.which("node")
   if node is None:
     pytest.skip("node is not installed")
   # Imported from its source as a data: URL (it has no imports), so any node reads it as an ES module.
-  load = "const { routeClock } = await import('data:text/javascript,' + encodeURIComponent(process.env.SOURCE))"
+  load = "const { routeClock, RouteTimeline } = await import('data:text/javascript,' + encodeURIComponent(process.env.SOURCE))"
   harness = f"{load}\nprocess.stdout.write(JSON.stringify({snippet}))"
   result = subprocess.run([node, "--input-type=module"], input=harness, capture_output=True, text=True, timeout=60,
                           env={**os.environ, "TZ": tz, "SOURCE": TIMELINE_JS.read_text(encoding="utf-8")})
@@ -1264,13 +1264,31 @@ def test_route_clock_shows_the_time_of_day_and_segment_number():
                          {"segment": "r--5", "start": 120, "duration": 30}])
   started = datetime(2026, 10, 1, 21, 8, 36, tzinfo=UTC).timestamp()
 
-  assert _route_clock(f"[0, 59.9, 60, 130].map((t) => routeClock(t, {segments}, {started}))") == [
+  assert _timeline_js(f"[0, 59.9, 60, 130].map((t) => routeClock(t, {segments}, {started}))") == [
     "14:08:36 – 0", "14:09:35 – 0", "14:09:36 – 1", "14:13:46 – 5"]
   # No start time: time since the route start; no segment list yet: just the time.
-  assert _route_clock(f"[routeClock(130, {segments}, null), routeClock(75, [], null)]") == ["5:10 – 5", "1:15"]
+  assert _timeline_js(f"[routeClock(130, {segments}, null), routeClock(75, [], null)]") == ["5:10 – 5", "1:15"]
   # A drive across midnight wraps to 00:.
   late = datetime(2026, 10, 2, 6, 59, 30, tzinfo=UTC).timestamp()
-  assert _route_clock(f"routeClock(45, {segments}, {late})") == "00:00:15 – 0"
+  assert _timeline_js(f"routeClock(45, {segments}, {late})") == "00:00:15 – 0"
+
+
+def test_route_timeline_label_shows_the_minute_thumbnail():
+  # Minutes 0, 1 and (after an aged-out gap) 5 back to back in the playlist; minute 1 has no thumbnail.
+  segments = json.dumps([{"segment": "r--0", "start": 0, "duration": 60}, {"segment": "r--1", "start": 60, "duration": 60},
+                         {"segment": "r--5", "start": 120, "duration": 30}])
+  tiles = json.dumps([{"key": "r--0", "src": "t0.jpg"}, {"key": "r--1", "src": None}, {"key": "r--5", "src": "t5.jpg"}])
+  at = f"(segments, t) => RouteTimeline.methods.thumbnailAt.call({{ segments, tiles: {tiles} }}, t)"
+  assert _timeline_js(f"[0, 59.9, 60, 119.9, 120, 150].map((t) => ({at})({segments}, t))") == [
+    "t0.jpg", "t0.jpg", None, None, "t5.jpg", "t5.jpg"]
+  # No segment list yet: no thumbnail.
+  assert _timeline_js(f"({at})([], 10)") is None
+
+  timeline = TIMELINE_JS.read_text(encoding="utf-8")
+  # Both the drag and the hover label show it, above the time.
+  assert '<img v-if="thumbnailAt(dragTime)" :src="thumbnailAt(dragTime)" alt="" draggable="false">{{ label(dragTime) }}' in timeline
+  assert '<img v-if="thumbnailAt(hoverTime)" :src="thumbnailAt(hoverTime)" alt="" draggable="false">{{ label(hoverTime) }}' in timeline
+  assert ".gx-route-timeline__label img {display:block;width:128px;height:72px;object-fit:cover;" in timeline
 
 
 def test_route_player_has_its_own_controls_and_a_large_centered_sheet_on_desktop():

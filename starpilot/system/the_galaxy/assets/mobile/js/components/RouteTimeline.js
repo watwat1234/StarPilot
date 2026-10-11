@@ -1,6 +1,7 @@
 // Route timeline under the whole-route video: an engagement bar and one road camera thumbnail per minute, both from
 // each segment's qlog (parsed on the device, never started onroad). Drag or click along it to seek; arrows step 10 s.
-// A mouse hovering over it shows the time there.
+// Dragging, or a mouse hovering over it, shows the time there above that minute's thumbnail (the strip's tiles get
+// too narrow to see on long routes).
 
 const BUSY_RETRY_MS = 3000
 const ONROAD_RETRY_MS = 60000
@@ -25,7 +26,8 @@ function installStyle() {
     .gx-route-timeline__film img {display:block;width:100%;height:100%;object-fit:cover;pointer-events:none}
     .gx-route-timeline__playhead,.gx-route-timeline__hover {position:absolute;z-index:2;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 3px #000;pointer-events:none}
     .gx-route-timeline__hover {z-index:3;background:#fff9;box-shadow:none}
-    .gx-route-timeline__label {position:absolute;bottom:100%;left:0;margin-bottom:4px;padding:1px 6px;border-radius:4px;background:#000c;color:#fff;font-size:.75rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+    .gx-route-timeline__label {position:absolute;bottom:100%;left:0;margin-bottom:4px;padding:1px 6px;border-radius:4px;background:#000c;color:#fff;font-size:.75rem;white-space:nowrap;font-variant-numeric:tabular-nums;text-align:center}
+    .gx-route-timeline__label img {display:block;width:128px;height:72px;object-fit:cover;border-radius:3px;margin:3px 0 2px}
     .gx-route-timeline__note {margin-top:6px;font-size:.8rem;color:var(--on-surface-variant,#aab)}
   `
   document.head.appendChild(style)
@@ -113,6 +115,11 @@ export const RouteTimeline = {
   methods: {
     label(seconds) {
       return routeClock(seconds, this.segments, this.startedAt)
+    },
+    thumbnailAt(seconds) {
+      // The minute's strip tile, so the popup shows exactly what the strip has (and nothing where it has none).
+      const segment = this.segments.findLast((s) => s.start <= seconds) || this.segments[0]
+      return (segment && this.tiles.find((t) => t.key === segment.segment)?.src) || null
     },
     place(start, duration) {
       return { left: `${(start / this.total) * 100}%`, width: `${(Math.max(0, duration) / this.total) * 100}%` }
@@ -223,10 +230,10 @@ export const RouteTimeline = {
         <div class="gx-route-timeline__bar"><span v-for="b in bars" :key="b.key" :style="{ ...b.style, background: b.color }"></span></div>
         <div class="gx-route-timeline__film"><span v-for="t in tiles" :key="t.key" :style="t.style"><img v-if="t.src" :src="t.src" alt="" draggable="false"></span></div>
         <div class="gx-route-timeline__playhead" :style="{ left: fraction * 100 + '%' }">
-          <span v-if="dragTime !== null" class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + fraction * 100 + '%)' }">{{ label(dragTime) }}</span>
+          <span v-if="dragTime !== null" class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + fraction * 100 + '%)' }"><img v-if="thumbnailAt(dragTime)" :src="thumbnailAt(dragTime)" alt="" draggable="false">{{ label(dragTime) }}</span>
         </div>
         <div v-if="hoverTime !== null && dragTime === null" class="gx-route-timeline__hover" :style="{ left: hoverFraction * 100 + '%' }">
-          <span class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + hoverFraction * 100 + '%)' }">{{ label(hoverTime) }}</span>
+          <span class="gx-route-timeline__label" :style="{ transform: 'translateX(-' + hoverFraction * 100 + '%)' }"><img v-if="thumbnailAt(hoverTime)" :src="thumbnailAt(hoverTime)" alt="" draggable="false">{{ label(hoverTime) }}</span>
         </div>
       </div>
       <div v-if="onroad" class="gx-route-timeline__note">Timeline fills in after the drive</div>

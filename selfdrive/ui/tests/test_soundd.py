@@ -5,6 +5,7 @@ from openpilot.selfdrive.ui.soundd import (
   SELFDRIVE_STATE_TIMEOUT,
   SOUNDD_SERVICES,
   Soundd,
+  alert_auto_volume,
   check_selfdrive_timeout_alert,
   is_turn_steering_limit_alert,
   read_volume_settings,
@@ -70,6 +71,13 @@ class TestSoundd:
     assert not should_mute_turn_steering_limit_alert("steerSaturated/warning", 30.0, 25.0)
     assert not should_mute_turn_steering_limit_alert("steerSaturated/warning", 10.0, 0.0)
     assert not should_mute_turn_steering_limit_alert("laneChangeBlocked/warning", 10.0, 25.0)
+
+  def test_departure_alert_gets_auto_volume_boost(self):
+    departure = starpilot_alert_key(StarPilotAudibleAlert.departure)
+    assert alert_auto_volume(departure, 0.15) == 0.3
+    assert alert_auto_volume(departure, 0.8) == 1.0
+    assert alert_auto_volume(AudibleAlert.prompt, 0.15) == 0.15
+    assert alert_auto_volume(starpilot_alert_key(StarPilotAudibleAlert.goat), 0.15) == 0.15
 
   def test_load_sounds_skips_missing_custom_clips(self, tmp_path):
     soundd = Soundd.__new__(Soundd)

@@ -56,7 +56,7 @@ STARPILOT_CUSTOM_ALERT_START = int(StarPilotAudibleAlert.angry)
 TURN_STEERING_LIMIT_ALERT_SUFFIX = "steersaturated"
 GPU_MODEL_READY_ALERT = 2000
 # Departure alerts only fire at standstill, where the quiet cabin keeps auto volume near its minimum.
-DEPARTURE_AUTO_VOLUME_GAIN = 2.0
+DEPARTURE_AUTO_VOLUME_GAIN = 2.5
 
 # Keep carState out of this list; C4's onroad stack is near msgq's 15-reader limit.
 SOUNDD_SERVICES = ('selfdriveState', 'soundPressure', 'starpilotSelfdriveState', 'starpilotPlan')

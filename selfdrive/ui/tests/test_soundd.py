@@ -74,7 +74,7 @@ class TestSoundd:
 
   def test_departure_alert_gets_auto_volume_boost(self):
     departure = starpilot_alert_key(StarPilotAudibleAlert.departure)
-    assert alert_auto_volume(departure, 0.15) == 0.3
+    assert alert_auto_volume(departure, 0.15) == 0.375
     assert alert_auto_volume(departure, 0.8) == 1.0
     assert alert_auto_volume(AudibleAlert.prompt, 0.15) == 0.15
     assert alert_auto_volume(starpilot_alert_key(StarPilotAudibleAlert.goat), 0.15) == 0.15

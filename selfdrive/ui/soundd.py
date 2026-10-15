@@ -55,6 +55,8 @@ STARPILOT_CUSTOM_ALERT_OFFSET = 1000
 STARPILOT_CUSTOM_ALERT_START = int(StarPilotAudibleAlert.angry)
 TURN_STEERING_LIMIT_ALERT_SUFFIX = "steersaturated"
 GPU_MODEL_READY_ALERT = 2000
+# Departure alerts only fire at standstill, where the quiet cabin keeps auto volume near its minimum.
+DEPARTURE_AUTO_VOLUME_GAIN = 2.5
 
 # Keep carState out of this list; C4's onroad stack is near msgq's 15-reader limit.
 SOUNDD_SERVICES = ('selfdriveState', 'soundPressure', 'starpilotSelfdriveState', 'starpilotPlan')
@@ -78,6 +80,13 @@ def should_mute_turn_steering_limit_alert(alert_type: str, v_ego: float, mute_be
     v_ego < mute_below_speed and
     is_turn_steering_limit_alert(alert_type)
   )
+
+
+def alert_auto_volume(alert, auto_volume: float) -> float:
+  """Auto volume for an alert, boosting the departure chime."""
+  if alert == starpilot_alert_key(StarPilotAudibleAlert.departure):
+    return min(auto_volume * DEPARTURE_AUTO_VOLUME_GAIN, MAX_VOLUME)
+  return auto_volume
 
 
 def read_volume_settings(params):
@@ -474,9 +483,9 @@ class Soundd:
             elif self.volume_settings["alert_volume_controller"]:
               self.current_volume = self.get_volume_override()
               if self.current_volume == 1.01:
-                self.current_volume = self.auto_volume
+                self.current_volume = alert_auto_volume(self.current_alert, self.auto_volume)
             else:
-              self.current_volume = self.auto_volume
+              self.current_volume = alert_auto_volume(self.current_alert, self.auto_volume)
 
           rk.keep_time()
 

@@ -156,9 +156,9 @@ def test_update_resaves_on_drift_or_age_only(tmp_path, monkeypatch):
   c = env.clock()
   c.update()
 
-  # 1 s of drift: kept
+  # 2 s of drift (read and rounding noise, seen on the Bolt): kept
   env.mono += 60
-  env.now += 100
+  env.now += 101
   env.set_rtc(RTC + 99)
   c.update()
   assert env.saved()["rtc"] == RTC
@@ -172,7 +172,7 @@ def test_update_resaves_on_drift_or_age_only(tmp_path, monkeypatch):
   # 5 s of drift after a minute: saved
   env.mono += 60
   c.update()
-  assert env.saved() == {"rtc": RTC + 99, "utc": REAL_UTC + 105, "source": "ntp"}
+  assert env.saved() == {"rtc": RTC + 99, "utc": REAL_UTC + 106, "source": "ntp"}
 
   # no drift but a day of RTC: saved
   env.mono += 60

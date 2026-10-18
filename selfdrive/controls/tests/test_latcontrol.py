@@ -1782,6 +1782,10 @@ class TestLatControl:
     assert get_ioniq_6_friction_center_fade_scale(-0.5, 30.0) > 0.95
     assert get_ioniq_6_friction_center_fade_scale(0.0, 8.0) > 0.95
 
+  def test_ioniq_6_2023_center_friction_increment_opted_out(self):
+    # near center, tracking well, low jerk, highway speed: upstream's increment would be at full strength here
+    assert latcontrol_vehicle_tunes.get_ioniq_6_2023_center_friction_increment(30.0, 0.0, 0.0, 0.0, 0.0) == 0.0
+
   def test_ioniq_6_2025_variant_is_firmware_gated(self):
     old_cp = SimpleNamespace(
       carFingerprint=HYUNDAI.HYUNDAI_IONIQ_6,

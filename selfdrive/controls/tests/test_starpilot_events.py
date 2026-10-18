@@ -41,7 +41,7 @@ def make_planner(*, lead_status: bool, lead_dRel: float, lead_vLead: float, stan
     lead_one=SimpleNamespace(status=lead_status, dRel=lead_dRel, vLead=lead_vLead),
     tracking_lead=tracking_lead,
     model_stopped=model_stopped,
-    starpilot_vcruise=SimpleNamespace(forcing_stop=False, slc=SimpleNamespace(speed_limit_changed_timer=1.0)),
+    starpilot_vcruise=SimpleNamespace(forcing_stop=False, slc=SimpleNamespace(speed_limit_changed_timer=1.0, limit_change_started=False)),
     starpilot_cem=SimpleNamespace(stop_light_detected=stop_light_detected),
     lateral_acceleration=0.0,
     params_memory=SimpleNamespace(get_bool=lambda *a, **k: False, put_bool=lambda *a, **k: None),

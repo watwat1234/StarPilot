@@ -317,6 +317,11 @@ class CarInterface(CarInterfaceBase):
       ret.autoResumeSng = False
       ret.minEnableSpeed = -1.0
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.LONG.value
+      ret.longitudinalTuning.kpBP = [0.0, 5.0, 15.0, 35.0]
+      ret.longitudinalTuning.kpV = [0.095, 0.085, 0.065, 0.050]
+      ret.longitudinalTuning.kiBP = [0.0, 3.0, 6.0, 35.0]
+      ret.longitudinalTuning.kiV = [0.07, 0.10, 0.15, 0.24]
+      ret.longitudinalTuning.kfDEPRECATED = 1.0
 
     # Car specific configuration overrides
 
@@ -395,7 +400,7 @@ class CarInterface(CarInterfaceBase):
 
       if not skip_disable_ecu:
         disable_can_recv = can_recv
-        if CP.carFingerprint == CAR.KIA_EV6 and can_recv is not None:
+        if CP.carFingerprint in (CAR.KIA_EV6, CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN) and can_recv is not None:
           hyundaicanfd.cache_adrv_0x51_template(CP.carFingerprint, None)
           base_can_recv = can_recv
           adrv_bus = CanBus(CP).ACAN

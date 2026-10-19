@@ -748,7 +748,8 @@ class Controls:
       bool(self.sm.all_checks(['modelV2'])),
       self.starpilot_toggles.lane_centering_pause_on_signal,
       bool(CS.leftBlinker or CS.rightBlinker),
-      bool(CS.steeringPressed))
+      bool(CS.steeringPressed),
+      strength=self.starpilot_toggles.lane_centering_strength)
 
     if self.genesis_highway_stabilizer is not None:
       stabilize_genesis = (CC.latActive and isinstance(self.LaC, LatControlTorque) and

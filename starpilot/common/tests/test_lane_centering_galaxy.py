@@ -15,7 +15,8 @@ def _sections():
 
 def test_lane_centering_is_only_in_galaxy_developer_section():
   sections = _sections()
-  keys = {"LaneCentering", "LaneCenterOffset", "LaneCenteringPauseOnSignal", "LaneCenteringE2EAuthority"}
+  keys = {"LaneCentering", "LaneCenterOffset", "LaneCenteringPauseOnSignal", "LaneCenteringE2EAuthority",
+          "LaneCenteringStrength"}
 
   assert keys <= sections["Developer"].keys()
   for name, params in sections.items():
@@ -32,6 +33,7 @@ def test_lane_centering_galaxy_controls():
   offset = developer["LaneCenterOffset"]
   pause_on_signal = developer["LaneCenteringPauseOnSignal"]
   e2e_authority = developer["LaneCenteringE2EAuthority"]
+  strength = developer["LaneCenteringStrength"]
 
   assert centering["ui_type"] == "toggle"
   assert centering["is_parent_toggle"] is True
@@ -50,3 +52,10 @@ def test_lane_centering_galaxy_controls():
   assert e2e_authority["step"] == 0.05
   assert e2e_authority["control"] == "slider"
   assert len(e2e_authority["description_steps"]) == 5
+
+  assert strength["parent_key"] == "LaneCentering"
+  assert strength["min"] == 0.5
+  assert strength["max"] == 3.0
+  assert strength["step"] == 0.05
+  assert strength["unit"] == "x"
+  assert strength["control"] == "slider"

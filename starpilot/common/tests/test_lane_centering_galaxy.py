@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 
@@ -59,3 +60,15 @@ def test_lane_centering_galaxy_controls():
   assert strength["step"] == 0.05
   assert strength["unit"] == "x"
   assert strength["control"] == "slider"
+
+
+def test_lane_centering_strength_range_matches_controller_and_toggle():
+  from openpilot.selfdrive.controls.lib.lane_centering import _MAX_STRENGTH, _MIN_STRENGTH
+
+  strength = _sections()["Developer"]["LaneCenteringStrength"]
+  assert (strength["min"], strength["max"]) == (_MIN_STRENGTH, _MAX_STRENGTH)
+
+  source = (Path(__file__).resolve().parents[1] / "starpilot_variables.py").read_text(encoding="utf-8")
+  match = re.search(r'"LaneCenteringStrength", cast=float,[^)]*?min=([\d.]+), max=([\d.]+)', source)
+  assert match is not None
+  assert (float(match[1]), float(match[2])) == (_MIN_STRENGTH, _MAX_STRENGTH)

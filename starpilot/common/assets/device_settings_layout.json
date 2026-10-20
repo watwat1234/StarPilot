@@ -5218,7 +5218,7 @@
       {
         "key": "LaneCenteringStrength",
         "label": "Lane Centering Strength",
-        "description": "Choose how hard lane centering pushes back toward the middle of the lane. 1.0x is the standard centering; higher values correct small drifts more firmly. The largest correction lane centering can apply stays the same.",
+        "description": "Choose how hard lane centering pushes back toward the middle of the lane. 1.0x is the standard centering. Higher values correct small drifts more firmly, up to the same maximum correction; values below 1.0x make all corrections weaker.",
         "data_type": "float",
         "ui_type": "numeric",
         "control": "slider",

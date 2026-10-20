@@ -229,7 +229,6 @@ def test_correction_is_smoothed_and_capped():
   assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
 
 
-
 def test_default_strength_matches_unity_strength():
   model = _model(left=-1.5, right=2.1)
   _, default = _converge(model, authority=0.0)
@@ -268,6 +267,7 @@ def test_invalid_strength_resets_to_model_curvature(strength):
   assert output > 0.0
   assert _update(controller, model, authority=0.0, strength=strength) == 0.0
   assert _update(controller, model, authority=0.0) < output
+
 
 def test_visual_direction_matches_curvature_sign():
   # Positive curvature is right in this tree's convention.

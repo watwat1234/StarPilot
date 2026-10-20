@@ -107,6 +107,24 @@ def test_render_draws_cyan_texture_for_vasm_only(monkeypatch):
   assert [call[0] for call in calls] == [indicators._txt_vasm_left]
 
 
+def test_render_crossfade_keeps_right_icon_opaque_with_cyan_on_top(monkeypatch):
+  indicators = _make_indicators(monkeypatch)
+  indicators._blind_spot_right_alpha_filter.x = 0.5
+  indicators._vasm_right_alpha_filter.x = 0.5
+
+  calls = []
+  monkeypatch.setattr(blind_spot_indicators.rl, "draw_texture_ex", lambda *args: calls.append(args))
+
+  indicators.render(blind_spot_indicators.rl.Rectangle(0, 0, 800, 600))
+
+  assert [call[0] for call in calls] == [indicators._txt_blind_spot_right, indicators._txt_vasm_right]
+  orange_alpha = calls[0][4].a / 255
+  cyan_alpha = calls[1][4].a / 255
+  assert cyan_alpha + orange_alpha * (1 - cyan_alpha) > 0.98
+  right_x = 800 - blind_spot_indicators.BLIND_SPOT_MARGIN_X - 108
+  assert [call[1].x for call in calls] == [right_x, right_x]
+
+
 def _make_hud_renderer():
   renderer = object.__new__(HudRenderer)
   renderer._rect = blind_spot_indicators.rl.Rectangle(0, 0, 800, 600)

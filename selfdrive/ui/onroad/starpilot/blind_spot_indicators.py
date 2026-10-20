@@ -43,18 +43,24 @@ class BlindSpotIndicators:
     return any(f.x > 0.01 for f in filters)
 
   def render(self, rect: rl.Rectangle) -> None:
-    left_x = rect.x + BLIND_SPOT_MARGIN_X
-    right_x = rect.x + rect.width - BLIND_SPOT_MARGIN_X - self._txt_blind_spot_right.width
-    pos_y = rect.y + BLIND_SPOT_Y_OFFSET
-
-    # Orange first, then cyan on top, each at its own alpha, so switching source crossfades
-    self._draw_icon(self._txt_blind_spot_left, self._blind_spot_left_alpha_filter, left_x, pos_y)
-    self._draw_icon(self._txt_vasm_left, self._vasm_left_alpha_filter, left_x, pos_y)
-    self._draw_icon(self._txt_blind_spot_right, self._blind_spot_right_alpha_filter, right_x, pos_y)
-    self._draw_icon(self._txt_vasm_right, self._vasm_right_alpha_filter, right_x, pos_y)
+    self._draw_side(rect, self._txt_blind_spot_left, self._blind_spot_left_alpha_filter.x,
+                    self._txt_vasm_left, self._vasm_left_alpha_filter.x, right_side=False)
+    self._draw_side(rect, self._txt_blind_spot_right, self._blind_spot_right_alpha_filter.x,
+                    self._txt_vasm_right, self._vasm_right_alpha_filter.x, right_side=True)
 
   @staticmethod
-  def _draw_icon(texture: rl.Texture, alpha_filter: FirstOrderFilter, pos_x: float, pos_y: float) -> None:
-    if alpha_filter.x > 0.01:
-      color = rl.Color(255, 255, 255, int(255 * alpha_filter.x))
-      rl.draw_texture_ex(texture, rl.Vector2(int(pos_x), int(pos_y)), 0.0, 1.0, color)
+  def _draw_side(rect: rl.Rectangle, orange_texture: rl.Texture, orange_alpha: float,
+                 cyan_texture: rl.Texture, cyan_alpha: float, right_side: bool) -> None:
+    # Orange first, then cyan on top. The orange layer is boosted by what the cyan layer lets through, so the
+    # combined opacity stays at the stronger of the two while the color crossfades instead of the icon dimming.
+    orange_alpha = min(1.0, orange_alpha / max(1.0 - cyan_alpha, 1e-3))
+
+    for texture, alpha in ((orange_texture, orange_alpha), (cyan_texture, cyan_alpha)):
+      if alpha > 0.01:
+        if right_side:
+          pos_x = rect.x + rect.width - BLIND_SPOT_MARGIN_X - texture.width
+        else:
+          pos_x = rect.x + BLIND_SPOT_MARGIN_X
+        pos_y = rect.y + BLIND_SPOT_Y_OFFSET
+        color = rl.Color(255, 255, 255, int(255 * alpha))
+        rl.draw_texture_ex(texture, rl.Vector2(int(pos_x), int(pos_y)), 0.0, 1.0, color)

@@ -10,11 +10,13 @@ from opendbc.car import CanData
 from opendbc.car.hyundai.hyundaicanfd import hkg_can_fd_checksum
 
 # Stock SCC_CONTROL on the gen5w Ioniq 6 (route 000000d1--48888e416c). The DBC range of DISTANCE_SETTING ([0|3])
-# is stale. Cruise on: DISTANCE_SETTING 6, NEW_SIGNAL_15 = vEgo * 1.0 s, with a lead OBJ_STATUS 5-7 (6 most common)
-# and NEW_SIGNAL_3 2. Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6, and a lead is still reported, with
+# is stale. Cruise on: DISTANCE_SETTING 6, NEW_SIGNAL_15 = vEgo * 1.0 s, with a lead NEW_SIGNAL_3 2 and OBJ_STATUS
+# 2 below 10 m/s (every frame), 5-7 on the highway (6 most common). Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6, and a lead is still reported, with
 # OBJ_STATUS 2 or 4 (2 most common) and NEW_SIGNAL_3 1.
 STOCK_DISTANCE_SETTING = 6
 STOCK_LEAD_OBJ_STATUS = 6
+STOCK_LOW_SPEED_LEAD_OBJ_STATUS = 2
+STOCK_LOW_SPEED = 10.0
 STOCK_CRUISE_OFF_LEAD_OBJ_STATUS = 2
 STOCK_HEADWAY_S = 1.0
 NO_LEAD_DISTANCE = 204.6
@@ -35,7 +37,12 @@ def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float) -> dict:
 
   # With a lead, openpilot's own distance and relative speed are kept.
   if lead_visible:
-    values["OBJ_STATUS"] = STOCK_LEAD_OBJ_STATUS if enabled else STOCK_CRUISE_OFF_LEAD_OBJ_STATUS
+    if not enabled:
+      values["OBJ_STATUS"] = STOCK_CRUISE_OFF_LEAD_OBJ_STATUS
+    elif v_ego < STOCK_LOW_SPEED:
+      values["OBJ_STATUS"] = STOCK_LOW_SPEED_LEAD_OBJ_STATUS
+    else:
+      values["OBJ_STATUS"] = STOCK_LEAD_OBJ_STATUS
     values["NEW_SIGNAL_3"] = 2 if enabled else 1
   else:
     values["OBJ_STATUS"] = 0

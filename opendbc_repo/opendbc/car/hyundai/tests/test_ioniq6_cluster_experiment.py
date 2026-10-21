@@ -40,6 +40,10 @@ class TestSccStatusValues:
     values = scc_status_values(True, True, 25.0)
     assert values == {"DISTANCE_SETTING": 6, "NEW_SIGNAL_15": 25.0, "OBJ_STATUS": 6, "NEW_SIGNAL_3": 2}
 
+  @pytest.mark.parametrize("v_ego", [0.0, 5.0, 9.9])
+  def test_engaged_with_lead_at_low_speed(self, v_ego):
+    assert scc_status_values(True, True, v_ego)["OBJ_STATUS"] == 2
+
   def test_engaged_without_lead_sends_stock_no_lead_values(self):
     values = scc_status_values(True, False, 25.0)
     assert values["OBJ_STATUS"] == 0
@@ -124,7 +128,7 @@ ALL_ON = {"ioniq6_hud_scc_status": True, "ioniq6_hud_adrv_active": True, "ioniq6
 ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 
-def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True):
+def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1):
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -138,7 +142,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
     enabled=enabled, latActive=True, longActive=enabled,
     actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
     cruiseControl=SimpleNamespace(override=False, cancel=False, resume=False),
-    leftBlinker=False, rightBlinker=False,
+    leftBlinker=left_blinker, rightBlinker=False,
     hudControl=SimpleNamespace(leadDistanceBars=3, leadVisible=lead_visible),
   )
   cs = SimpleNamespace(
@@ -154,8 +158,12 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
                         cruiseState=SimpleNamespace(available=True)),
   )
   now_nanos = 10 ** 9  # car's own 0x1BA/0x1E5 are stale, so openpilot sends them
-  return controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc, toggles,
-                                      lka_icon=2, lfa_icon=2)
+  msgs = []
+  for _ in range(frames):
+    msgs += controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc, toggles,
+                                         lka_icon=2, lfa_icon=2)
+    controller.frame += 1
+  return msgs
 
 
 def _by_address(msgs):
@@ -206,6 +214,16 @@ class TestControllerWiring:
     dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_bsm_stock=True)))[0x1BA]
     assert dat[3:9] == bytes.fromhex("430000008803")
     assert dat[16] == 0x01
+
+  def test_bsm_stock_drops_lane_change_replay_collisions(self):
+    def addresses(toggles):
+      # the lane-change replay sends 0x3B5 every 20 frames and 0x31A every 100
+      return {address for address, _, _ in _controller_msgs(toggles, left_blinker=True, frames=200)}
+
+    off, on = addresses(_toggles(**ALL_OFF)), addresses(_toggles(ioniq6_hud_bsm_stock=True))
+    assert {0x3C1, 0x31A, 0x3B5} <= off
+    assert 0x3C1 in on
+    assert not {0x31A, 0x3B5} & on
 
   def test_other_cars_ignore_the_toggles(self):
     assert _controller_msgs(_toggles(**ALL_ON), car=CAR.KIA_EV6) == _controller_msgs(_toggles(), car=CAR.KIA_EV6)

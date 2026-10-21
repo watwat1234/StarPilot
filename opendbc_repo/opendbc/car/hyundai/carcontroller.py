@@ -1012,6 +1012,12 @@ class CarController(CarControllerBase):
     if lka_steering and self.CP.flags & HyundaiFlags.ENABLE_BLINKERS:
       can_sends.extend(hyundaicanfd.create_spas_messages(self.packer, self.CAN, CC.leftBlinker, CC.rightBlinker))
 
+    # Temporary cluster HUD experiment (branch experiment/ioniq6-cluster-hud, never merged).
+    ioniq_6_long = self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and self.long_active_ecu
+    hud_scc_status = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_scc_status", False)
+    hud_adrv_active = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_adrv_active", False)
+    hud_bsm_stock = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_bsm_stock", False)
+
     lane_change_ui_side = None
     if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
       if CC.leftBlinker and not CC.rightBlinker:
@@ -1028,16 +1034,14 @@ class CarController(CarControllerBase):
       else:
         # The stock Ioniq 6 lane-change animation stops when the ADAS ECU is disabled,
         # so replay the captured ECAN cluster frames ourselves while OP long is active.
-        can_sends.extend(hyundaicanfd.create_ioniq_6_cluster_lane_change_messages(self.CAN,
-                                                                                   self._ioniq_6_lane_change_ui_frames,
-                                                                                   lane_change_ui_side))
+        lane_change_msgs = hyundaicanfd.create_ioniq_6_cluster_lane_change_messages(self.CAN,
+                                                                                    self._ioniq_6_lane_change_ui_frames,
+                                                                                    lane_change_ui_side)
+        if hud_bsm_stock:
+          # Experiment: the fixed 0x31A/0x3B5 frames collide with a live ECU, as in the blind-spot replay below.
+          lane_change_msgs = [msg for msg in lane_change_msgs if msg[0] not in (0x31A, 0x3B5)]
+        can_sends.extend(lane_change_msgs)
         self._ioniq_6_lane_change_ui_frames += 1
-
-    # Temporary cluster HUD experiment (branch experiment/ioniq6-cluster-hud, never merged).
-    ioniq_6_long = self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and self.long_active_ecu
-    hud_scc_status = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_scc_status", False)
-    hud_adrv_active = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_adrv_active", False)
-    hud_bsm_stock = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_bsm_stock", False)
 
     if self.long_active_ecu:
       if lka_steering:

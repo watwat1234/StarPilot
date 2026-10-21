@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 
@@ -15,7 +16,8 @@ def _sections():
 
 def test_lane_centering_is_only_in_galaxy_developer_section():
   sections = _sections()
-  keys = {"LaneCentering", "LaneCenterOffset", "LaneCenteringPauseOnSignal", "LaneCenteringE2EAuthority"}
+  keys = {"LaneCentering", "LaneCenterOffset", "LaneCenteringPauseOnSignal", "LaneCenteringE2EAuthority",
+          "LaneCenteringStrength"}
 
   assert keys <= sections["Developer"].keys()
   for name, params in sections.items():
@@ -32,6 +34,7 @@ def test_lane_centering_galaxy_controls():
   offset = developer["LaneCenterOffset"]
   pause_on_signal = developer["LaneCenteringPauseOnSignal"]
   e2e_authority = developer["LaneCenteringE2EAuthority"]
+  strength = developer["LaneCenteringStrength"]
 
   assert centering["ui_type"] == "toggle"
   assert centering["is_parent_toggle"] is True
@@ -50,3 +53,22 @@ def test_lane_centering_galaxy_controls():
   assert e2e_authority["step"] == 0.05
   assert e2e_authority["control"] == "slider"
   assert len(e2e_authority["description_steps"]) == 5
+
+  assert strength["parent_key"] == "LaneCentering"
+  assert strength["min"] == 0.5
+  assert strength["max"] == 3.0
+  assert strength["step"] == 0.05
+  assert strength["unit"] == "x"
+  assert strength["control"] == "slider"
+
+
+def test_lane_centering_strength_range_matches_controller_and_toggle():
+  from openpilot.selfdrive.controls.lib.lane_centering import _MAX_STRENGTH, _MIN_STRENGTH
+
+  strength = _sections()["Developer"]["LaneCenteringStrength"]
+  assert (strength["min"], strength["max"]) == (_MIN_STRENGTH, _MAX_STRENGTH)
+
+  source = (Path(__file__).resolve().parents[1] / "starpilot_variables.py").read_text(encoding="utf-8")
+  match = re.search(r'"LaneCenteringStrength", cast=float,[^)]*?min=([\d.]+), max=([\d.]+)', source)
+  assert match is not None
+  assert (float(match[1]), float(match[2])) == (_MIN_STRENGTH, _MAX_STRENGTH)

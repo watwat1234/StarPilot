@@ -1071,6 +1071,13 @@ class StarPilotVariables:
     toggle.no_onroad_uploads = self.get_value("DisableOnroadUploads", condition=toggle.no_uploads)
 
     toggle.nostalgia_mode = self.get_value("NostalgiaMode", condition=toggle.openpilot_longitudinal and toggle.car_model == HYUNDAI_CAR.HYUNDAI_IONIQ_6)
+    # Temporary cluster HUD experiment (branch experiment/ioniq6-cluster-hud, never merged).
+    ioniq6_hud_experiment = self.get_value(
+      "Ioniq6HudExperiment", condition=toggle.openpilot_longitudinal and toggle.car_model == HYUNDAI_CAR.HYUNDAI_IONIQ_6,
+    )
+    toggle.ioniq6_hud_scc_status = self.get_value("Ioniq6HudSccStatus", condition=ioniq6_hud_experiment)
+    toggle.ioniq6_hud_adrv_active = self.get_value("Ioniq6HudAdrvActive", condition=ioniq6_hud_experiment)
+    toggle.ioniq6_hud_bsm_stock = self.get_value("Ioniq6HudBsmStock", condition=ioniq6_hud_experiment)
     toggle.remap_cancel_to_distance = self.get_value(
       "RemapCancelToDistance",
       condition=toggle.car_make == "gm" and toggle.has_pedal and "BOLT" in toggle.car_model,

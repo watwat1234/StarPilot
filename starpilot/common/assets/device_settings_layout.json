@@ -5272,6 +5272,55 @@
         "data_type": "bool",
         "ui_type": "toggle",
         "settings_tier": "advanced"
+      },
+      {
+        "key": "Ioniq6HudExperiment",
+        "label": "Ioniq 6 Cluster HUD (Experiment)",
+        "description": "Temporary experiment for openpilot longitudinal on the Ioniq 6: sends stock-like values in messages the dash cluster reads, to find what it needs to show the lead car, adjacent cars and the blind-spot icon. Each switch below changes one message.",
+        "picker_description": "Temporary Ioniq 6 dash HUD experiment.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "is_parent_toggle": true,
+        "vehicle_makes": ["Hyundai"],
+        "galaxy_only": true,
+        "requires_offroad": true,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "Ioniq6HudSccStatus",
+        "label": "Stock SCC Status (Experiment)",
+        "description": "SCC_CONTROL (0x1A0): distance setting 6 while engaged, stock lead status and headway fields, and stock no-lead values. Acceleration commands are unchanged.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "Ioniq6HudExperiment",
+        "vehicle_makes": ["Hyundai"],
+        "galaxy_only": true,
+        "requires_offroad": true,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "Ioniq6HudAdrvActive",
+        "label": "Stock ADRV 0x1EA Status (Experiment)",
+        "description": "ADRV_0x1ea: stock status byte (0x08) and the active bit while engaged.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "Ioniq6HudExperiment",
+        "vehicle_makes": ["Hyundai"],
+        "galaxy_only": true,
+        "requires_offroad": true,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "Ioniq6HudBsmStock",
+        "label": "Stock Blind-Spot Status (Experiment)",
+        "description": "BLINDSPOTS_REAR_CORNERS (0x1BA): stock BCW/BCA status fields in drive, with the side indicators from the radar. Also stops the fixed 0x31A/0x3B5 blind-spot replay.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "Ioniq6HudExperiment",
+        "vehicle_makes": ["Hyundai"],
+        "galaxy_only": true,
+        "requires_offroad": true,
+        "settings_tier": "advanced"
       }
     ]
   }

@@ -1095,8 +1095,8 @@ class CarController(CarControllerBase):
         if CS.blindspots_rear_corners_ts > 0 and CS.blindspots_front_corner_1_ts > 0 and rear_stale and front_stale:
           if hud_bsm_stock:
             can_sends.extend(ioniq6_cluster_experiment.create_stock_like_blindspot_messages(
-              self.packer, self.CAN, CS.blindspots_rear_corners, CS.blindspots_front_corner_1,
-              CS.left_blindspot_from_radar, CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker, drive_gear,
+              self.packer, self.CAN, CS.blindspots_front_corner_1, CS.left_blindspot_from_radar,
+              CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker, drive_gear,
             ))
           else:
             can_sends.extend(hyundaicanfd.create_blindspot_status_messages(self.packer, self.CAN,
@@ -1161,8 +1161,8 @@ class CarController(CarControllerBase):
             jerk_upper=acc_kwargs["jerk_upper"],
           ))
         else:
-          scc_extra = ioniq6_cluster_experiment.scc_status_values(CC.enabled, lead_visible, float(CS.out.vEgo)) \
-            if hud_scc_status else None
+          scc_extra = ioniq6_cluster_experiment.scc_status_values(CC.enabled, lead_visible, float(CS.out.vEgo),
+                                                                  CC.cruiseControl.override) if hud_scc_status else None
           can_sends.append(hyundaicanfd.create_acc_control(
             self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping, CC.cruiseControl.override,
             set_speed_in_units, hud_control, cruise_info=CS.cruise_info if ccnc_non_hda2 else None, **acc_kwargs,

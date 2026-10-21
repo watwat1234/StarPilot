@@ -10,13 +10,14 @@ from opendbc.car import CanData
 from opendbc.car.hyundai.hyundaicanfd import hkg_can_fd_checksum
 
 # Stock SCC_CONTROL on the gen5w Ioniq 6 (route 000000d1--48888e416c). The DBC range of DISTANCE_SETTING ([0|3])
-# is stale. Cruise on: DISTANCE_SETTING 6, NEW_SIGNAL_15 = vEgo * 1.0 s, with a lead NEW_SIGNAL_3 2 and OBJ_STATUS
-# 2 below 10 m/s (every frame), 5-7 on the highway (6 most common). Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6, and a lead is still reported, with
+# is stale. Cruise on: DISTANCE_SETTING 6, NEW_SIGNAL_15 = vEgo * 1.0 s (7 and 1.79 s after one gap change, mapping
+# unknown), with a lead NEW_SIGNAL_3 2 and OBJ_STATUS 2 below 10 m/s (every frame), 0/1/2 up to 16 m/s, 5-7 above
+# (6 most common), and mostly 2 during gas override. Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6, and a lead is still reported, with
 # OBJ_STATUS 2 or 4 (2 most common) and NEW_SIGNAL_3 1.
 STOCK_DISTANCE_SETTING = 6
 STOCK_LEAD_OBJ_STATUS = 6
 STOCK_LOW_SPEED_LEAD_OBJ_STATUS = 2
-STOCK_LOW_SPEED = 10.0
+STOCK_LOW_SPEED = 16.0
 STOCK_CRUISE_OFF_LEAD_OBJ_STATUS = 2
 STOCK_HEADWAY_S = 1.0
 NO_LEAD_DISTANCE = 204.6
@@ -26,7 +27,7 @@ NO_LEAD_REL_SPEED = 34.6
 REAR_CORNERS_UNDEFINED_BITS = (25, 65)
 
 
-def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float) -> dict:
+def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_override: bool = False) -> dict:
   if enabled:
     values = {
       "DISTANCE_SETTING": STOCK_DISTANCE_SETTING,
@@ -39,7 +40,7 @@ def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float) -> dict:
   if lead_visible:
     if not enabled:
       values["OBJ_STATUS"] = STOCK_CRUISE_OFF_LEAD_OBJ_STATUS
-    elif v_ego < STOCK_LOW_SPEED:
+    elif gas_override or v_ego < STOCK_LOW_SPEED:
       values["OBJ_STATUS"] = STOCK_LOW_SPEED_LEAD_OBJ_STATUS
     else:
       values["OBJ_STATUS"] = STOCK_LEAD_OBJ_STATUS
@@ -58,16 +59,16 @@ def adrv_0x1ea_values(enabled: bool) -> dict:
   return {"SET_ME_1C": 0x08, "NEW_SIGNAL_1": int(enabled)}
 
 
-def create_stock_like_blindspot_messages(packer, CAN, rear_values, front_corner_values,
+def create_stock_like_blindspot_messages(packer, CAN, front_corner_values,
                                          left_blindspot, right_blindspot, left_blinker, right_blinker,
                                          drive_gear) -> list[CanData]:
-  rear = {k: v for k, v in rear_values.items() if k not in ("CHECKSUM", "COUNTER")}
   front = {k: v for k, v in front_corner_values.items() if k not in ("CHECKSUM", "COUNTER")}
   left_state = 2 if left_blindspot and left_blinker else (1 if left_blindspot else 0)
   right_state = 2 if right_blindspot and right_blinker else (1 if right_blindspot else 0)
 
-  # Stock keeps the BCW/BCA status fields constant while in drive. Only the side fields follow detection.
-  rear.update({
+  # Stock keeps the BCW/BCA status fields constant while in drive. Only the side fields follow detection. Built
+  # from zero (no copy of the last car-sent 0x1BA), so no stale warning, sound or brake field is repeated.
+  rear = {
     "BCW_Sta": int(drive_gear),
     "BCW_IndSta": 1,
     "BCA_OnOffEquip2Sta": 2,
@@ -78,7 +79,7 @@ def create_stock_like_blindspot_messages(packer, CAN, rear_values, front_corner_
     "OSMrrLamp_RtIndSta": right_state,
     "FL_INDICATOR": 0,
     "FR_INDICATOR": 0,
-  })
+  }
   # Same front-corner payload as create_blindspot_status_messages.
   if "NEW_SIGNAL_3" not in front:
     front["NEW_SIGNAL_3"] = 1

@@ -30,9 +30,8 @@ def _zero_values(packer, name):
 
 
 def _rear_corners(packer, can_bus, left=False, right=False, left_blinker=False, right_blinker=False, drive_gear=True):
-  return create_stock_like_blindspot_messages(packer, can_bus, _zero_values(packer, "BLINDSPOTS_REAR_CORNERS"),
-                                             _zero_values(packer, "BLINDSPOTS_FRONT_CORNER_1"),
-                                             left, right, left_blinker, right_blinker, drive_gear)
+  return create_stock_like_blindspot_messages(packer, can_bus, _zero_values(packer, "BLINDSPOTS_FRONT_CORNER_1"),
+                                              left, right, left_blinker, right_blinker, drive_gear)
 
 
 class TestSccStatusValues:
@@ -40,9 +39,12 @@ class TestSccStatusValues:
     values = scc_status_values(True, True, 25.0)
     assert values == {"DISTANCE_SETTING": 6, "NEW_SIGNAL_15": 25.0, "OBJ_STATUS": 6, "NEW_SIGNAL_3": 2}
 
-  @pytest.mark.parametrize("v_ego", [0.0, 5.0, 9.9])
+  @pytest.mark.parametrize("v_ego", [0.0, 5.0, 15.9])
   def test_engaged_with_lead_at_low_speed(self, v_ego):
     assert scc_status_values(True, True, v_ego)["OBJ_STATUS"] == 2
+
+  def test_gas_override_with_lead(self):
+    assert scc_status_values(True, True, 25.0, gas_override=True)["OBJ_STATUS"] == 2
 
   def test_engaged_without_lead_sends_stock_no_lead_values(self):
     values = scc_status_values(True, False, 25.0)
@@ -110,7 +112,7 @@ class TestStockLikeRearCorners:
     del front["NEW_SIGNAL_3"]
 
     expected = create_blindspot_status_messages(CANPacker(dbc_name), can_bus, rear, front)[1]
-    actual = create_stock_like_blindspot_messages(CANPacker(dbc_name), can_bus, rear, front,
+    actual = create_stock_like_blindspot_messages(CANPacker(dbc_name), can_bus, front,
                                                   False, False, False, False, True)[1]
     assert actual == expected
 
@@ -128,7 +130,8 @@ ALL_ON = {"ioniq6_hud_scc_status": True, "ioniq6_hud_adrv_active": True, "ioniq6
 ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 
-def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1):
+def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
+                     rear_corners=None):
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -151,7 +154,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
     openpilot_lead_visible=lead_visible, openpilot_lead_distance=30.0, openpilot_lead_rel_speed=-1.0,
     left_blindspot_from_radar=True, right_blindspot_from_radar=False,
     blindspots_rear_corners_ts=1, blindspots_front_corner_1_ts=1,
-    blindspots_rear_corners=_zero_values(packer, "BLINDSPOTS_REAR_CORNERS"),
+    blindspots_rear_corners=rear_corners or _zero_values(packer, "BLINDSPOTS_REAR_CORNERS"),
     blindspots_front_corner_1=_zero_values(packer, "BLINDSPOTS_FRONT_CORNER_1"),
     out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive, vEgo=25.0, vEgoRaw=25.0,
                         brakePressed=False, gasPressed=False, standstill=False,
@@ -214,6 +217,13 @@ class TestControllerWiring:
     dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_bsm_stock=True)))[0x1BA]
     assert dat[3:9] == bytes.fromhex("430000008803")
     assert dat[16] == 0x01
+
+  def test_rear_corners_ignore_the_last_car_sent_frame(self):
+    packer = CANPacker(DBC[CAR.HYUNDAI_IONIQ_6][Bus.pt])
+    warning = {sig: 1 for sig in _zero_values(packer, "BLINDSPOTS_REAR_CORNERS") if sig not in ("CHECKSUM", "COUNTER")}
+    toggles = _toggles(ioniq6_hud_bsm_stock=True)
+    assert _by_address(_controller_msgs(toggles, rear_corners=warning))[0x1BA] == \
+           _by_address(_controller_msgs(toggles))[0x1BA]
 
   def test_bsm_stock_drops_lane_change_replay_collisions(self):
     def addresses(toggles):

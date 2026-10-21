@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 
 from opendbc.can import CANPacker
-from opendbc.car import Bus
+from opendbc.car import Bus, structs
 from opendbc.car.structs import CarParams
+from opendbc.car.hyundai.carcontroller import CarController, LongCtrlState
 from opendbc.car.hyundai.hyundaicanfd import CanBus, create_blindspot_status_messages, hkg_can_fd_checksum
 from opendbc.car.hyundai.ioniq6_cluster_experiment import adrv_0x1ea_values, create_stock_like_blindspot_messages, \
                                                           scc_status_values
@@ -100,3 +103,95 @@ class TestStockLikeRearCorners:
     actual = create_stock_like_blindspot_messages(CANPacker(dbc_name), can_bus, rear, front,
                                                   False, False, False, False, True)[1]
     assert actual == expected
+
+
+EXPERIMENT_ADDRESSES = (0x1A0, 0x1EA, 0x1BA)
+REPLAY_ADDRESSES = (0x31A, 0x3B5)
+
+
+def _toggles(**experiment):
+  return SimpleNamespace(always_on_lateral_lkas=False, force_torque_controller=False, nnff=False, nnff_lite=False,
+                         **experiment)
+
+
+ALL_ON = {"ioniq6_hud_scc_status": True, "ioniq6_hud_adrv_active": True, "ioniq6_hud_bsm_stock": True}
+ALL_OFF = dict.fromkeys(ALL_ON, False)
+
+
+def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True):
+  CP = CarParams.new_message()
+  CP.carFingerprint = car
+  CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
+  CP.openpilotLongitudinalControl = True
+  controller = CarController(DBC[CP.carFingerprint], CP)
+  controller.frame = 100  # SCC, 0x1EA, 0x1BA and the 0x3B5/0x31A replay are all due
+  controller.long_active_ecu = True
+  packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+
+  cc = SimpleNamespace(
+    enabled=True, latActive=True, longActive=True,
+    actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
+    cruiseControl=SimpleNamespace(override=False, cancel=False, resume=False),
+    leftBlinker=False, rightBlinker=False,
+    hudControl=SimpleNamespace(leadDistanceBars=3, leadVisible=lead_visible),
+  )
+  cs = SimpleNamespace(
+    stock_lfa_msg=None, stock_lkas_msg=None, stock_lfahda_cluster_msg=None,
+    lfa_block_msg={"COUNTER": 0, **{f"BYTE{i}": 0 for i in range(3, 24)}},
+    openpilot_lead_visible=lead_visible, openpilot_lead_distance=30.0, openpilot_lead_rel_speed=-1.0,
+    left_blindspot_from_radar=True, right_blindspot_from_radar=False,
+    blindspots_rear_corners_ts=1, blindspots_front_corner_1_ts=1,
+    blindspots_rear_corners=_zero_values(packer, "BLINDSPOTS_REAR_CORNERS"),
+    blindspots_front_corner_1=_zero_values(packer, "BLINDSPOTS_FRONT_CORNER_1"),
+    out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive, vEgo=25.0, vEgoRaw=25.0,
+                        brakePressed=False, gasPressed=False, standstill=False,
+                        cruiseState=SimpleNamespace(available=True)),
+  )
+  now_nanos = 10 ** 9  # car's own 0x1BA/0x1E5 are stale, so openpilot sends them
+  return controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc, toggles,
+                                      lka_icon=2, lfa_icon=2)
+
+
+def _by_address(msgs):
+  return {address: dat for address, dat, _ in msgs}
+
+
+class TestControllerWiring:
+  def test_toggles_off_match_missing_toggles(self):
+    assert _controller_msgs(_toggles(**ALL_OFF)) == _controller_msgs(_toggles())
+
+  def test_toggles_on_change_only_the_experiment_messages(self):
+    off = _by_address(_controller_msgs(_toggles(**ALL_OFF)))
+    on = _by_address(_controller_msgs(_toggles(**ALL_ON)))
+
+    assert all(address in off for address in EXPERIMENT_ADDRESSES + REPLAY_ADDRESSES)
+    assert not any(address in on for address in REPLAY_ADDRESSES)
+    for address in EXPERIMENT_ADDRESSES:
+      assert on[address] != off[address]
+    unchanged = set(off) - set(EXPERIMENT_ADDRESSES) - set(REPLAY_ADDRESSES)
+    assert {address: on[address] for address in unchanged} == {address: off[address] for address in unchanged}
+
+  def test_scc_control_with_lead(self):
+    dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True)))[0x1A0]
+    assert dat[11] == 6
+    assert dat[13] == 0x28
+    assert dat[22] & 0x7 == 6
+
+  def test_scc_control_without_lead(self):
+    dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True), lead_visible=False))[0x1A0]
+    assert dat[3:6] == bytes.fromhex("fef77f")
+    assert dat[13] == 0x08
+    assert dat[22] & 0x7 == 0
+
+  def test_adrv_0x1ea(self):
+    dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_adrv_active=True)))[0x1EA]
+    assert dat[3] == 0x08
+    assert dat[4] & 0x3 == 1
+
+  def test_rear_corners(self):
+    dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_bsm_stock=True)))[0x1BA]
+    assert dat[3:9] == bytes.fromhex("430000008803")
+    assert dat[16] == 0x01
+
+  def test_other_cars_ignore_the_toggles(self):
+    assert _controller_msgs(_toggles(**ALL_ON), car=CAR.KIA_EV6) == _controller_msgs(_toggles(), car=CAR.KIA_EV6)

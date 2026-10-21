@@ -735,7 +735,8 @@ def create_ioniq_6_cluster_lane_change_messages(CAN, frame, side=None):
 
 def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control,
                        main_mode_acc=1, jerk_lower=None, jerk_upper=None, direct_accel=False,
-                       lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None, raw_accel=None):
+                       lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None, raw_accel=None,
+                       extra_values=None):
   jerk = 5
   jn = jerk / 50
   if not enabled or gas_override:
@@ -780,6 +781,8 @@ def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_ov
   }
   if cruise_info:
     values.update({s: cruise_info[s] for s in ("ACC_ObjDist", "ACC_ObjRelSpd")})
+  if extra_values:
+    values.update(extra_values)
 
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values)
 
@@ -820,7 +823,7 @@ def create_fca_warning_light(packer, CAN, frame):
 
 
 def create_adrv_messages(packer, CAN, frame, blended_hda2=False, car_fingerprint=None, drive_gear=False,
-                         v_ego=None):
+                         v_ego=None, adrv_0x1ea_extra=None):
   # messages needed to car happy after disabling
   # the ADAS Driving ECU to do longitudinal control
 
@@ -840,6 +843,8 @@ def create_adrv_messages(packer, CAN, frame, blended_hda2=False, car_fingerprint
       'SET_ME_TMP_F': 0xf,
       'SET_ME_TMP_F_2': 0xf,
     }
+    if adrv_0x1ea_extra:
+      values.update(adrv_0x1ea_extra)
     ret.append(packer.make_can_msg("ADRV_0x1ea", CAN.ECAN, values))
 
     values = {

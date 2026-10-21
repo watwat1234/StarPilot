@@ -8,7 +8,7 @@ from opendbc.car import Bus, DT_CTRL, create_gas_interceptor_command, make_teste
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance, get_max_angle_delta_vm, get_max_angle_vm
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.hyundai import hyundaicanfd, hyundaican
+from opendbc.car.hyundai import hyundaicanfd, hyundaican, ioniq6_cluster_experiment
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.lead_data import CanLeadDataState
 from opendbc.car.hyundai.values import HyundaiFlags, HyundaiSafetyFlags, HyundaiStarPilotFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
@@ -1033,6 +1033,12 @@ class CarController(CarControllerBase):
                                                                                    lane_change_ui_side))
         self._ioniq_6_lane_change_ui_frames += 1
 
+    # Temporary cluster HUD experiment (branch experiment/ioniq6-cluster-hud, never merged).
+    ioniq_6_long = self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and self.long_active_ecu
+    hud_scc_status = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_scc_status", False)
+    hud_adrv_active = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_adrv_active", False)
+    hud_bsm_stock = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_bsm_stock", False)
+
     if self.long_active_ecu:
       if lka_steering:
         if ccnc_angle_long:
@@ -1063,10 +1069,12 @@ class CarController(CarControllerBase):
         else:
           host_speed = getattr(CS.out, "vEgoRaw", None) \
             if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN else None
+          adrv_0x1ea_extra = ioniq6_cluster_experiment.adrv_0x1ea_values(CC.enabled) if hud_adrv_active else None
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame,
                                                              car_fingerprint=self.CP.carFingerprint,
                                                              drive_gear=drive_gear,
-                                                             v_ego=host_speed)
+                                                             v_ego=host_speed,
+                                                             adrv_0x1ea_extra=adrv_0x1ea_extra)
         can_sends.extend(adrv_messages)
         # The front radar treats ADAS_DRV's 0x100 broadcast as its host heartbeat
         # and stops publishing object tracks when it disappears.
@@ -1081,14 +1089,21 @@ class CarController(CarControllerBase):
         rear_stale = now_nanos - CS.blindspots_rear_corners_ts > CANFD_BLINDSPOT_STATUS_STALE_NS
         front_stale = now_nanos - CS.blindspots_front_corner_1_ts > CANFD_BLINDSPOT_STATUS_STALE_NS
         if CS.blindspots_rear_corners_ts > 0 and CS.blindspots_front_corner_1_ts > 0 and rear_stale and front_stale:
-          can_sends.extend(hyundaicanfd.create_blindspot_status_messages(self.packer, self.CAN,
-                                                                         CS.blindspots_rear_corners,
-                                                                         CS.blindspots_front_corner_1,
-                                                                         CS.left_blindspot_from_radar,
-                                                                         CS.right_blindspot_from_radar,
-                                                                         CC.leftBlinker,
-                                                                         CC.rightBlinker))
-      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and lane_change_ui_side is None:
+          if hud_bsm_stock:
+            can_sends.extend(ioniq6_cluster_experiment.create_stock_like_blindspot_messages(
+              self.packer, self.CAN, CS.blindspots_rear_corners, CS.blindspots_front_corner_1,
+              CS.left_blindspot_from_radar, CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker, drive_gear,
+            ))
+          else:
+            can_sends.extend(hyundaicanfd.create_blindspot_status_messages(self.packer, self.CAN,
+                                                                           CS.blindspots_rear_corners,
+                                                                           CS.blindspots_front_corner_1,
+                                                                           CS.left_blindspot_from_radar,
+                                                                           CS.right_blindspot_from_radar,
+                                                                           CC.leftBlinker,
+                                                                           CC.rightBlinker))
+      # The bsm experiment drops this fixed replay: a live ECU still sends 0x31A/0x3B5 under OP long.
+      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and lane_change_ui_side is None and not hud_bsm_stock:
         can_sends.extend(hyundaicanfd.create_ioniq_6_cluster_blindspot_messages(self.CAN, self.frame,
                                                                                  CS.left_blindspot_from_radar,
                                                                                  CS.right_blindspot_from_radar,
@@ -1142,9 +1157,12 @@ class CarController(CarControllerBase):
             jerk_upper=acc_kwargs["jerk_upper"],
           ))
         else:
+          scc_extra = ioniq6_cluster_experiment.scc_status_values(CC.enabled, lead_visible, float(CS.out.vEgo)) \
+            if hud_scc_status else None
           can_sends.append(hyundaicanfd.create_acc_control(
             self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping, CC.cruiseControl.override,
             set_speed_in_units, hud_control, cruise_info=CS.cruise_info if ccnc_non_hda2 else None, **acc_kwargs,
+            extra_values=scc_extra,
           ))
         self.accel_last = accel
     else:

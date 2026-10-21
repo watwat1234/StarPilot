@@ -11,13 +11,13 @@ from opendbc.car.hyundai.hyundaicanfd import hkg_can_fd_checksum
 
 # Stock SCC_CONTROL on the gen5w Ioniq 6 (route 000000d1--48888e416c). The DBC range of DISTANCE_SETTING ([0|3])
 # is stale. Cruise on: DISTANCE_SETTING 6, NEW_SIGNAL_15 = vEgo * 1.0 s (7 and 1.79 s after one gap change, mapping
-# unknown), with a lead NEW_SIGNAL_3 2 and OBJ_STATUS 2 below 10 m/s (every frame), 0/1/2 up to 16 m/s, 5-7 above
-# (6 most common), and mostly 2 during gas override. Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6, and a lead is still reported, with
-# OBJ_STATUS 2 or 4 (2 most common) and NEW_SIGNAL_3 1.
+# unknown), and with a lead NEW_SIGNAL_3 2 and OBJ_STATUS by speed (STOCK_LEAD_OBJ_STATUS_BANDS). Gas override with
+# a lead: same OBJ_STATUS bands, NEW_SIGNAL_3 1 (every frame). Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6,
+# and a lead is still reported, with OBJ_STATUS 2 or 4 (2 most common) and NEW_SIGNAL_3 1.
 STOCK_DISTANCE_SETTING = 6
-STOCK_LEAD_OBJ_STATUS = 6
-STOCK_LOW_SPEED_LEAD_OBJ_STATUS = 2
-STOCK_LOW_SPEED = 16.0
+# (upper vEgo bound in m/s, OBJ_STATUS), most common stock value per band. Stock sends mostly 0 at 14-16 m/s; 1 is
+# kept there so the lead is still reported.
+STOCK_LEAD_OBJ_STATUS_BANDS = ((12.0, 2), (16.0, 1), (20.0, 7), (25.0, 6), (float("inf"), 5))
 STOCK_CRUISE_OFF_LEAD_OBJ_STATUS = 2
 STOCK_HEADWAY_S = 1.0
 NO_LEAD_DISTANCE = 204.6
@@ -38,13 +38,11 @@ def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_overr
 
   # With a lead, openpilot's own distance and relative speed are kept.
   if lead_visible:
-    if not enabled:
-      values["OBJ_STATUS"] = STOCK_CRUISE_OFF_LEAD_OBJ_STATUS
-    elif gas_override or v_ego < STOCK_LOW_SPEED:
-      values["OBJ_STATUS"] = STOCK_LOW_SPEED_LEAD_OBJ_STATUS
+    if enabled:
+      values["OBJ_STATUS"] = next(status for top, status in STOCK_LEAD_OBJ_STATUS_BANDS if v_ego < top)
     else:
-      values["OBJ_STATUS"] = STOCK_LEAD_OBJ_STATUS
-    values["NEW_SIGNAL_3"] = 2 if enabled else 1
+      values["OBJ_STATUS"] = STOCK_CRUISE_OFF_LEAD_OBJ_STATUS
+    values["NEW_SIGNAL_3"] = 2 if enabled and not gas_override else 1
   else:
     values["OBJ_STATUS"] = 0
     values["NEW_SIGNAL_3"] = 0

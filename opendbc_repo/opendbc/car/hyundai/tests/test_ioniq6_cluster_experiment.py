@@ -36,15 +36,20 @@ def _rear_corners(packer, can_bus, left=False, right=False, left_blinker=False, 
 
 class TestSccStatusValues:
   def test_engaged_with_lead(self):
-    values = scc_status_values(True, True, 25.0)
-    assert values == {"DISTANCE_SETTING": 6, "NEW_SIGNAL_15": 25.0, "OBJ_STATUS": 6, "NEW_SIGNAL_3": 2}
+    values = scc_status_values(True, True, 22.0)
+    assert values == {"DISTANCE_SETTING": 6, "NEW_SIGNAL_15": 22.0, "OBJ_STATUS": 6, "NEW_SIGNAL_3": 2}
 
-  @pytest.mark.parametrize("v_ego", [0.0, 5.0, 15.9])
-  def test_engaged_with_lead_at_low_speed(self, v_ego):
-    assert scc_status_values(True, True, v_ego)["OBJ_STATUS"] == 2
+  # Most common stock OBJ_STATUS per speed band, engaged with a lead (1 at 14-16 m/s, where stock mostly sends 0).
+  @pytest.mark.parametrize("v_ego, obj_status", [(0.0, 2), (11.9, 2), (12.0, 1), (15.9, 1), (16.0, 7), (19.9, 7),
+                                                 (20.0, 6), (24.9, 6), (25.0, 5), (40.0, 5)])
+  def test_engaged_lead_status_follows_stock_speed_bands(self, v_ego, obj_status):
+    assert scc_status_values(True, True, v_ego)["OBJ_STATUS"] == obj_status
 
-  def test_gas_override_with_lead(self):
-    assert scc_status_values(True, True, 25.0, gas_override=True)["OBJ_STATUS"] == 2
+  @pytest.mark.parametrize("v_ego, obj_status", [(5.0, 2), (22.0, 6)])
+  def test_gas_override_with_lead(self, v_ego, obj_status):
+    values = scc_status_values(True, True, v_ego, gas_override=True)
+    assert values["OBJ_STATUS"] == obj_status  # same speed bands as engaged
+    assert values["NEW_SIGNAL_3"] == 1
 
   def test_engaged_without_lead_sends_stock_no_lead_values(self):
     values = scc_status_values(True, False, 25.0)
@@ -131,7 +136,7 @@ ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 
 def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
-                     rear_corners=None):
+                     rear_corners=None, override=False):
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -144,7 +149,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
   cc = SimpleNamespace(
     enabled=enabled, latActive=True, longActive=enabled,
     actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
-    cruiseControl=SimpleNamespace(override=False, cancel=False, resume=False),
+    cruiseControl=SimpleNamespace(override=override, cancel=False, resume=False),
     leftBlinker=left_blinker, rightBlinker=False,
     hudControl=SimpleNamespace(leadDistanceBars=3, leadVisible=lead_visible),
   )
@@ -192,7 +197,7 @@ class TestControllerWiring:
     dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True)))[0x1A0]
     assert dat[11] == 6
     assert dat[13] == 0x28
-    assert dat[22] & 0x7 == 6
+    assert dat[22] & 0x7 == 5  # vEgo 25 m/s
 
   def test_scc_control_disengaged_with_lead(self):
     dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True), enabled=False))[0x1A0]
@@ -201,6 +206,12 @@ class TestControllerWiring:
     assert dat[22] & 0x7 == 2
     assert (int.from_bytes(dat[3:5], "little") & 0x7FF) == 300  # openpilot's 30 m lead distance is kept
     assert int.from_bytes(dat[24:26], "little") & 0x7FF == 2046  # NEW_SIGNAL_15 204.6
+
+  def test_scc_control_gas_override_with_lead(self):
+    dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True), override=True))[0x1A0]
+    assert (dat[8] >> 4) & 0x7 == 2  # ACCMode override
+    assert dat[13] == 0x18  # NEW_SIGNAL_3 1
+    assert dat[22] & 0x7 == 5
 
   def test_scc_control_without_lead(self):
     dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True), lead_visible=False))[0x1A0]

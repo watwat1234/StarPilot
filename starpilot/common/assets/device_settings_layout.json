@@ -5216,6 +5216,21 @@
         ]
       },
       {
+        "key": "LaneCenteringStrength",
+        "label": "Lane Centering Strength",
+        "description": "Choose how hard lane centering pushes back toward the middle of the lane. 1.0x is the standard centering. Higher values correct small drifts more firmly, up to the same maximum correction; values below 1.0x make all corrections weaker.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "control": "slider",
+        "unit": "x",
+        "min": 0.5,
+        "max": 3.0,
+        "step": 0.05,
+        "precision": 2,
+        "parent_key": "LaneCentering",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "HondaLateralPidKpScale",
         "label": "Honda PID Kp Scale",
         "description": "Scale the active Honda lateralTuning.pid.kpV values from openDBC. Applies live to Honda PID lateral only.",

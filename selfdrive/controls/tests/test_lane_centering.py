@@ -29,16 +29,16 @@ def _model(left=-1.8, right=1.8, model_y=0.0, lane_prob=0.9, lane_std=0.1, path_
 
 
 def _update(controller, model, *, offset=0.0, authority=1.0, enabled=True, active=True, valid=True, speed=_V_EGO,
-            pause_on_signal=False, turn_signal_active=False, driver_override=False):
+            pause_on_signal=False, turn_signal_active=False, driver_override=False, **kwargs):
   return controller.update(0.0, model, speed, enabled, offset, authority, active, valid,
-                           pause_on_signal, turn_signal_active, driver_override)
+                           pause_on_signal, turn_signal_active, driver_override, **kwargs)
 
 
-def _converge(model, *, offset=0.0, authority=1.0):
+def _converge(model, *, offset=0.0, authority=1.0, **kwargs):
   controller = LaneCenteringController()
   output = 0.0
   for _ in range(300):
-    output = _update(controller, model, offset=offset, authority=authority)
+    output = _update(controller, model, offset=offset, authority=authority, **kwargs)
   return controller, output
 
 
@@ -227,6 +227,46 @@ def test_correction_is_smoothed_and_capped():
   _, steady = _converge(model, authority=0.0)
   assert 0.0 < first < steady
   assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
+
+
+def test_default_strength_matches_unity_strength():
+  model = _model(left=-1.5, right=2.1)
+  _, default = _converge(model, authority=0.0)
+  _, unity = _converge(model, authority=0.0, strength=1.0)
+  assert default > 0.0
+  assert unity == default
+
+
+@pytest.mark.parametrize("strength", [0.5, 2.0, 3.0])
+def test_strength_scales_unsaturated_correction(strength):
+  model = _model(left=-1.5, right=2.1)
+  _, base = _converge(model, authority=0.0)
+  _, scaled = _converge(model, authority=0.0, strength=strength)
+  assert base * 3.0 < 0.004 * 0.30
+  assert scaled == pytest.approx(base * strength, rel=1e-6)
+
+
+@pytest.mark.parametrize("strength", [2.0, 3.0])
+def test_strength_does_not_raise_correction_cap(strength):
+  _, steady = _converge(_model(left=0.0, right=3.0, path_std=0.6), authority=0.0, strength=strength)
+  assert np.isclose(steady, 0.004 * 0.30, atol=1e-6)
+
+
+@pytest.mark.parametrize("strength,clamped", [(0.1, 0.5), (-2.0, 0.5), (10.0, 3.0)])
+def test_out_of_range_strength_is_clamped(strength, clamped):
+  model = _model(left=-1.5, right=2.1)
+  _, expected = _converge(model, authority=0.0, strength=clamped)
+  _, output = _converge(model, authority=0.0, strength=strength)
+  assert output == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("strength", [float("nan"), float("inf"), None, "x"])
+def test_invalid_strength_resets_to_model_curvature(strength):
+  model = _model(left=-1.5, right=2.1)
+  controller, output = _converge(model, authority=0.0)
+  assert output > 0.0
+  assert _update(controller, model, authority=0.0, strength=strength) == 0.0
+  assert _update(controller, model, authority=0.0) < output
 
 
 def test_visual_direction_matches_curvature_sign():

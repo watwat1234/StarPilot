@@ -14,6 +14,9 @@ _MAX_OFFSET = 0.3
 _MIN_CENTER_TO_LINE = 1.1
 _MAX_RAW_CORRECTION = 0.004
 _MAX_GAIN = 0.30
+_MAX_CORRECTION = _MAX_RAW_CORRECTION * _MAX_GAIN
+_MIN_STRENGTH = 0.5
+_MAX_STRENGTH = 3.0
 _VISUAL_CORRECTION_EPSILON = 1e-6
 _SMOOTH_TAU = 0.4
 _SIGNAL_RELEASE_TAU = 0.20
@@ -36,18 +39,19 @@ class LaneCenteringController:
     self._correction = 0.0
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
-             pause_on_signal=False, turn_signal_active=False, driver_override=False) -> float:
+             pause_on_signal=False, turn_signal_active=False, driver_override=False, strength=1.0) -> float:
     model_curvature = float(model_curvature)
 
     try:
       v_ego = float(v_ego)
       offset = float(offset)
       e2e_authority = float(e2e_authority)
+      strength = float(strength)
     except (TypeError, ValueError):
       self.reset()
       return model_curvature
 
-    if not np.isfinite([v_ego, offset, e2e_authority]).all():
+    if not np.isfinite([v_ego, offset, e2e_authority, strength]).all():
       self.reset()
       return model_curvature
 
@@ -82,6 +86,7 @@ class LaneCenteringController:
       return model_curvature + self._correction
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
+    target = float(np.clip(target * np.clip(strength, _MIN_STRENGTH, _MAX_STRENGTH), -_MAX_CORRECTION, _MAX_CORRECTION))
     self._correction = float(smooth_value(target, self._correction, _SMOOTH_TAU, dt=DT_CTRL))
     return model_curvature + self._correction
 

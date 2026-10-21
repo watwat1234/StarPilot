@@ -48,11 +48,17 @@ class TestSccStatusValues:
     assert values["ACC_ObjRelSpd"] == 34.6
     assert values["ObjValid"] == 1
 
-  def test_disengaged_clears_distance_setting_and_lead(self):
+  def test_disengaged_with_lead_sends_stock_cruise_off_values(self):
     values = scc_status_values(False, True, 25.0)
+    assert values == {"DISTANCE_SETTING": 0, "NEW_SIGNAL_15": 204.6, "OBJ_STATUS": 2, "NEW_SIGNAL_3": 1}
+
+  def test_disengaged_without_lead(self):
+    values = scc_status_values(False, False, 25.0)
     assert values["DISTANCE_SETTING"] == 0
+    assert values["NEW_SIGNAL_15"] == 204.6
     assert values["OBJ_STATUS"] == 0
     assert values["NEW_SIGNAL_3"] == 0
+    assert values["ObjValid"] == 1
 
   @pytest.mark.parametrize("v_ego, headway", [(-1.0, 0.0), (0.0, 0.0), (300.0, 204.6)])
   def test_headway_is_clipped(self, v_ego, headway):
@@ -118,7 +124,7 @@ ALL_ON = {"ioniq6_hud_scc_status": True, "ioniq6_hud_adrv_active": True, "ioniq6
 ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 
-def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True):
+def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True):
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -129,7 +135,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True):
   packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
 
   cc = SimpleNamespace(
-    enabled=True, latActive=True, longActive=True,
+    enabled=enabled, latActive=True, longActive=enabled,
     actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
     cruiseControl=SimpleNamespace(override=False, cancel=False, resume=False),
     leftBlinker=False, rightBlinker=False,
@@ -176,6 +182,14 @@ class TestControllerWiring:
     assert dat[11] == 6
     assert dat[13] == 0x28
     assert dat[22] & 0x7 == 6
+
+  def test_scc_control_disengaged_with_lead(self):
+    dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True), enabled=False))[0x1A0]
+    assert dat[11] & 0x7 == 0
+    assert dat[13] == 0x18
+    assert dat[22] & 0x7 == 2
+    assert (int.from_bytes(dat[3:5], "little") & 0x7FF) == 300  # openpilot's 30 m lead distance is kept
+    assert int.from_bytes(dat[24:26], "little") & 0x7FF == 2046  # NEW_SIGNAL_15 204.6
 
   def test_scc_control_without_lead(self):
     dat = _by_address(_controller_msgs(_toggles(ioniq6_hud_scc_status=True), lead_visible=False))[0x1A0]

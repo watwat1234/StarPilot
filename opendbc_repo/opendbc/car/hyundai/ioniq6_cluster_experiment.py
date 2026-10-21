@@ -9,10 +9,14 @@ import numpy as np
 from opendbc.car import CanData
 from opendbc.car.hyundai.hyundaicanfd import hkg_can_fd_checksum
 
-# Stock SCC_CONTROL with cruise on (route 000000d1--48888e416c). The DBC range of DISTANCE_SETTING ([0|3]) is stale.
+# Stock SCC_CONTROL on the gen5w Ioniq 6 (route 000000d1--48888e416c). The DBC range of DISTANCE_SETTING ([0|3])
+# is stale. Cruise on: DISTANCE_SETTING 6, NEW_SIGNAL_15 = vEgo * 1.0 s, with a lead OBJ_STATUS 5-7 (6 most common)
+# and NEW_SIGNAL_3 2. Cruise off: DISTANCE_SETTING 0, NEW_SIGNAL_15 204.6, and a lead is still reported, with
+# OBJ_STATUS 2 or 4 (2 most common) and NEW_SIGNAL_3 1.
 STOCK_DISTANCE_SETTING = 6
-STOCK_LEAD_OBJ_STATUS = 6  # 5, 6 or 7 at speed depending on lead distance; 6 is the most common
-STOCK_HEADWAY_S = 1.0  # NEW_SIGNAL_15 = vEgo * 1.0 s
+STOCK_LEAD_OBJ_STATUS = 6
+STOCK_CRUISE_OFF_LEAD_OBJ_STATUS = 2
+STOCK_HEADWAY_S = 1.0
 NO_LEAD_DISTANCE = 204.6
 NO_LEAD_REL_SPEED = 34.6
 
@@ -21,14 +25,18 @@ REAR_CORNERS_UNDEFINED_BITS = (25, 65)
 
 
 def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float) -> dict:
-  values = {
-    "DISTANCE_SETTING": STOCK_DISTANCE_SETTING if enabled else 0,
-    "NEW_SIGNAL_15": float(np.clip(v_ego * STOCK_HEADWAY_S, 0.0, NO_LEAD_DISTANCE)),
-  }
-  # Same lead rule as create_ccnc_acc_control: a lead only counts while engaged.
-  if enabled and lead_visible:
-    values["OBJ_STATUS"] = STOCK_LEAD_OBJ_STATUS
-    values["NEW_SIGNAL_3"] = 2
+  if enabled:
+    values = {
+      "DISTANCE_SETTING": STOCK_DISTANCE_SETTING,
+      "NEW_SIGNAL_15": float(np.clip(v_ego * STOCK_HEADWAY_S, 0.0, NO_LEAD_DISTANCE)),
+    }
+  else:
+    values = {"DISTANCE_SETTING": 0, "NEW_SIGNAL_15": NO_LEAD_DISTANCE}
+
+  # With a lead, openpilot's own distance and relative speed are kept.
+  if lead_visible:
+    values["OBJ_STATUS"] = STOCK_LEAD_OBJ_STATUS if enabled else STOCK_CRUISE_OFF_LEAD_OBJ_STATUS
+    values["NEW_SIGNAL_3"] = 2 if enabled else 1
   else:
     values["OBJ_STATUS"] = 0
     values["NEW_SIGNAL_3"] = 0

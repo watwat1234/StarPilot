@@ -7,5 +7,6 @@ def test_safe_mode_manages_lane_centering_settings():
     "LaneCentering",
     "LaneCenteringPauseOnSignal",
     "LaneCenteringE2EAuthority",
+    "LaneCenteringStrength",
     "LaneCenterOffset",
   } <= set(SAFE_MODE_MANAGED_KEYS)

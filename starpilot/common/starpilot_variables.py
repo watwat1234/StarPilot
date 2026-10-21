@@ -818,6 +818,10 @@ class StarPilotVariables:
       "LaneCenteringE2EAuthority", cast=float, condition=toggle.lane_centering,
       default=1.0, min=0.0, max=1.0,
     )
+    toggle.lane_centering_strength = self.get_value(
+      "LaneCenteringStrength", cast=float, condition=toggle.lane_centering,
+      default=1.0, min=0.5, max=3.0,
+    )
 
     advanced_longitudinal_tuning = toggle.openpilot_longitudinal and self.get_value("AdvancedLongitudinalTune")
     ev_vehicle = default_ev_tuning_enabled(CP)

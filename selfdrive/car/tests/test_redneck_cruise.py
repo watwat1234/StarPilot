@@ -237,7 +237,7 @@ class TestRedneckCruise(unittest.TestCase):
     sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": True}
     sm.valid = sm.seen.copy()
     sm.__getitem__.side_effect = {
-      "starpilotPlan": SimpleNamespace(trackingLead=False),
+      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=1.45),
       "longitudinalPlan": SimpleNamespace(shouldStop=False, longitudinalPlanSource="cruise"),
       "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=85.0, vRel=-0.5)),
     }.__getitem__
@@ -248,13 +248,14 @@ class TestRedneckCruise(unittest.TestCase):
 
     self.assertTrue(car_state.openpilot_lead_visible)
     self.assertFalse(car_state.openpilot_longitudinal_adjustment_active)
+    self.assertEqual(1.45, car_state.openpilot_t_follow)
 
   def test_card_marks_stop_plan_as_longitudinal_adjustment_without_lead(self):
     sm = MagicMock()
     sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
     sm.valid = sm.seen.copy()
     sm.__getitem__.side_effect = {
-      "starpilotPlan": SimpleNamespace(trackingLead=False),
+      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=0.0),
       "longitudinalPlan": SimpleNamespace(shouldStop=True, longitudinalPlanSource="e2e"),
     }.__getitem__
     car_state = SimpleNamespace()

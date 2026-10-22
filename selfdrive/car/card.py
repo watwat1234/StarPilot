@@ -494,9 +494,11 @@ class Car:
     longitudinal_adjustment_active = lead_visible
     lead_distance = 0.0
     lead_rel_speed = 0.0
+    t_follow = 0.0
 
     if self.sm.seen['starpilotPlan'] and self.sm.valid['starpilotPlan']:
       longitudinal_adjustment_active = bool(self.sm['starpilotPlan'].trackingLead)
+      t_follow = float(self.sm['starpilotPlan'].tFollow)
 
     if self.sm.seen['longitudinalPlan'] and self.sm.valid['longitudinalPlan']:
       longitudinal_plan = self.sm['longitudinalPlan']
@@ -518,6 +520,7 @@ class Car:
     self.CI.CS.openpilot_lead_visible = lead_visible
     self.CI.CS.openpilot_lead_distance = lead_distance
     self.CI.CS.openpilot_lead_rel_speed = lead_rel_speed
+    self.CI.CS.openpilot_t_follow = t_follow
     self.CI.CS.openpilot_longitudinal_adjustment_active = longitudinal_adjustment_active
 
   def _update_redneck_cruise(self, CS: car.CarState, CC: car.CarControl) -> None:

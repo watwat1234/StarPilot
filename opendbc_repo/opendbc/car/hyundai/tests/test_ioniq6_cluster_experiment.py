@@ -205,7 +205,8 @@ ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 
 def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
-                     rear_corners=None, override=False):
+                     rear_corners=None, override=False, t_follow=1.5, lead_frames=None, toggle_frames=None):
+  # lead_frames / toggle_frames: one lead_visible / toggles value per frame, in place of lead_visible / toggles
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -226,6 +227,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
     stock_lfa_msg=None, stock_lkas_msg=None, stock_lfahda_cluster_msg=None,
     lfa_block_msg={"COUNTER": 0, **{f"BYTE{i}": 0 for i in range(3, 24)}},
     openpilot_lead_visible=lead_visible, openpilot_lead_distance=30.0, openpilot_lead_rel_speed=-1.0,
+    openpilot_t_follow=t_follow,
     left_blindspot_from_radar=True, right_blindspot_from_radar=False,
     blindspots_rear_corners_ts=1, blindspots_front_corner_1_ts=1,
     blindspots_rear_corners=rear_corners or _zero_values(packer, "BLINDSPOTS_REAR_CORNERS"),
@@ -236,9 +238,12 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
   )
   now_nanos = 10 ** 9  # car's own 0x1BA/0x1E5 are stale, so openpilot sends them
   msgs = []
-  for _ in range(frames):
-    msgs += controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc, toggles,
-                                         lka_icon=2, lfa_icon=2)
+  for i in range(frames):
+    if lead_frames is not None:
+      cs.openpilot_lead_visible = cc.hudControl.leadVisible = lead_frames[i]
+    frame_toggles = toggle_frames[i] if toggle_frames is not None else toggles
+    msgs += controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc,
+                                         frame_toggles, lka_icon=2, lfa_icon=2)
     controller.frame += 1
   return msgs
 
@@ -317,3 +322,68 @@ class TestControllerWiring:
 
   def test_other_cars_ignore_the_toggles(self):
     assert _controller_msgs(_toggles(**ALL_ON), car=CAR.KIA_EV6) == _controller_msgs(_toggles(), car=CAR.KIA_EV6)
+    assert _controller_msgs(_toggles(**ALL_ON, **ROUND_2_ON), car=CAR.KIA_EV6) == \
+           _controller_msgs(_toggles(), car=CAR.KIA_EV6)
+
+
+ROUND_2_ON = {"ioniq6_hud_scc_gap": True, "ioniq6_hud_lead_filter": True}
+SCC_ON = {"ioniq6_hud_scc_status": True}
+GAP_BYTES = (11, 24, 25)  # DISTANCE_SETTING, NEW_SIGNAL_15
+
+
+def _scc_frames(msgs):
+  return [dat for address, dat, _ in msgs if address == 0x1A0]
+
+
+def _scc_lead_shown(dat):
+  return dat[3:6] != bytes.fromhex("fef77f")
+
+
+class TestRound2Wiring:
+  def test_round_2_toggles_off_match_round_1(self):
+    round_1 = _toggles(**ALL_ON)
+    off = _toggles(**ALL_ON, **dict.fromkeys(ROUND_2_ON, False))
+    assert _controller_msgs(off, frames=60) == _controller_msgs(round_1, frames=60)
+
+  def test_round_2_toggles_need_scc_status(self):
+    assert _controller_msgs(_toggles(**ROUND_2_ON), frames=60) == _controller_msgs(_toggles(), frames=60)
+
+  @pytest.mark.parametrize("bars", [1, 2, 3])
+  def test_gap_sends_bars_and_follow_time(self, bars):
+    toggles = _toggles(**SCC_ON, ioniq6_hud_scc_gap=True)
+    msgs = _controller_msgs(toggles, t_follow=1.5)
+    dat = _by_address(msgs)[0x1A0]
+    assert dat[11] & 0x7 == 3  # harness leadDistanceBars
+    assert int.from_bytes(dat[24:26], "little") & 0x7FF == 375  # 25 m/s x 1.5 s
+
+  def test_gap_falls_back_to_stock_headway_without_follow_time(self):
+    dat = _by_address(_controller_msgs(_toggles(**SCC_ON, ioniq6_hud_scc_gap=True), t_follow=0.0))[0x1A0]
+    assert int.from_bytes(dat[24:26], "little") & 0x7FF == 250
+
+  def test_gap_changes_only_gap_bytes(self):
+    gap = _by_address(_controller_msgs(_toggles(**SCC_ON, ioniq6_hud_scc_gap=True)))
+    scc = _by_address(_controller_msgs(_toggles(**SCC_ON)))
+    assert {a: d for a, d in gap.items() if a != 0x1A0} == {a: d for a, d in scc.items() if a != 0x1A0}
+    changed = {i for i in range(2, len(scc[0x1A0])) if gap[0x1A0][i] != scc[0x1A0][i]}
+    assert changed and changed <= set(GAP_BYTES)
+
+  def test_lead_filter_holds_back_a_new_lead_for_0_4_s(self):
+    toggles = _toggles(**SCC_ON, ioniq6_hud_lead_filter=True)
+    shown = [_scc_lead_shown(dat) for dat in _scc_frames(_controller_msgs(toggles, frames=50))]
+    assert shown == [False] * 19 + [True] * 6
+
+  def test_lead_filter_bridges_a_short_gap(self):
+    toggles = _toggles(**SCC_ON, ioniq6_hud_lead_filter=True)
+    lead_frames = [True] * 60 + [False] * 90 + [False] * 20
+    scc = _scc_frames(_controller_msgs(toggles, frames=len(lead_frames), lead_frames=lead_frames))
+    shown = [_scc_lead_shown(dat) for dat in scc]
+    assert shown == [False] * 19 + [True] * 11 + [True] * 45 + [True] * 4 + [False] * 6
+    assert scc[40][3:5] == scc[29][3:5]  # last distance held
+
+  def test_lead_filter_resets_when_off(self):
+    on = _toggles(**SCC_ON, ioniq6_hud_lead_filter=True)
+    toggle_frames = [on] * 60 + [_toggles(**SCC_ON)] * 2 + [on] * 2
+    lead_frames = [True] * 62 + [False] * 2
+    scc = _scc_frames(_controller_msgs(on, frames=64, lead_frames=lead_frames, toggle_frames=toggle_frames))
+    assert _scc_lead_shown(scc[29])
+    assert not _scc_lead_shown(scc[-1])  # without the reset the lead would still be held

@@ -480,6 +480,7 @@ class CarController(CarControllerBase):
     self.CAN = CanBus(CP)
     self.params = CarControllerParams(CP)
     self.packer = CANPacker(dbc_names[Bus.pt])
+    self._ioniq6_lead_filter = ioniq6_cluster_experiment.LeadDisplayFilter()
     self.angle_limit_counter = 0
     self.VM = VehicleModel(CP)
     self.BASELINE_VM = VehicleModel(get_baseline_safety_cp()) if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING else self.VM
@@ -1017,6 +1018,10 @@ class CarController(CarControllerBase):
     hud_scc_status = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_scc_status", False)
     hud_adrv_active = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_adrv_active", False)
     hud_bsm_stock = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_bsm_stock", False)
+    hud_scc_gap = hud_scc_status and getattr(starpilot_toggles, "ioniq6_hud_scc_gap", False)
+    hud_lead_filter = hud_scc_status and getattr(starpilot_toggles, "ioniq6_hud_lead_filter", False)
+    if not hud_lead_filter:
+      self._ioniq6_lead_filter.reset()
 
     lane_change_ui_side = None
     if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
@@ -1115,6 +1120,9 @@ class CarController(CarControllerBase):
                                                                                  CC.rightBlinker))
       if self.frame % 2 == 0:
         lead_visible, lead_distance, lead_rel_speed = self._get_canfd_scc_lead_state(CC, CS, now_nanos)
+        if hud_lead_filter:
+          lead_visible, lead_distance, lead_rel_speed = self._ioniq6_lead_filter.update(lead_visible, lead_distance,
+                                                                                         lead_rel_speed)
         if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN:
           scc_jerk_limits = get_hyundai_canfd_scc_jerk_limits(self.CP, stopping, accel)
           raw_accel = accel
@@ -1161,8 +1169,11 @@ class CarController(CarControllerBase):
             jerk_upper=acc_kwargs["jerk_upper"],
           ))
         else:
-          scc_extra = ioniq6_cluster_experiment.scc_status_values(CC.enabled, lead_visible, float(CS.out.vEgo),
-                                                                  CC.cruiseControl.override) if hud_scc_status else None
+          scc_extra = ioniq6_cluster_experiment.scc_status_values(
+            CC.enabled, lead_visible, float(CS.out.vEgo), CC.cruiseControl.override,
+            distance_bars=hud_control.leadDistanceBars if hud_scc_gap else None,
+            t_follow=getattr(CS, "openpilot_t_follow", 0.0) if hud_scc_gap else None,
+          ) if hud_scc_status else None
           can_sends.append(hyundaicanfd.create_acc_control(
             self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping, CC.cruiseControl.override,
             set_speed_in_units, hud_control, cruise_info=CS.cruise_info if ccnc_non_hda2 else None, **acc_kwargs,

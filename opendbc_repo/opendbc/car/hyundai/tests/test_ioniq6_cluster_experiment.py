@@ -6,10 +6,12 @@ from opendbc.can import CANPacker
 from opendbc.car import Bus, structs
 from opendbc.car.structs import CarParams
 from opendbc.car.hyundai.carcontroller import CarController, LongCtrlState
-from opendbc.car.hyundai.hyundaicanfd import CanBus, create_blindspot_status_messages, hkg_can_fd_checksum
-from opendbc.car.hyundai.ioniq6_cluster_experiment import LeadDisplayFilter, adrv_0x1ea_values, \
-                                                          create_stock_like_blindspot_messages, lead_display_allowed, \
-                                                          scc_status_values
+from opendbc.car.hyundai.hyundaicanfd import CanBus, create_adrv_messages, create_blindspot_status_messages, \
+                                             hkg_can_fd_checksum
+from opendbc.car.hyundai.ioniq6_cluster_experiment import AdjacentCarTracker, LeadDisplayFilter, adjacent_distance, \
+                                                          adrv_0x1ea_values, create_stock_like_blindspot_messages, \
+                                                          lead_display_allowed, patch_adrv_0x1ea, scc_status_values, \
+                                                          select_adjacent_track
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags
 
 # Stock 0x1BA bytes 3-8 (route 000000d1--48888e416c); bytes 9-23 are zero apart from the side lamps in byte 16.
@@ -488,3 +490,197 @@ class TestRound2bWiring:
     toggles = _toggles(**ALL_ON, **ROUND_2_ON)
     kwargs = {"car": CAR.KIA_EV6, "frames": 60, "gear": GEAR.reverse, "v_ego": 1.0, "follow_distance": 48.0}
     assert _controller_msgs(toggles, camera_prob=0.0, **kwargs) == _controller_msgs(_toggles(), **kwargs)
+
+
+# Round 3, adjacent cars. Stock ADRV_0x1ea frames (route 000000d1--48888e416c) with their decoded distances.
+STOCK_0X1EA = {
+  "empty": ("ffc049080100000000000000000000ff000000000000000000000000000f0f00", {}),
+  "left_ahead": ("5089170801c026001e010000000000ff000000000000000000000000000f0f00", {"left_ahead": 15.5}),
+  "left_behind": ("38c28f080100000000000000000000ff00a0011e0100000000000000000f0f00", {"left_behind": 5.2}),
+  "right_behind": ("8b256f080100000000000000000000ff00000000b8e1010100000000000f0f00", {"right_behind": 5.5}),
+  "all": ("5ed8830801402b001ee9051e010000ff0000021e31e4010100000000000f0f00",
+          {"left_ahead": 17.3, "right_ahead": 18.9, "left_behind": 6.4, "right_behind": 13.4}),
+}
+
+
+def _packed_0x1ea(packer, can_bus):
+  return next(msg for msg in create_adrv_messages(packer, can_bus, 0) if msg[0] == 0x1EA)
+
+
+class TestPatchAdrv0x1ea:
+  @pytest.mark.parametrize("case", STOCK_0X1EA)
+  def test_matches_stock(self, ioniq_6, case):
+    stock_hex, cars = STOCK_0X1EA[case]
+    stock = bytes.fromhex(stock_hex)
+    assert hkg_can_fd_checksum(0x1EA, None, bytearray(stock)) == int.from_bytes(stock[:2], "little")
+    address, dat, bus = patch_adrv_0x1ea(_packed_0x1ea(*ioniq_6), True, cars)
+    assert (address, bus) == (0x1EA, ioniq_6[1].ECAN)
+    assert dat[3:] == stock[3:]  # byte 2 is the counter
+    assert hkg_can_fd_checksum(address, None, bytearray(dat)) == int.from_bytes(dat[:2], "little")
+
+  def test_inactive_writes_no_cars(self, ioniq_6):
+    packed = _packed_0x1ea(*ioniq_6)
+    dat = patch_adrv_0x1ea(packed, False, STOCK_0X1EA["all"][1])[1]
+    expected = bytearray(packed[1])
+    expected[3] = 0x08
+    assert dat[2:] == bytes(expected[2:])
+    assert hkg_can_fd_checksum(0x1EA, None, bytearray(dat)) == int.from_bytes(dat[:2], "little")
+
+  def test_active_bit_is_cleared_when_inactive(self, ioniq_6):
+    packer, can_bus = ioniq_6
+    packed = next(msg for msg in create_adrv_messages(packer, can_bus, 0, adrv_0x1ea_extra=adrv_0x1ea_values(True))
+                  if msg[0] == 0x1EA)
+    assert packed[1][4] & 1
+    assert patch_adrv_0x1ea(packed, False, {})[1][4] & 1 == 0
+
+  def test_distance_saturates_at_the_field_width(self, ioniq_6):
+    dat = patch_adrv_0x1ea(_packed_0x1ea(*ioniq_6), True, {"right_behind": 30.0})[1]
+    assert (int.from_bytes(dat, "little") >> 163) & 0xFF == 0xFF
+    assert dat[21] & 0xE0 == 0xE0 and dat[22] == 1 and dat[23] == 1
+
+
+def _pt(track_id, d_rel, y_rel, v_rel):
+  return SimpleNamespace(trackId=track_id, dRel=d_rel, yRel=y_rel, vRel=v_rel)
+
+
+V_EGO = 25.0
+
+
+def _run_tracker(tracker, frames, active=True, left_bit=False, right_bit=False):
+  # frames: one list of radar points per 20 Hz frame (a new list each frame, as card.py stores)
+  return [tracker.update(active, list(points), V_EGO, left_bit, right_bit) for points in frames]
+
+
+class TestAdjacentSelection:
+  def test_distance_conversion(self):
+    assert adjacent_distance(3.0) == pytest.approx(1.25)
+    assert adjacent_distance(8.0) == pytest.approx(7.125)
+    assert adjacent_distance(20.0) == 20.0
+    assert adjacent_distance(0.5) == 0.0
+
+  @pytest.mark.parametrize("y_rel, side, found", [
+    (3.0, 1, True), (-3.0, -1, True), (3.0, -1, False), (-3.0, 1, False),
+    (1.0, 1, False), (5.0, 1, False), (-1.5, -1, False), (-4.5, -1, False),
+  ])
+  def test_lane_window(self, y_rel, side, found):
+    assert (select_adjacent_track([_pt(1, 20.0, y_rel, 0.0)], V_EGO, side) is not None) == found
+
+  def test_parked_cars_are_ignored(self):
+    assert select_adjacent_track([_pt(1, 20.0, 3.0, -V_EGO + 1.0)], V_EGO, 1) is None
+    assert select_adjacent_track([_pt(1, 20.0, 3.0, -V_EGO + 3.0)], V_EGO, 1) is not None
+
+  def test_range(self):
+    assert select_adjacent_track([_pt(1, 85.0, 3.0, 0.0)], V_EGO, 1) is None
+    assert select_adjacent_track([_pt(1, -1.0, 3.0, 0.0)], V_EGO, 1) is None
+
+  def test_nearest_wins_and_exclude(self):
+    points = [_pt(1, 30.0, 3.0, 0.0), _pt(2, 12.0, 3.2, -1.0), _pt(3, 5.0, 0.0, 0.0)]
+    assert select_adjacent_track(points, V_EGO, 1) == (12.0, -1.0, 2)
+    assert select_adjacent_track(points, V_EGO, 1, exclude_id=2) == (30.0, 0.0, 1)
+
+
+def _approach(track_id, start, rel_speed, frames, y_rel=3.0):
+  # a car in the left lane whose radar distance changes by rel_speed; the radar keeps it at 2.5 m once alongside
+  return [[_pt(track_id, max(start + rel_speed * 0.05 * i, 2.5), y_rel, rel_speed)] for i in range(frames)]
+
+
+class TestAdjacentCarTracker:
+  def test_blip_never_shows(self):
+    out = _run_tracker(AdjacentCarTracker(), [[_pt(1, 20.0, 3.0, 0.0)]] * 7 + [[]] * 10)
+    assert not any(out)
+
+  def test_shows_after_0_4_s_on_its_side(self):
+    out = _run_tracker(AdjacentCarTracker(), [[_pt(1, 20.0, -3.0, 0.0)]] * 10)
+    assert out[:7] == [{}] * 7
+    assert out[7:] == [{"right_ahead": 20.0}] * 3
+
+  def test_0_9_s_gap_is_bridged_and_1_s_hides(self):
+    out = _run_tracker(AdjacentCarTracker(), [[_pt(1, 20.0, 3.0, 0.0)]] * 10 + [[]] * 20)
+    assert out[10:29] == [{"left_ahead": 20.0}] * 19
+    assert out[29] == {}
+
+  def test_stale_points_count_as_none(self):
+    tracker = AdjacentCarTracker()
+    points = [_pt(1, 20.0, 3.0, 0.0)]
+    out = [tracker.update(True, points, V_EGO, False, False) for _ in range(40)]
+    assert out[9] == {"left_ahead": 20.0}
+    assert out[-1] == {}  # the same list for 0.5 s, then 1 s of hold
+
+  def test_blindspot_bit_never_creates_a_car(self):
+    out = _run_tracker(AdjacentCarTracker(), [[]] * 100, left_bit=True, right_bit=True)
+    assert not any(out)
+
+  def test_pass_ahead_coast_behind_then_dropped_when_the_bit_clears(self):
+    tracker = AdjacentCarTracker()
+    # passing at 5 m/s from 15 m ahead; the radar hangs at 2.5 m alongside while the drawn car keeps moving back
+    out = _run_tracker(tracker, _approach(1, 15.0, -5.0, 80), left_bit=True)
+    slots = [next(iter(cars)) if cars else None for cars in out]
+    first_behind = slots.index("left_behind")
+    assert slots[:7] == [None] * 7
+    assert slots[7:first_behind] == ["left_ahead"] * (first_behind - 7)
+    assert slots[first_behind:] == ["left_behind"] * (80 - first_behind)
+    ahead = [cars["left_ahead"] for cars in out[7:first_behind]]
+    behind = [cars["left_behind"] for cars in out[first_behind:]]
+    assert ahead == sorted(ahead, reverse=True) and min(ahead) >= 0.0
+    assert behind == sorted(behind) and behind[-1] > 2.0
+    # the bit clears: kept for 1 s, then dropped
+    out = _run_tracker(tracker, [[]] * 25)
+    assert all("left_behind" in cars for cars in out[:19])
+    assert out[-1] == {}
+
+  def test_behind_needs_the_bit_within_1_5_s(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, _approach(1, 15.0, -5.0, 60))
+    out = _run_tracker(tracker, [[]] * 60)
+    assert any("left_behind" in cars for cars in out)
+    assert out[-1] == {}
+
+  def test_behind_is_capped_and_ends_past_the_cap(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, _approach(1, 15.0, -5.0, 60))
+    out = _run_tracker(tracker, [[]] * 120, left_bit=True)
+    behind = [cars["left_behind"] for cars in out if "left_behind" in cars]
+    assert max(behind) <= 19.4
+    assert out[-1] == {}
+
+  def test_coast_ends_at_the_time_limit(self):
+    tracker = AdjacentCarTracker()
+    # a slow pass (0.6 m/s) with the bit on throughout: still behind at 10 s, gone after
+    out = _run_tracker(tracker, _approach(1, 6.0, -0.6, 160), left_bit=True)
+    out += _run_tracker(tracker, [[]] * 140, left_bit=True)
+    coast_start = next(i for i, cars in enumerate(out) if cars and cars["left_ahead"] < 3.0)
+    assert "left_behind" in out[coast_start + 199]
+    assert out[coast_start + 201] == {}
+
+  def test_slow_pass_without_the_bit_is_not_drawn_behind(self):
+    tracker = AdjacentCarTracker()
+    # the radar loses the car alongside; it reaches the behind slot 5 s into the coast, long after the 1.5 s grace
+    out = _run_tracker(tracker, _approach(1, 6.0, -0.6, 110)) + _run_tracker(tracker, [[]] * 90)
+    assert any(cars.get("left_ahead", 3.0) < 1.0 for cars in out)
+    assert not any("left_behind" in cars for cars in out)
+
+  def test_a_new_car_ahead_shows_while_the_passed_car_is_behind(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, _approach(1, 15.0, -5.0, 60))
+    _run_tracker(tracker, [[]] * 15, left_bit=True)
+    out = _run_tracker(tracker, [[_pt(2, 30.0, 3.0, -1.0)]] * 10, left_bit=True)
+    assert out[-1]["left_ahead"] == 30.0 and "left_behind" in out[-1]
+
+  def test_the_passed_car_seen_ahead_again_ends_the_coast(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, _approach(1, 15.0, -5.0, 60))
+    out = _run_tracker(tracker, [[_pt(1, 10.0, 3.0, 2.0)]] * 10, left_bit=True)
+    assert "left_behind" not in out[-1]
+    assert out[-1] == {"left_ahead": adjacent_distance(10.0)}
+
+  def test_a_car_is_never_in_both_slots(self):
+    tracker = AdjacentCarTracker()
+    out = _run_tracker(tracker, _approach(1, 15.0, -5.0, 60) + [[_pt(1, 2.5, 3.0, -5.0)]] * 40, left_bit=True)
+    assert not any("left_ahead" in cars and "left_behind" in cars for cars in out)
+
+  def test_reset_when_inactive(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]] * 10)
+    assert _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]], active=False) == [{}]
+    out = _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]] * 8)
+    assert out[:7] == [{}] * 7

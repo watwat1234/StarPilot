@@ -161,3 +161,195 @@ def create_stock_like_blindspot_messages(packer, CAN, front_corner_values,
     CanData(address, bytes(dat), bus),
     packer.make_can_msg("BLINDSPOTS_FRONT_CORNER_1", CAN.ECAN, front),
   ]
+
+
+# Round 3, adjacent cars toggle. Stock's ADAS ECU draws one car per next lane ahead and behind through ADRV_0x1ea.
+# Under OP long the front radar only sees cars ahead (no rear distance on any panda bus), so cars ahead come from the
+# radar, and a car we pass is carried back into the behind slot by dead reckoning while that side's blind-spot bit
+# stays on. The bit never creates a car. Constants fitted on stock route d1 (wat-dev-notes progress.md, round 3
+# gate 1): ahead precision 0.90/0.91 and recall 0.96 (left/right), behind precision 0.95.
+ADJACENT_DT = 0.05  # updated with each 0x1EA frame (20 Hz)
+ADJACENT_LANE_Y = (2.0, 3.8)  # |yRel| window of the next lane, m (yRel > 0 is left)
+ADJACENT_MAX_RADAR_DISTANCE = 80.0
+ADJACENT_MOVING_SPEED = 2.0  # |vEgo + vRel| above this, m/s; parked cars and poles are not drawn
+# Stock's distance runs short of the radar's while a car is alongside: dRel minus this offset, clamped at 0.
+ADJACENT_NEAR_OFFSET = ((4.0, 12.0), (1.75, 0.0))
+ADJACENT_AHEAD_MAX = 79.5  # stock's largest ahead distance
+ADJACENT_BEHIND_MAX = 19.4  # stock draws behind cars under 20.0 m (20.0 is its idle value)
+ADJACENT_SHOW_FRAMES = 8  # 0.4 s
+ADJACENT_HIDE_FRAMES = 20  # 1.0 s
+# The radar keeps a car we pass at dRel 2-4 m while it is alongside, so the coast starts on distance, not on loss.
+ADJACENT_COAST_START = 3.0  # m, converted distance
+ADJACENT_COAST_CLOSING = -0.5  # vRel below this, m/s
+ADJACENT_COAST_REAPPEAR = 6.0  # the coasting track seen ahead beyond this again ends the coast, m
+ADJACENT_BIT_START_GRACE = 1.5  # stock's blind-spot bit came on 0.5-1 s after a car went behind, s
+ADJACENT_BIT_OFF_GRACE = 1.0  # s
+ADJACENT_COAST_LIMIT = 10.0  # s
+ADJACENT_POINTS_STALE_FRAMES = 10  # radar points unchanged this long count as no points (0.5 s)
+
+# ADRV_0x1ea slot layout (wat-dev-notes issue "ioniq6-cluster-bsm-replay", 0x1EA surround layout): Intel start bit
+# and width of the distance (0.1 m), and the companion bytes stock sets with a car in the slot. NEW_SIGNAL_2/3
+# overlap the left-ahead distance in the DBC, so the slots are written as raw bits after packing.
+ADRV_0X1EA_ADDR = 0x1EA
+ADRV_0X1EA_SLOTS = {
+  "left_ahead": (46, 11, ((8, 0x1E), (9, 0x01))),
+  "right_ahead": (75, 11, ((11, 0x1E), (12, 0x01))),
+  "left_behind": (139, 11, ((19, 0x1E), (20, 0x01))),
+  "right_behind": (163, 8, ((21, 0xE0), (22, 0x01), (23, 0x01))),
+}
+
+
+def adjacent_distance(d_rel: float) -> float:
+  return max(d_rel - float(np.interp(d_rel, *ADJACENT_NEAR_OFFSET)), 0.0)
+
+
+def select_adjacent_track(points, v_ego: float, side_sign: int, exclude_id=None):
+  """Nearest moving radar track ahead in the next lane on one side (+1 left, -1 right): (dRel, vRel, trackId)."""
+  best = None
+  for pt in points:
+    if pt.trackId == exclude_id or not (ADJACENT_LANE_Y[0] < side_sign * pt.yRel < ADJACENT_LANE_Y[1]):
+      continue
+    if 0.0 < pt.dRel < ADJACENT_MAX_RADAR_DISTANCE and abs(pt.vRel + v_ego) > ADJACENT_MOVING_SPEED:
+      if best is None or pt.dRel < best[0]:
+        best = (pt.dRel, pt.vRel, pt.trackId)
+  return best
+
+
+class AdjacentLane:
+  """One side: the car drawn ahead (debounced like LeadDisplayFilter) and a passed car coasting behind."""
+  def __init__(self, side_sign: int):
+    self.side_sign = side_sign
+    self.reset()
+
+  def reset(self):
+    self.visible = False
+    self.on_frames = 0
+    self.off_frames = 0
+    self.distance = 0.0
+    self.rel_speed = 0.0
+    self.coast = None  # position of the passed car, m (+ ahead, - behind)
+    self.coast_id = None
+    self.coast_rel_speed = 0.0
+    self.coast_time = 0.0
+    self.bit_seen = False
+    self.bit_off_time = 0.0
+
+  def _coast_step(self, points, blindspot: bool):
+    self.coast += self.coast_rel_speed * ADJACENT_DT
+    self.coast_time += ADJACENT_DT
+    # The grace runs from the start of the pass: on d1, passed cars that drifted back slowly without the bit coming on
+    # were mostly not drawn behind by stock.
+    if blindspot:
+      self.bit_seen = True
+      self.bit_off_time = 0.0
+    else:
+      self.bit_off_time += ADJACENT_DT
+
+    bit_grace = ADJACENT_BIT_OFF_GRACE if self.bit_seen else ADJACENT_BIT_START_GRACE
+    reappeared = any(pt.trackId == self.coast_id and adjacent_distance(pt.dRel) > ADJACENT_COAST_REAPPEAR
+                     for pt in points)
+    if (reappeared or self.coast_time > ADJACENT_COAST_LIMIT or -self.coast > ADJACENT_BEHIND_MAX or
+        (self.coast < 0.0 and self.bit_off_time > bit_grace)):
+      self.coast = None
+      self.coast_id = None
+
+  def update(self, points, v_ego: float, blindspot: bool) -> tuple[float | None, float | None]:
+    """Returns (ahead, behind) distances in stock's coordinate, None for an empty slot."""
+    if self.coast is not None:
+      self._coast_step(points, blindspot)
+
+    # After a coast ends, a car the radar still holds alongside can be picked up and passed again; stock drew a car
+    # there in most such frames on d1.
+    track = select_adjacent_track(points, v_ego, self.side_sign, exclude_id=self.coast_id)
+    if track is not None:
+      distance, rel_speed, track_id = adjacent_distance(track[0]), track[1], track[2]
+
+    if self.visible:
+      if track is None:
+        self.off_frames += 1
+        if self.off_frames >= ADJACENT_HIDE_FRAMES:
+          self.visible = False
+          self.on_frames = 0
+      else:
+        self.off_frames = max(self.off_frames - 1, 0)
+        self.distance, self.rel_speed = distance, rel_speed
+        if self.coast is None and distance < ADJACENT_COAST_START and rel_speed < ADJACENT_COAST_CLOSING:
+          # We are passing it: dead reckoning from here, and the ahead slot is free for the next car.
+          self.coast, self.coast_id, self.coast_rel_speed = distance, track_id, rel_speed
+          self.coast_time, self.bit_seen, self.bit_off_time = 0.0, blindspot, 0.0
+          self.visible = False
+          self.on_frames = 0
+    else:
+      self.on_frames = self.on_frames + 1 if track is not None else max(self.on_frames - 1, 0)
+      if track is not None:
+        self.distance, self.rel_speed = distance, rel_speed
+      if self.on_frames >= ADJACENT_SHOW_FRAMES:
+        self.visible = True
+        self.off_frames = 0
+
+    ahead = min(self.distance, ADJACENT_AHEAD_MAX) if self.visible else None
+    behind = None
+    if self.coast is not None:
+      if self.coast >= 0.0:
+        ahead = self.coast  # the passed car keeps the ahead slot until it is alongside
+      else:
+        behind = min(-self.coast, ADJACENT_BEHIND_MAX)
+    return ahead, behind
+
+
+class AdjacentCarTracker:
+  """Both sides, updated once per 0x1EA frame. Cars are drawn only while active (engaged, in drive)."""
+  def __init__(self):
+    self.left = AdjacentLane(1)
+    self.right = AdjacentLane(-1)
+    self.reset()
+
+  def reset(self):
+    self.left.reset()
+    self.right.reset()
+    self.last_points = None
+    self.stale_frames = 0
+
+  def update(self, active: bool, points, v_ego: float, left_blindspot: bool, right_blindspot: bool) -> dict:
+    if not active:
+      self.reset()
+      return {}
+
+    # card.py stores each new radar frame's point list; the same list coming back means no new radar frame.
+    if points is self.last_points:
+      self.stale_frames += 1
+    else:
+      self.last_points = points
+      self.stale_frames = 0
+    if points is None or self.stale_frames >= ADJACENT_POINTS_STALE_FRAMES:
+      points = []
+
+    left_ahead, left_behind = self.left.update(points, v_ego, left_blindspot)
+    right_ahead, right_behind = self.right.update(points, v_ego, right_blindspot)
+    cars = {"left_ahead": left_ahead, "right_ahead": right_ahead, "left_behind": left_behind,
+            "right_behind": right_behind}
+    return {slot: distance for slot, distance in cars.items() if distance is not None}
+
+
+def patch_adrv_0x1ea(msg: CanData, active: bool, cars: dict) -> CanData:
+  """Writes the active bit, stock's byte 3 and the car slots into a packed ADRV_0x1ea frame; recomputes the CRC.
+
+  Empty slots are left at zero (stock sends zeros there too). Cars are written only while active.
+  """
+  address, dat, bus = msg
+  dat = bytearray(dat)
+  dat[3] = 0x08
+  dat[4] = (dat[4] & 0xFE) | int(active)
+  if active:
+    raw = int.from_bytes(dat, "little")
+    for slot, distance in cars.items():
+      start, width, companions = ADRV_0X1EA_SLOTS[slot]
+      value = min(int(round(distance * 10)), (1 << width) - 1)
+      raw = (raw & ~(((1 << width) - 1) << start)) | (value << start)
+      for byte, bits in companions:
+        raw |= bits << (8 * byte)
+    dat = bytearray(raw.to_bytes(len(dat), "little"))
+  crc = hkg_can_fd_checksum(address, None, dat)
+  dat[0] = crc & 0xFF
+  dat[1] = (crc >> 8) & 0xFF
+  return CanData(address, bytes(dat), bus)

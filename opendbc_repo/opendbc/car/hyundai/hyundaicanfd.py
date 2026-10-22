@@ -823,7 +823,7 @@ def create_fca_warning_light(packer, CAN, frame):
 
 
 def create_adrv_messages(packer, CAN, frame, blended_hda2=False, car_fingerprint=None, drive_gear=False,
-                         v_ego=None, adrv_0x1ea_extra=None):
+                         v_ego=None, adrv_0x1ea_extra=None, adrv_0x1ea_patch=None):
   # messages needed to car happy after disabling
   # the ADAS Driving ECU to do longitudinal control
 
@@ -845,7 +845,8 @@ def create_adrv_messages(packer, CAN, frame, blended_hda2=False, car_fingerprint
     }
     if adrv_0x1ea_extra:
       values.update(adrv_0x1ea_extra)
-    ret.append(packer.make_can_msg("ADRV_0x1ea", CAN.ECAN, values))
+    msg = packer.make_can_msg("ADRV_0x1ea", CAN.ECAN, values)
+    ret.append(adrv_0x1ea_patch(msg) if adrv_0x1ea_patch is not None else msg)
 
     values = {
       'SET_ME_E1': 0xe1,

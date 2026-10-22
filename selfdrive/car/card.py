@@ -297,6 +297,8 @@ class Car:
 
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
+    if RD is not None:
+      self.CI.CS.adjacent_radar_points = RD.points  # Ioniq 6 cluster HUD experiment (never merged): adjacent cars
 
     self.sm.update(0)
 

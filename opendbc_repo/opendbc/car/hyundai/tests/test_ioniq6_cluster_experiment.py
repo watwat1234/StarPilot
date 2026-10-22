@@ -255,8 +255,9 @@ ALL_OFF = dict.fromkeys(ALL_ON, False)
 def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
                      rear_corners=None, override=False, t_follow=1.5, lead_frames=None, toggle_frames=None,
                      distance_bars=3, follow_distance=0.0, gear=structs.CarState.GearShifter.drive, v_ego=25.0,
-                     camera_prob=1.0, gear_frames=None):
+                     camera_prob=1.0, gear_frames=None, points=None):
   # lead_frames / toggle_frames / gear_frames: one value per frame, in place of lead_visible / toggles / gear
+  # points: radar points, stored as a new list each frame (as card.py does on each radar frame)
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -293,6 +294,8 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
       cs.openpilot_lead_visible = cc.hudControl.leadVisible = lead_frames[i]
     if gear_frames is not None:
       cs.out.gearShifter = gear_frames[i]
+    if points is not None:
+      cs.adjacent_radar_points = list(points)
     frame_toggles = toggle_frames[i] if toggle_frames is not None else toggles
     msgs += controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc,
                                          frame_toggles, lka_icon=2, lfa_icon=2)
@@ -684,3 +687,48 @@ class TestAdjacentCarTracker:
     assert _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]], active=False) == [{}]
     out = _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]] * 8)
     assert out[:7] == [{}] * 7
+
+
+ADJACENT_ON = {"ioniq6_hud_adjacent_cars": True}
+LEFT_CAR = [_pt(1, 20.0, 3.0, 0.0)]
+
+
+def _0x1ea_frames(msgs):
+  return [dat for address, dat, _ in msgs if address == 0x1EA]
+
+
+class TestRound3Wiring:
+  @pytest.mark.parametrize("base", [ALL_OFF, {**ALL_ON, **ROUND_2_ON}])
+  def test_switch_off_matches_round_2b(self, base):
+    off = _controller_msgs(_toggles(**base, ioniq6_hud_adjacent_cars=False), frames=60, points=LEFT_CAR)
+    assert off == _controller_msgs(_toggles(**base), frames=60)
+
+  @pytest.mark.parametrize("base", [ALL_OFF, ALL_ON])
+  def test_switch_on_changes_only_0x1ea(self, base):
+    off = _controller_msgs(_toggles(**base), frames=60, points=LEFT_CAR)
+    on = _controller_msgs(_toggles(**base, **ADJACENT_ON), frames=60, points=LEFT_CAR)
+    assert [m for m in on if m[0] != 0x1EA] == [m for m in off if m[0] != 0x1EA]
+    assert len(_0x1ea_frames(on)) == len(_0x1ea_frames(off)) == 12
+    assert _0x1ea_frames(on) != _0x1ea_frames(off)
+
+  def test_left_car_shows_after_0_4_s(self):
+    frames = _0x1ea_frames(_controller_msgs(_toggles(**ADJACENT_ON), frames=60, points=LEFT_CAR))
+    assert all(dat[3] == 0x08 and dat[4] & 1 for dat in frames)
+    assert [dat[8] for dat in frames] == [0] * 7 + [0x1E] * 5
+    assert (int.from_bytes(frames[-1], "little") >> 46) & 0x7FF == 200
+    assert all(hkg_can_fd_checksum(0x1EA, None, bytearray(dat)) == int.from_bytes(dat[:2], "little") for dat in frames)
+
+  @pytest.mark.parametrize("kwargs", [{"enabled": False}, {"gear": GEAR.reverse}])
+  def test_nothing_drawn_when_disengaged_or_outside_drive(self, kwargs):
+    frames = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=LEFT_CAR, **kwargs))
+    assert all(dat[3] == 0x08 and dat[4] & 1 == 0 and not any(dat[5:15]) for dat in frames)
+
+  def test_blindspot_bit_alone_draws_nothing(self):
+    # the harness reports the left blind-spot bit on every frame
+    frames = _0x1ea_frames(_controller_msgs(_toggles(**ADJACENT_ON), frames=60, points=[]))
+    assert len(frames) == 12
+    assert all(dat[4] & 1 and dat[5:15] == bytes(10) and dat[16:28] == bytes(12) for dat in frames)
+
+  def test_other_cars_ignore_the_switch(self):
+    kwargs = {"car": CAR.KIA_EV6, "frames": 60, "points": LEFT_CAR}
+    assert _controller_msgs(_toggles(**ADJACENT_ON), **kwargs) == _controller_msgs(_toggles(), **kwargs)

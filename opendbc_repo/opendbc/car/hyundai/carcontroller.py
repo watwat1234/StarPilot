@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 
 # Provenance: portions of HKG angle control are adapted from sunnypilot/opendbc's
 # hkg-angle-steering-2025 branch at cc4b08625. See CREDITS.md and THIRD_PARTY_NOTICES.md.
@@ -481,6 +482,7 @@ class CarController(CarControllerBase):
     self.params = CarControllerParams(CP)
     self.packer = CANPacker(dbc_names[Bus.pt])
     self._ioniq6_lead_filter = ioniq6_cluster_experiment.LeadDisplayFilter()
+    self._ioniq6_adjacent_cars = ioniq6_cluster_experiment.AdjacentCarTracker()
     self.angle_limit_counter = 0
     self.VM = VehicleModel(CP)
     self.BASELINE_VM = VehicleModel(get_baseline_safety_cp()) if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING else self.VM
@@ -1020,6 +1022,7 @@ class CarController(CarControllerBase):
     hud_bsm_stock = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_bsm_stock", False)
     hud_scc_gap = hud_scc_status and getattr(starpilot_toggles, "ioniq6_hud_scc_gap", False)
     hud_lead_filter = hud_scc_status and getattr(starpilot_toggles, "ioniq6_hud_lead_filter", False)
+    hud_adjacent_cars = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_hud_adjacent_cars", False)
     if not hud_lead_filter:
       self._ioniq6_lead_filter.reset()
 
@@ -1079,11 +1082,22 @@ class CarController(CarControllerBase):
           host_speed = getattr(CS.out, "vEgoRaw", None) \
             if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN else None
           adrv_0x1ea_extra = ioniq6_cluster_experiment.adrv_0x1ea_values(CC.enabled) if hud_adrv_active else None
+          adrv_0x1ea_patch = None
+          if hud_adjacent_cars and self.frame % 5 == 0:  # with each 0x1EA frame
+            adjacent_active = CC.enabled and drive_gear
+            adjacent_cars = self._ioniq6_adjacent_cars.update(
+              adjacent_active, getattr(CS, "adjacent_radar_points", None), float(CS.out.vEgo),
+              CS.left_blindspot_from_radar, CS.right_blindspot_from_radar)
+            adrv_0x1ea_patch = partial(ioniq6_cluster_experiment.patch_adrv_0x1ea, active=adjacent_active,
+                                       cars=adjacent_cars)
+          elif not hud_adjacent_cars:
+            self._ioniq6_adjacent_cars.reset()
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame,
                                                              car_fingerprint=self.CP.carFingerprint,
                                                              drive_gear=drive_gear,
                                                              v_ego=host_speed,
-                                                             adrv_0x1ea_extra=adrv_0x1ea_extra)
+                                                             adrv_0x1ea_extra=adrv_0x1ea_extra,
+                                                             adrv_0x1ea_patch=adrv_0x1ea_patch)
         can_sends.extend(adrv_messages)
         # The front radar treats ADAS_DRV's 0x100 broadcast as its host heartbeat
         # and stops publishing object tracks when it disappears.

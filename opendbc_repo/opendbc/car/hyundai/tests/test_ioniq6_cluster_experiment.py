@@ -681,6 +681,40 @@ class TestAdjacentCarTracker:
     out = _run_tracker(tracker, _approach(1, 15.0, -5.0, 60) + [[_pt(1, 2.5, 3.0, -5.0)]] * 40, left_bit=True)
     assert not any("left_ahead" in cars and "left_behind" in cars for cars in out)
 
+  def test_oncoming_traffic_is_ignored(self):
+    out = _run_tracker(AdjacentCarTracker(), [[_pt(1, 60.0 - 3.75 * i, 3.0, -50.0)] for i in range(16)])
+    assert not any(out)
+
+  def test_passed_car_reacquired_under_a_new_id_is_not_drawn_twice(self):
+    tracker = AdjacentCarTracker()
+    out = _run_tracker(tracker, _approach(1, 15.0, -5.0, 60), left_bit=True)
+    assert "left_behind" in out[-1]
+    out = _run_tracker(tracker, [[]] + [[_pt(7, 2.5, 3.0, -5.0)]] * 20, left_bit=True)
+    assert all("left_behind" in cars and "left_ahead" not in cars for cars in out)
+
+  def test_car_held_alongside_without_the_bit_is_not_passed_again(self):
+    # the radar holds a passed car at 2.5 m for 30 s and the bit never comes on: one pass, behind only within the
+    # 1.5 s start grace, then drawn alongside ahead
+    out = _run_tracker(AdjacentCarTracker(), _approach(1, 15.0, -5.0, 600))
+    behind = [i for i, cars in enumerate(out) if "left_behind" in cars]
+    assert 0 < len(behind) <= 30 and behind[-1] - behind[0] == len(behind) - 1
+    assert not any("left_behind" in cars for cars in out[behind[-1] + 1:])
+    assert out[-1] == {"left_ahead": adjacent_distance(2.5)}
+
+  def test_car_held_alongside_with_the_bit_is_passed_again(self):
+    out = _run_tracker(AdjacentCarTracker(), _approach(1, 15.0, -5.0, 600), left_bit=True)
+    assert sum("left_behind" in cars for cars in out) > 300
+    assert not any("left_ahead" in cars and "left_behind" in cars for cars in out)
+
+  def test_stale_points_stay_stale_across_a_re_engage(self):
+    tracker = AdjacentCarTracker()
+    points = [_pt(1, 20.0, 3.0, 0.0)]
+    for _ in range(20):
+      tracker.update(True, points, V_EGO, False, False)
+    tracker.update(False, points, V_EGO, False, False)
+    out = [tracker.update(True, points, V_EGO, False, False) for _ in range(20)]
+    assert not any(out)
+
   def test_reset_when_inactive(self):
     tracker = AdjacentCarTracker()
     _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]] * 10)
@@ -718,10 +752,17 @@ class TestRound3Wiring:
     assert (int.from_bytes(frames[-1], "little") >> 46) & 0x7FF == 200
     assert all(hkg_can_fd_checksum(0x1EA, None, bytearray(dat)) == int.from_bytes(dat[:2], "little") for dat in frames)
 
-  @pytest.mark.parametrize("kwargs", [{"enabled": False}, {"gear": GEAR.reverse}])
-  def test_nothing_drawn_when_disengaged_or_outside_drive(self, kwargs):
+  @pytest.mark.parametrize("kwargs, active_bit", [({"enabled": False}, 0), ({"gear": GEAR.reverse}, 1)])
+  def test_nothing_drawn_when_disengaged_or_outside_drive(self, kwargs, active_bit):
+    # the active bit follows engagement, as with Stock ADRV 0x1EA Status; cars need drive too
     frames = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=LEFT_CAR, **kwargs))
-    assert all(dat[3] == 0x08 and dat[4] & 1 == 0 and not any(dat[5:15]) for dat in frames)
+    assert all(dat[3] == 0x08 and dat[4] & 1 == active_bit and not any(dat[5:15]) for dat in frames)
+
+  @pytest.mark.parametrize("gear", [GEAR.drive, GEAR.reverse])
+  def test_active_bit_agrees_with_stock_adrv_status(self, gear):
+    both = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=[], gear=gear))
+    adrv = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON), frames=60, points=[], gear=gear))
+    assert [dat[3:5] for dat in both] == [dat[3:5] for dat in adrv]
 
   def test_blindspot_bit_alone_draws_nothing(self):
     # the harness reports the left blind-spot bit on every frame

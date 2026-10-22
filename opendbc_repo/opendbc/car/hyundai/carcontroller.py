@@ -1083,15 +1083,12 @@ class CarController(CarControllerBase):
             if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN else None
           adrv_0x1ea_extra = ioniq6_cluster_experiment.adrv_0x1ea_values(CC.enabled) if hud_adrv_active else None
           adrv_0x1ea_patch = None
-          if hud_adjacent_cars and self.frame % 5 == 0:  # with each 0x1EA frame
-            adjacent_active = CC.enabled and drive_gear
+          if hud_adjacent_cars and self.frame % 5 == 0:  # with each 0x1EA frame; the switch changes only offroad
             adjacent_cars = self._ioniq6_adjacent_cars.update(
-              adjacent_active, getattr(CS, "adjacent_radar_points", None), float(CS.out.vEgo),
+              CC.enabled and drive_gear, getattr(CS, "adjacent_radar_points", None), float(CS.out.vEgo),
               CS.left_blindspot_from_radar, CS.right_blindspot_from_radar)
-            adrv_0x1ea_patch = partial(ioniq6_cluster_experiment.patch_adrv_0x1ea, active=adjacent_active,
+            adrv_0x1ea_patch = partial(ioniq6_cluster_experiment.patch_adrv_0x1ea, active=CC.enabled,
                                        cars=adjacent_cars)
-          elif not hud_adjacent_cars:
-            self._ioniq6_adjacent_cars.reset()
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame,
                                                              car_fingerprint=self.CP.carFingerprint,
                                                              drive_gear=drive_gear,

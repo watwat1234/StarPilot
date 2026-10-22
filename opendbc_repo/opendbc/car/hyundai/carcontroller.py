@@ -1121,6 +1121,10 @@ class CarController(CarControllerBase):
       if self.frame % 2 == 0:
         lead_visible, lead_distance, lead_rel_speed = self._get_canfd_scc_lead_state(CC, CS, now_nanos)
         if hud_lead_filter:
+          lead_visible = lead_visible and ioniq6_cluster_experiment.lead_display_allowed(
+            drive_gear, float(CS.out.vEgo), getattr(CS, "openpilot_lead_camera_prob", 0.0))
+          if not drive_gear:
+            self._ioniq6_lead_filter.reset()  # a held lead clears at once
           lead_visible, lead_distance, lead_rel_speed = self._ioniq6_lead_filter.update(lead_visible, lead_distance,
                                                                                          lead_rel_speed)
         if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN:
@@ -1173,6 +1177,7 @@ class CarController(CarControllerBase):
             CC.enabled, lead_visible, float(CS.out.vEgo), CC.cruiseControl.override,
             distance_bars=hud_control.leadDistanceBars if hud_scc_gap else None,
             t_follow=getattr(CS, "openpilot_t_follow", 0.0) if hud_scc_gap else None,
+            follow_distance=getattr(CS, "openpilot_follow_distance", 0.0) if hud_scc_gap else None,
           ) if hud_scc_status else None
           can_sends.append(hyundaicanfd.create_acc_control(
             self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping, CC.cruiseControl.override,

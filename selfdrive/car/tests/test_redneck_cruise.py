@@ -237,9 +237,9 @@ class TestRedneckCruise(unittest.TestCase):
     sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": True}
     sm.valid = sm.seen.copy()
     sm.__getitem__.side_effect = {
-      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=1.45),
+      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=1.45, desiredFollowDistance=41),
       "longitudinalPlan": SimpleNamespace(shouldStop=False, longitudinalPlanSource="cruise"),
-      "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=85.0, vRel=-0.5)),
+      "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=85.0, vRel=-0.5, modelProb=0.8)),
     }.__getitem__
     car_state = SimpleNamespace()
     card = SimpleNamespace(sm=sm, CI=SimpleNamespace(CS=car_state))
@@ -249,13 +249,15 @@ class TestRedneckCruise(unittest.TestCase):
     self.assertTrue(car_state.openpilot_lead_visible)
     self.assertFalse(car_state.openpilot_longitudinal_adjustment_active)
     self.assertEqual(1.45, car_state.openpilot_t_follow)
+    self.assertEqual(41.0, car_state.openpilot_follow_distance)
+    self.assertEqual(0.8, car_state.openpilot_lead_camera_prob)
 
   def test_card_marks_stop_plan_as_longitudinal_adjustment_without_lead(self):
     sm = MagicMock()
     sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
     sm.valid = sm.seen.copy()
     sm.__getitem__.side_effect = {
-      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=0.0),
+      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=0.0, desiredFollowDistance=0),
       "longitudinalPlan": SimpleNamespace(shouldStop=True, longitudinalPlanSource="e2e"),
     }.__getitem__
     car_state = SimpleNamespace()
@@ -264,6 +266,7 @@ class TestRedneckCruise(unittest.TestCase):
     Car._update_openpilot_lead_state(card, SimpleNamespace(hudControl=SimpleNamespace(leadVisible=False)))
 
     self.assertTrue(car_state.openpilot_longitudinal_adjustment_active)
+    self.assertEqual(0.0, car_state.openpilot_lead_camera_prob)  # no radar lead
 
   def test_card_target_speed_uses_slc_target_with_longitudinal_control(self):
     slc_target = 80.0 * CV.KPH_TO_MS

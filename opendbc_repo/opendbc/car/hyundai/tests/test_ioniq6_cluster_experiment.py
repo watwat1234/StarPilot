@@ -251,8 +251,9 @@ ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
                      rear_corners=None, override=False, t_follow=1.5, lead_frames=None, toggle_frames=None,
-                     distance_bars=3):
-  # lead_frames / toggle_frames: one lead_visible / toggles value per frame, in place of lead_visible / toggles
+                     distance_bars=3, follow_distance=0.0, gear=structs.CarState.GearShifter.drive, v_ego=25.0,
+                     camera_prob=1.0, gear_frames=None):
+  # lead_frames / toggle_frames / gear_frames: one value per frame, in place of lead_visible / toggles / gear
   CP = CarParams.new_message()
   CP.carFingerprint = car
   CP.flags = int(HyundaiFlags.CANFD | HyundaiFlags.CANFD_LKA_STEERING | HyundaiFlags.EV)
@@ -273,12 +274,12 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
     stock_lfa_msg=None, stock_lkas_msg=None, stock_lfahda_cluster_msg=None,
     lfa_block_msg={"COUNTER": 0, **{f"BYTE{i}": 0 for i in range(3, 24)}},
     openpilot_lead_visible=lead_visible, openpilot_lead_distance=30.0, openpilot_lead_rel_speed=-1.0,
-    openpilot_t_follow=t_follow,
+    openpilot_t_follow=t_follow, openpilot_follow_distance=follow_distance, openpilot_lead_camera_prob=camera_prob,
     left_blindspot_from_radar=True, right_blindspot_from_radar=False,
     blindspots_rear_corners_ts=1, blindspots_front_corner_1_ts=1,
     blindspots_rear_corners=rear_corners or _zero_values(packer, "BLINDSPOTS_REAR_CORNERS"),
     blindspots_front_corner_1=_zero_values(packer, "BLINDSPOTS_FRONT_CORNER_1"),
-    out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=structs.CarState.GearShifter.drive, vEgo=25.0, vEgoRaw=25.0,
+    out=SimpleNamespace(steeringAngleDeg=0.0, gearShifter=gear, vEgo=v_ego, vEgoRaw=v_ego,
                         brakePressed=False, gasPressed=False, standstill=False,
                         cruiseState=SimpleNamespace(available=True)),
   )
@@ -287,6 +288,8 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
   for i in range(frames):
     if lead_frames is not None:
       cs.openpilot_lead_visible = cc.hudControl.leadVisible = lead_frames[i]
+    if gear_frames is not None:
+      cs.out.gearShifter = gear_frames[i]
     frame_toggles = toggle_frames[i] if toggle_frames is not None else toggles
     msgs += controller.create_canfd_msgs(now_nanos, True, 0.0, 0.0, 42.0, -1.0, False, cc.hudControl, cs, cc,
                                          frame_toggles, lka_icon=2, lfa_icon=2)
@@ -433,3 +436,52 @@ class TestRound2Wiring:
     scc = _scc_frames(_controller_msgs(on, frames=64, lead_frames=lead_frames, toggle_frames=toggle_frames))
     assert _scc_lead_shown(scc[29])
     assert not _scc_lead_shown(scc[-1])  # without the reset the lead would still be held
+
+
+GEAR = structs.CarState.GearShifter
+FILTER_ON = {**SCC_ON, "ioniq6_hud_lead_filter": True}
+
+
+class TestRound2bWiring:
+  def test_gap_sends_openpilot_target_gap(self):
+    dat = _by_address(_controller_msgs(_toggles(**SCC_ON, ioniq6_hud_scc_gap=True), follow_distance=48.0))[0x1A0]
+    assert int.from_bytes(dat[24:26], "little") & 0x7FF == 480
+
+  def test_follow_distance_ignored_without_gap(self):
+    toggles = _toggles(**SCC_ON)
+    assert _controller_msgs(toggles, follow_distance=48.0) == _controller_msgs(toggles)
+
+  @pytest.mark.parametrize("gear", [GEAR.reverse, GEAR.park, GEAR.neutral])
+  def test_filter_hides_the_lead_outside_drive(self, gear):
+    scc = _scc_frames(_controller_msgs(_toggles(**FILTER_ON), frames=100, gear=gear, v_ego=1.0))
+    assert not any(_scc_lead_shown(dat) for dat in scc)
+
+  def test_held_lead_clears_on_the_first_frame_in_reverse(self):
+    gear_frames = [GEAR.drive] * 60 + [GEAR.reverse] * 4
+    scc = _scc_frames(_controller_msgs(_toggles(**FILTER_ON), frames=64, gear_frames=gear_frames))
+    assert _scc_lead_shown(scc[29])
+    assert not _scc_lead_shown(scc[30])
+
+  def test_slow_radar_only_lead_never_shows(self):
+    scc = _scc_frames(_controller_msgs(_toggles(**FILTER_ON), frames=100, v_ego=2.0, camera_prob=0.3))
+    assert not any(_scc_lead_shown(dat) for dat in scc)
+
+  def test_slow_camera_supported_lead_shows_after_0_4_s(self):
+    scc = _scc_frames(_controller_msgs(_toggles(**FILTER_ON), frames=50, v_ego=2.0, camera_prob=0.9))
+    assert [_scc_lead_shown(dat) for dat in scc] == [False] * 19 + [True] * 6
+
+  def test_fast_radar_only_lead_shows(self):
+    scc = _scc_frames(_controller_msgs(_toggles(**FILTER_ON), frames=50, camera_prob=0.0))
+    assert _scc_lead_shown(scc[-1])
+
+  @pytest.mark.parametrize("gear, v_ego, camera_prob", [(GEAR.reverse, 1.0, 1.0), (GEAR.drive, 2.0, 0.0)])
+  def test_filter_off_keeps_round_2_bytes(self, gear, v_ego, camera_prob):
+    kwargs = {"frames": 60, "gear": gear, "v_ego": v_ego}
+    scc = _scc_frames(_controller_msgs(_toggles(**SCC_ON), camera_prob=camera_prob, **kwargs))
+    assert scc == _scc_frames(_controller_msgs(_toggles(**SCC_ON), camera_prob=1.0, **kwargs))
+    assert all(_scc_lead_shown(dat) for dat in scc)
+
+  def test_other_cars_ignore_the_rules(self):
+    toggles = _toggles(**ALL_ON, **ROUND_2_ON)
+    kwargs = {"car": CAR.KIA_EV6, "frames": 60, "gear": GEAR.reverse, "v_ego": 1.0, "follow_distance": 48.0}
+    assert _controller_msgs(toggles, camera_prob=0.0, **kwargs) == _controller_msgs(_toggles(), **kwargs)

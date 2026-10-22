@@ -289,3 +289,88 @@ def test_visual_direction_uses_filtered_correction_in_deadband():
 def test_visual_direction_follows_applied_correction():
   model = _model(left=-1.5, right=2.1)
   assert get_lane_centering_visual_direction(model, _V_EGO, 0.0, 0.0, True, True, applied_correction=-0.001) == -1
+
+
+def _centered_at(error, **kwargs):
+  # Lanes +-1.8 m, model path offset so the center error (target - path) equals `error`.
+  return _model(model_y=-error, **kwargs)
+
+
+def _run(controller, model, steps, *, speed=_V_EGO, curvature=0.0, smoothing=True, **kwargs):
+  out = []
+  for _ in range(steps):
+    out.append(controller.update(curvature, model, speed, True, 0.0, 0.0, True, True,
+                                 smoothing=smoothing, **kwargs) - curvature)
+  return np.array(out)
+
+
+@pytest.mark.parametrize("smoothing", [False, True])
+def test_smoothing_steady_error_converges_to_unsmoothed_value(smoothing):
+  steady = _run(LaneCenteringController(), _centered_at(0.12), 6000, smoothing=smoothing)[-1]
+  unsmoothed = _run(LaneCenteringController(), _centered_at(0.12), 6000, smoothing=False)[-1]
+  assert unsmoothed > 0.0
+  assert steady == pytest.approx(unsmoothed, rel=1e-6)
+
+
+def test_smoothing_damps_sway_at_deadband_edge():
+  # ~30 mph, error swinging 0.08 +- 0.05 m with a 3.3 s period (route 000000dd seg 4-5).
+  def sway(smoothing):
+    controller = LaneCenteringController()
+    out = []
+    for i in range(3000):
+      model = _centered_at(0.08 + 0.05 * np.sin(2 * np.pi * i * 0.01 / 3.3))
+      out.append(controller.update(0.0, model, 13.4, True, 0.0, 0.0, True, True, smoothing=smoothing))
+    return np.ptp(out[-660:])
+
+  assert sway(False) > 0.0
+  assert sway(True) < 0.4 * sway(False)
+
+
+@pytest.mark.parametrize("error,curvature", [(0.35, 0.0), (0.12, 0.003)])
+def test_smoothing_is_bypassed_for_large_errors_and_turns(error, curvature):
+  # 0.35 m is past the 0.30 m backstop; 0.003 1/m at 20 m/s is 1.2 m/s^2 of lateral accel.
+  model = _centered_at(error)
+  smoothed = _run(LaneCenteringController(), model, 100, curvature=curvature)
+  unsmoothed = _run(LaneCenteringController(), model, 100, curvature=curvature, smoothing=False)
+  assert unsmoothed[-1] > 0.0
+  np.testing.assert_allclose(smoothed, unsmoothed, rtol=1e-9, atol=1e-12)
+
+
+def test_smoothing_rises_slower_below_backstop():
+  model = _centered_at(0.12)
+  smoothed = _run(LaneCenteringController(), model, 100)
+  unsmoothed = _run(LaneCenteringController(), model, 100, smoothing=False)
+  assert 0.0 <= smoothed[-1] < 0.5 * unsmoothed[-1]
+
+
+def test_smoothed_error_is_not_rescaled_by_braking():
+  # Hold a highway error, then brake to 8 m/s with the car centered: the shorter lookahead must not turn the held
+  # error into a larger correction.
+  controller = LaneCenteringController()
+  highway = _run(controller, _centered_at(0.14), 3000, speed=30.0)[-1]
+  braking = _run(controller, _centered_at(0.0), 300, speed=8.0)
+  assert highway > 0.0
+  assert braking.max() <= highway
+
+
+@pytest.mark.parametrize("kwargs", [{"driver_override": True}, {"smoothing": False}])
+def test_override_and_toggle_off_clear_smoothed_error(kwargs):
+  controller = LaneCenteringController()
+  _run(controller, _centered_at(0.12), 1000)
+  assert controller._smoothed_error > 0.0
+  _run(controller, _centered_at(0.12), 1, **kwargs)
+  assert controller._smoothed_error == 0.0
+
+
+def test_lane_change_clears_smoothed_error():
+  controller = LaneCenteringController()
+  _run(controller, _centered_at(0.12), 1000)
+  _run(controller, _centered_at(0.12, lane_change=1), 1)
+  assert controller._smoothed_error == 0.0
+
+
+def test_smoothing_keeps_strength_scaling():
+  model = _centered_at(0.12)
+  base = _run(LaneCenteringController(), model, 6000)[-1]
+  scaled = _run(LaneCenteringController(), model, 6000, strength=2.0)[-1]
+  assert scaled == pytest.approx(base * 2.0, rel=1e-6)

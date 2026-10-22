@@ -138,6 +138,20 @@ class TestLeadDisplayFilter:
     out = _run_filter(LeadDisplayFilter(), [(True, 30), (False, 50), (True, 25)])
     assert [visible for visible, _, _ in out[80:]] == [False] * 19 + [True] * 6
 
+  def test_short_dropouts_do_not_keep_a_lead_hidden(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 19), (False, 1)] * 3)
+    assert out[-1][0]
+    assert [visible for visible, _, _ in out].index(True) < 30
+
+  def test_alternating_flicker_never_shows(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 5), (False, 5)] * 20)
+    assert not any(visible for visible, _, _ in out)
+
+  def test_rare_blips_do_not_keep_a_lead_shown(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 30)] + [(False, 44), (True, 1)] * 3)
+    assert not out[-1][0]
+    assert out[-1] == (False, 40.0, -1.0)  # the blip's own values pass through once hidden
+
   def test_reset(self):
     lead_filter = LeadDisplayFilter()
     _run_filter(lead_filter, [(True, 30)])
@@ -205,7 +219,8 @@ ALL_OFF = dict.fromkeys(ALL_ON, False)
 
 
 def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
-                     rear_corners=None, override=False, t_follow=1.5, lead_frames=None, toggle_frames=None):
+                     rear_corners=None, override=False, t_follow=1.5, lead_frames=None, toggle_frames=None,
+                     distance_bars=3):
   # lead_frames / toggle_frames: one lead_visible / toggles value per frame, in place of lead_visible / toggles
   CP = CarParams.new_message()
   CP.carFingerprint = car
@@ -221,7 +236,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
     actuators=SimpleNamespace(longControlState=LongCtrlState.pid, accel=0.0),
     cruiseControl=SimpleNamespace(override=override, cancel=False, resume=False),
     leftBlinker=left_blinker, rightBlinker=False,
-    hudControl=SimpleNamespace(leadDistanceBars=3, leadVisible=lead_visible),
+    hudControl=SimpleNamespace(leadDistanceBars=distance_bars, leadVisible=lead_visible),
   )
   cs = SimpleNamespace(
     stock_lfa_msg=None, stock_lkas_msg=None, stock_lfahda_cluster_msg=None,
@@ -351,9 +366,9 @@ class TestRound2Wiring:
   @pytest.mark.parametrize("bars", [1, 2, 3])
   def test_gap_sends_bars_and_follow_time(self, bars):
     toggles = _toggles(**SCC_ON, ioniq6_hud_scc_gap=True)
-    msgs = _controller_msgs(toggles, t_follow=1.5)
+    msgs = _controller_msgs(toggles, t_follow=1.5, distance_bars=bars)
     dat = _by_address(msgs)[0x1A0]
-    assert dat[11] & 0x7 == 3  # harness leadDistanceBars
+    assert dat[11] & 0x7 == bars
     assert int.from_bytes(dat[24:26], "little") & 0x7FF == 375  # 25 m/s x 1.5 s
 
   def test_gap_falls_back_to_stock_headway_without_follow_time(self):

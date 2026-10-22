@@ -5337,7 +5337,7 @@
       {
         "key": "Ioniq6HudLeadFilter",
         "label": "Steady Cluster Lead (Experiment)",
-        "description": "Needs Stock SCC Status. SCC_CONTROL (0x1A0): the cluster shows a lead after 0.4 s of continuous detection and keeps it for 1 s after it is lost, so short detection flickers are not drawn. Display only; driving is unchanged.",
+        "description": "Needs Stock SCC Status. SCC_CONTROL (0x1A0): the cluster shows a lead after 0.4 s of continuous detection and keeps it for 1 s after it is lost, so short detection flickers are not drawn. Changes only the lead fields openpilot sends to the car; openpilot's own driving is unchanged.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "Ioniq6HudExperiment",

@@ -60,8 +60,10 @@ class LeadDisplayFilter:
   """Debounces the lead shown on the cluster (round 2, lead filter toggle), updated once per SCC_CONTROL frame (50 Hz).
 
   openpilot's lead often flips on and off for under 1 s when it is weak and far away; stock's lead runs last ~10 s.
-  The lead is shown after SHOW_FRAMES of continuous lead and hidden after HIDE_FRAMES without one. While held, the
-  last distance and relative speed are repeated.
+  The lead is shown after SHOW_FRAMES of continuous lead and hidden after HIDE_FRAMES without one. The counters are
+  leaky (a frame of the other kind takes one off, it does not reset them), so a lead seen most of the time with short
+  dropouts still shows, and one that only blips now and then still hides. While held, the last distance and relative
+  speed are repeated.
   """
   SHOW_FRAMES = 20  # 0.4 s
   HIDE_FRAMES = 50  # 1.0 s
@@ -77,18 +79,18 @@ class LeadDisplayFilter:
     self.rel_speed = 0.0
 
   def update(self, lead_visible: bool, distance: float, rel_speed: float) -> tuple[bool, float, float]:
-    if lead_visible:
-      self.on_frames += 1
-      self.off_frames = 0
-      if self.visible or self.on_frames >= self.SHOW_FRAMES:
-        self.visible = True
-        self.distance, self.rel_speed = distance, rel_speed
+    if self.visible:
+      self.off_frames = max(self.off_frames - 1, 0) if lead_visible else self.off_frames + 1
+      if self.off_frames >= self.HIDE_FRAMES:
+        self.visible = False
+        self.on_frames = 0
     else:
-      self.on_frames = 0
-      if self.visible:
-        self.off_frames += 1
-        if self.off_frames >= self.HIDE_FRAMES:
-          self.visible = False
+      self.on_frames = self.on_frames + 1 if lead_visible else max(self.on_frames - 1, 0)
+      if self.on_frames >= self.SHOW_FRAMES:
+        self.visible = True
+        self.off_frames = 0
+    if self.visible and lead_visible:
+      self.distance, self.rel_speed = distance, rel_speed
 
     if self.visible:
       return True, self.distance, self.rel_speed

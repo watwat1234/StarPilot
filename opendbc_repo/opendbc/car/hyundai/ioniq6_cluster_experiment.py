@@ -354,8 +354,9 @@ class AdjacentCarTracker:
 def patch_adrv_0x1ea(msg: CanData, active: bool, cars: dict) -> CanData:
   """Writes the active bit, stock's byte 3 and the car slots into a packed ADRV_0x1ea frame; recomputes the CRC.
 
-  byte 3 and the active bit are the values adrv_0x1ea_values sends (active = engaged), so both switches agree.
-  Empty slots are left at zero (stock sends zeros there too). Cars are written only while active.
+  byte 3 is the value adrv_0x1ea_values sends. The caller passes active = in drive, so with both switches on the
+  active bit is set while disengaged too (adrv_0x1ea_values sets it only while engaged). Empty slots are left at
+  zero (stock sends zeros there too). Cars are written only while active.
   """
   address, dat, bus = msg
   dat = bytearray(dat)

@@ -752,17 +752,28 @@ class TestRound3Wiring:
     assert (int.from_bytes(frames[-1], "little") >> 46) & 0x7FF == 200
     assert all(hkg_can_fd_checksum(0x1EA, None, bytearray(dat)) == int.from_bytes(dat[:2], "little") for dat in frames)
 
-  @pytest.mark.parametrize("kwargs, active_bit", [({"enabled": False}, 0), ({"gear": GEAR.reverse}, 1)])
-  def test_nothing_drawn_when_disengaged_or_outside_drive(self, kwargs, active_bit):
-    # the active bit follows engagement, as with Stock ADRV 0x1EA Status; cars need drive too
-    frames = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=LEFT_CAR, **kwargs))
-    assert all(dat[3] == 0x08 and dat[4] & 1 == active_bit and not any(dat[5:15]) for dat in frames)
+  @pytest.mark.parametrize("base", [ALL_OFF, ALL_ON])
+  def test_drawn_when_disengaged_in_drive(self, base):
+    # same as engaged: the active bit is set and the car shows after 0.4 s
+    disengaged = _0x1ea_frames(_controller_msgs(_toggles(**base, **ADJACENT_ON), frames=60, points=LEFT_CAR,
+                                                enabled=False))
+    assert all(dat[3] == 0x08 and dat[4] & 1 for dat in disengaged)
+    assert [dat[8] for dat in disengaged] == [0] * 7 + [0x1E] * 5
+    assert (int.from_bytes(disengaged[-1], "little") >> 46) & 0x7FF == 200
 
-  @pytest.mark.parametrize("gear", [GEAR.drive, GEAR.reverse])
-  def test_active_bit_agrees_with_stock_adrv_status(self, gear):
-    both = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=[], gear=gear))
-    adrv = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON), frames=60, points=[], gear=gear))
-    assert [dat[3:5] for dat in both] == [dat[3:5] for dat in adrv]
+  @pytest.mark.parametrize("enabled", [True, False])
+  def test_nothing_drawn_outside_drive(self, enabled):
+    frames = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=LEFT_CAR,
+                                            gear=GEAR.reverse, enabled=enabled))
+    assert all(dat[3] == 0x08 and dat[4] & 1 == 0 and not any(dat[5:15]) for dat in frames)
+
+  @pytest.mark.parametrize("enabled", [True, False])
+  def test_active_bit_follows_drive_with_stock_adrv_status(self, enabled):
+    # with both switches on, Adjacent Cars decides the active bit; Stock ADRV Status alone sets it only engaged
+    both = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON, **ADJACENT_ON), frames=60, points=[], enabled=enabled))
+    adrv = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON), frames=60, points=[], enabled=enabled))
+    assert all(dat[3] == 0x08 and dat[4] & 1 for dat in both)
+    assert all(dat[4] & 1 == int(enabled) for dat in adrv)
 
   def test_blindspot_bit_alone_draws_nothing(self):
     # the harness reports the left blind-spot bit on every frame

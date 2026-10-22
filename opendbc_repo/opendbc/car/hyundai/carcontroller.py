@@ -1084,10 +1084,12 @@ class CarController(CarControllerBase):
           adrv_0x1ea_extra = ioniq6_cluster_experiment.adrv_0x1ea_values(CC.enabled) if hud_adrv_active else None
           adrv_0x1ea_patch = None
           if hud_adjacent_cars and self.frame % 5 == 0:  # with each 0x1EA frame; the switch changes only offroad
+            # Drawn in drive, engaged or not (stock draws them with cruise ready but not set, too). The active bit
+            # follows, overriding Stock ADRV 0x1EA Status's engaged-only bit when both switches are on.
             adjacent_cars = self._ioniq6_adjacent_cars.update(
-              CC.enabled and drive_gear, getattr(CS, "adjacent_radar_points", None), float(CS.out.vEgo),
+              drive_gear, getattr(CS, "adjacent_radar_points", None), float(CS.out.vEgo),
               CS.left_blindspot_from_radar, CS.right_blindspot_from_radar)
-            adrv_0x1ea_patch = partial(ioniq6_cluster_experiment.patch_adrv_0x1ea, active=CC.enabled,
+            adrv_0x1ea_patch = partial(ioniq6_cluster_experiment.patch_adrv_0x1ea, active=drive_gear,
                                        cars=adjacent_cars)
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame,
                                                              car_fingerprint=self.CP.carFingerprint,

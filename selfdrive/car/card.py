@@ -496,7 +496,7 @@ class Car:
     lead_rel_speed = 0.0
     t_follow = 0.0
     follow_distance = 0.0
-    lead_camera_prob = 0.0
+    lead_camera_prob = 1.0  # without a radarState lead, any lead shown comes from the plan or the car's camera
 
     if self.sm.seen['starpilotPlan'] and self.sm.valid['starpilotPlan']:
       longitudinal_adjustment_active = bool(self.sm['starpilotPlan'].trackingLead)

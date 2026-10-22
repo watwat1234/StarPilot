@@ -84,8 +84,9 @@ class TestSccGap:
 
   @pytest.mark.parametrize("follow_distance, t_follow, headway", [
     (41.0, 1.45, 41.0),  # openpilot's target gap
+    (3.0, 1.45, 6.0),  # lead pulling away fast: not under the stop distance
+    (-12.0, 1.45, 6.0),
     (0.0, 1.45, 35.0),  # no tracked lead: vEgo x tFollow + 6 m
-    (-12.0, 1.45, 35.0),  # lead pulling away fast
     (None, 1.45, 35.0),
     (0.0, 0.0, 20.0),  # disengaged: stock 1.0 s
     (None, None, 20.0),
@@ -474,12 +475,14 @@ class TestRound2bWiring:
     scc = _scc_frames(_controller_msgs(_toggles(**FILTER_ON), frames=50, camera_prob=0.0))
     assert _scc_lead_shown(scc[-1])
 
-  @pytest.mark.parametrize("gear, v_ego, camera_prob", [(GEAR.reverse, 1.0, 1.0), (GEAR.drive, 2.0, 0.0)])
-  def test_filter_off_keeps_round_2_bytes(self, gear, v_ego, camera_prob):
-    kwargs = {"frames": 60, "gear": gear, "v_ego": v_ego}
-    scc = _scc_frames(_controller_msgs(_toggles(**SCC_ON), camera_prob=camera_prob, **kwargs))
-    assert scc == _scc_frames(_controller_msgs(_toggles(**SCC_ON), camera_prob=1.0, **kwargs))
-    assert all(_scc_lead_shown(dat) for dat in scc)
+  @pytest.mark.parametrize("gap", [False, True])
+  def test_filter_off_ignores_gear_and_camera(self, gap):
+    toggles = _toggles(**SCC_ON, ioniq6_hud_scc_gap=gap)
+    kwargs = {"frames": 60, "v_ego": 2.0}
+    drive = _scc_frames(_controller_msgs(toggles, gear=GEAR.drive, camera_prob=1.0, **kwargs))
+    for gear, camera_prob in [(GEAR.reverse, 1.0), (GEAR.park, 0.0), (GEAR.drive, 0.0)]:
+      assert _scc_frames(_controller_msgs(toggles, gear=gear, camera_prob=camera_prob, **kwargs)) == drive
+    assert all(_scc_lead_shown(dat) for dat in drive)
 
   def test_other_cars_ignore_the_rules(self):
     toggles = _toggles(**ALL_ON, **ROUND_2_ON)

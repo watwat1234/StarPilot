@@ -39,12 +39,12 @@ def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_overr
                       distance_bars: int | None = None, t_follow: float | None = None,
                       follow_distance: float | None = None) -> dict:
   # distance_bars, t_follow and follow_distance (gap toggle) replace stock's fixed 6 and 1.0 s with openpilot's
-  # personality bars (1-3) and target gap. follow_distance (desiredFollowDistance) is 0 unless openpilot tracks a
-  # lead, and negative while a lead pulls away fast; then the gap is estimated from t_follow, and t_follow is 0 while
-  # disengaged, so 1.0 s is kept then.
+  # personality bars (1-3) and target gap. follow_distance (desiredFollowDistance) shrinks and goes negative while a
+  # lead pulls away fast, so it is kept at STOP_DISTANCE_M or more. It is 0 unless openpilot tracks a lead; then the
+  # gap is estimated from t_follow, and t_follow is 0 while disengaged, so 1.0 s is kept then.
   if enabled:
-    if follow_distance is not None and follow_distance > 0:
-      gap = follow_distance
+    if follow_distance:
+      gap = max(follow_distance, STOP_DISTANCE_M)
     elif t_follow:
       gap = v_ego * t_follow + STOP_DISTANCE_M
     else:

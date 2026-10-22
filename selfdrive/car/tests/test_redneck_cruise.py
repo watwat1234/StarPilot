@@ -266,7 +266,7 @@ class TestRedneckCruise(unittest.TestCase):
     Car._update_openpilot_lead_state(card, SimpleNamespace(hudControl=SimpleNamespace(leadVisible=False)))
 
     self.assertTrue(car_state.openpilot_longitudinal_adjustment_active)
-    self.assertEqual(0.0, car_state.openpilot_lead_camera_prob)  # no radar lead
+    self.assertEqual(1.0, car_state.openpilot_lead_camera_prob)  # no radar lead to judge
 
   def test_card_target_speed_uses_slc_target_with_longitudinal_control(self):
     slc_target = 80.0 * CV.KPH_TO_MS

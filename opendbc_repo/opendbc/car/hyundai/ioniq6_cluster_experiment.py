@@ -27,11 +27,15 @@ NO_LEAD_REL_SPEED = 34.6
 REAR_CORNERS_UNDEFINED_BITS = (25, 65)
 
 
-def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_override: bool = False) -> dict:
+def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_override: bool = False,
+                      distance_bars: int | None = None, t_follow: float | None = None) -> dict:
+  # distance_bars and t_follow (round 2, gap toggle) replace stock's fixed 6 and 1.0 s with openpilot's personality
+  # bars (1-3) and follow time. t_follow is 0 while openpilot is disengaged, so 1.0 s is kept then.
   if enabled:
+    headway = t_follow if t_follow else STOCK_HEADWAY_S
     values = {
-      "DISTANCE_SETTING": STOCK_DISTANCE_SETTING,
-      "NEW_SIGNAL_15": float(np.clip(v_ego * STOCK_HEADWAY_S, 0.0, NO_LEAD_DISTANCE)),
+      "DISTANCE_SETTING": STOCK_DISTANCE_SETTING if distance_bars is None else int(distance_bars),
+      "NEW_SIGNAL_15": float(np.clip(v_ego * headway, 0.0, NO_LEAD_DISTANCE)),
     }
   else:
     values = {"DISTANCE_SETTING": 0, "NEW_SIGNAL_15": NO_LEAD_DISTANCE}
@@ -50,6 +54,45 @@ def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_overr
     values["ACC_ObjRelSpd"] = NO_LEAD_REL_SPEED
     values["ObjValid"] = 1
   return values
+
+
+class LeadDisplayFilter:
+  """Debounces the lead shown on the cluster (round 2, lead filter toggle), updated once per SCC_CONTROL frame (50 Hz).
+
+  openpilot's lead often flips on and off for under 1 s when it is weak and far away; stock's lead runs last ~10 s.
+  The lead is shown after SHOW_FRAMES of continuous lead and hidden after HIDE_FRAMES without one. While held, the
+  last distance and relative speed are repeated.
+  """
+  SHOW_FRAMES = 20  # 0.4 s
+  HIDE_FRAMES = 50  # 1.0 s
+
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.visible = False
+    self.on_frames = 0
+    self.off_frames = 0
+    self.distance = 0.0
+    self.rel_speed = 0.0
+
+  def update(self, lead_visible: bool, distance: float, rel_speed: float) -> tuple[bool, float, float]:
+    if lead_visible:
+      self.on_frames += 1
+      self.off_frames = 0
+      if self.visible or self.on_frames >= self.SHOW_FRAMES:
+        self.visible = True
+        self.distance, self.rel_speed = distance, rel_speed
+    else:
+      self.on_frames = 0
+      if self.visible:
+        self.off_frames += 1
+        if self.off_frames >= self.HIDE_FRAMES:
+          self.visible = False
+
+    if self.visible:
+      return True, self.distance, self.rel_speed
+    return False, distance, rel_speed
 
 
 def adrv_0x1ea_values(enabled: bool) -> dict:

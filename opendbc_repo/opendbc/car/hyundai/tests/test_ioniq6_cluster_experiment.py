@@ -7,8 +7,8 @@ from opendbc.car import Bus, structs
 from opendbc.car.structs import CarParams
 from opendbc.car.hyundai.carcontroller import CarController, LongCtrlState
 from opendbc.car.hyundai.hyundaicanfd import CanBus, create_blindspot_status_messages, hkg_can_fd_checksum
-from opendbc.car.hyundai.ioniq6_cluster_experiment import adrv_0x1ea_values, create_stock_like_blindspot_messages, \
-                                                          scc_status_values
+from opendbc.car.hyundai.ioniq6_cluster_experiment import LeadDisplayFilter, adrv_0x1ea_values, \
+                                                          create_stock_like_blindspot_messages, scc_status_values
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags
 
 # Stock 0x1BA bytes 3-8 (route 000000d1--48888e416c); bytes 9-23 are zero apart from the side lamps in byte 16.
@@ -74,6 +74,75 @@ class TestSccStatusValues:
   @pytest.mark.parametrize("v_ego, headway", [(-1.0, 0.0), (0.0, 0.0), (300.0, 204.6)])
   def test_headway_is_clipped(self, v_ego, headway):
     assert scc_status_values(True, True, v_ego)["NEW_SIGNAL_15"] == headway
+
+
+class TestSccGap:
+  @pytest.mark.parametrize("bars", [1, 2, 3])
+  def test_engaged_sends_personality_bars(self, bars):
+    assert scc_status_values(True, True, 20.0, distance_bars=bars)["DISTANCE_SETTING"] == bars
+
+  @pytest.mark.parametrize("t_follow, headway", [(1.45, 29.0), (0.0, 20.0), (None, 20.0)])
+  def test_engaged_headway_uses_follow_time(self, t_follow, headway):
+    assert scc_status_values(True, True, 20.0, t_follow=t_follow)["NEW_SIGNAL_15"] == pytest.approx(headway)
+
+  def test_headway_is_clipped(self):
+    assert scc_status_values(True, True, 150.0, t_follow=1.6)["NEW_SIGNAL_15"] == 204.6
+
+  @pytest.mark.parametrize("lead_visible", [True, False])
+  def test_disengaged_unchanged(self, lead_visible):
+    assert scc_status_values(False, lead_visible, 20.0, distance_bars=3, t_follow=1.5) == \
+           scc_status_values(False, lead_visible, 20.0)
+
+  def test_only_gap_fields_change(self):
+    gap = scc_status_values(True, True, 20.0, distance_bars=2, t_follow=1.4)
+    round_1 = scc_status_values(True, True, 20.0)
+    assert {k: v for k, v in gap.items() if k not in ("DISTANCE_SETTING", "NEW_SIGNAL_15")} == \
+           {k: v for k, v in round_1.items() if k not in ("DISTANCE_SETTING", "NEW_SIGNAL_15")}
+
+
+def _run_filter(lead_filter, pattern):
+  # pattern: (lead_visible, frames) runs at 50 Hz; returns the outputs, one per frame
+  out = []
+  for lead_visible, frames in pattern:
+    for i in range(frames):
+      out.append(lead_filter.update(lead_visible, 40.0 + i, -1.0) if lead_visible else
+                 lead_filter.update(False, 0.0, 0.0))
+  return out
+
+
+class TestLeadDisplayFilter:
+  def test_short_blip_never_shows(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 15), (False, 10)])  # 0.3 s
+    assert not any(visible for visible, _, _ in out)
+
+  def test_shows_after_0_4_s(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 25)])
+    assert [visible for visible, _, _ in out] == [False] * 19 + [True] * 6
+    assert out[19] == (True, 59.0, -1.0)
+    assert out[-1] == (True, 64.0, -1.0)
+
+  def test_hidden_frames_pass_the_inputs_through(self):
+    assert LeadDisplayFilter().update(True, 30.0, 2.0) == (False, 30.0, 2.0)
+
+  def test_0_9_s_gap_is_bridged_with_the_last_lead(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 30), (False, 45), (True, 1)])
+    assert all(visible for visible, _, _ in out[19:])
+    assert set(out[30:75]) == {(True, 69.0, -1.0)}
+    assert out[75] == (True, 40.0, -1.0)
+
+  def test_1_1_s_gap_hides(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 30), (False, 55)])
+    assert [visible for visible, _, _ in out[30:]] == [True] * 49 + [False] * 6
+
+  def test_shows_again_only_after_0_4_s(self):
+    out = _run_filter(LeadDisplayFilter(), [(True, 30), (False, 50), (True, 25)])
+    assert [visible for visible, _, _ in out[80:]] == [False] * 19 + [True] * 6
+
+  def test_reset(self):
+    lead_filter = LeadDisplayFilter()
+    _run_filter(lead_filter, [(True, 30)])
+    lead_filter.reset()
+    assert lead_filter.update(False, 0.0, 0.0) == (False, 0.0, 0.0)
 
 
 def test_adrv_0x1ea_values():

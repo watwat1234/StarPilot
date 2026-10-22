@@ -453,6 +453,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Ioniq6HudSccStatus", {PERSISTENT, BOOL, "0", "0", 3}},
     {"Ioniq6HudAdrvActive", {PERSISTENT, BOOL, "0", "0", 3}},
     {"Ioniq6HudBsmStock", {PERSISTENT, BOOL, "0", "0", 3}},
+    {"Ioniq6HudSccGap", {PERSISTENT, BOOL, "0", "0", 3}},
+    {"Ioniq6HudLeadFilter", {PERSISTENT, BOOL, "0", "0", 3}},
     {"IssueReported", {CLEAR_ON_MANAGER_START, JSON, "{}", "{}"}},
     {"KonikDongleId", {PERSISTENT, STRING, "", "", 0}},
     {"KonikMinutes", {PERSISTENT, INT, "0", "0", 0}},

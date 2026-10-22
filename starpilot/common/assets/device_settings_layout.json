@@ -5325,7 +5325,7 @@
       {
         "key": "Ioniq6HudSccGap",
         "label": "Personality Gap on Cluster (Experiment)",
-        "description": "Needs Stock SCC Status. SCC_CONTROL (0x1A0): while engaged, the distance setting follows the driving personality (1-3 bars) and the headway field is speed x openpilot's follow time, in place of stock's fixed 6 and 1.0 s.",
+        "description": "Needs Stock SCC Status. SCC_CONTROL (0x1A0): while engaged, the distance setting follows the driving personality (1-3 bars) and the gap cloud shows openpilot's target following distance, in place of stock's fixed 6 and speed x 1.0 s.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "Ioniq6HudExperiment",
@@ -5337,7 +5337,7 @@
       {
         "key": "Ioniq6HudLeadFilter",
         "label": "Steady Cluster Lead (Experiment)",
-        "description": "Needs Stock SCC Status. SCC_CONTROL (0x1A0): the cluster shows a lead after 0.4 s of continuous detection and keeps it for 1 s after it is lost, so short detection flickers are not drawn. Changes only the lead fields openpilot sends to the car; openpilot's own driving is unchanged.",
+        "description": "Needs Stock SCC Status. SCC_CONTROL (0x1A0): the cluster shows a lead after 0.4 s of continuous detection and keeps it for 1 s after it is lost, so short detection flickers are not drawn. No lead is drawn outside drive, and under 3 m/s only leads the camera also sees are drawn. Changes only the lead fields openpilot sends to the car; openpilot's own driving is unchanged.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "Ioniq6HudExperiment",

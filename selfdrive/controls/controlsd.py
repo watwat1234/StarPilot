@@ -750,7 +750,8 @@ class Controls:
       bool(CS.leftBlinker or CS.rightBlinker),
       bool(CS.steeringPressed),
       strength=self.starpilot_toggles.lane_centering_strength,
-      smoothing=self.starpilot_toggles.lane_centering_smoothing)
+      smoothing=self.starpilot_toggles.lane_centering_smoothing,
+      a_ego=CS.aEgo)
 
     if self.genesis_highway_stabilizer is not None:
       stabilize_genesis = (CC.latActive and isinstance(self.LaC, LatControlTorque) and

@@ -402,3 +402,20 @@ def test_smoothing_releases_quickly_after_large_errors_and_turns(error, curvatur
   assert unsmoothed[0] > 0.0
   assert smoothed[100] <= 1.1 * unsmoothed[100] + 1e-7
   assert smoothed[199] <= 1.1 * unsmoothed[199] + 1e-7
+
+
+@pytest.mark.parametrize("accel", [2.0, -2.0])
+def test_smoothing_steps_aside_while_speed_changes(accel):
+  # On-ramp or braking at 2 m/s^2 with a steady 0.12 m error: the lookahead (and gain) moves with speed, so a
+  # held error would over- or under-correct; smoothing must follow the unsmoothed correction instead.
+  def ramp(smoothing):
+    controller = LaneCenteringController()
+    v0 = 8.0 if accel > 0 else 25.0
+    _run(controller, _centered_at(0.12), 1000, speed=v0, smoothing=smoothing)
+    out = []
+    for i in range(800):
+      out.append(controller.update(0.0, _centered_at(0.12), v0 + accel * i * 0.01, True, 0.0, 0.0, True, True,
+                                   smoothing=smoothing, a_ego=accel))
+    return np.array(out)
+
+  np.testing.assert_allclose(ramp(True)[200:], ramp(False)[200:], rtol=0.05, atol=1e-6)

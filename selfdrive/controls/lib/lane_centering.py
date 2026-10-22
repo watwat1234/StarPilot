@@ -36,24 +36,35 @@ _SMOOTHING_SPEEDS = [8.0, 13.4, 24.6, 31.3]  # m/s, ~18/30/55/70 mph
 _SMOOTHING_TAUS = [1.125, 2.25, 1.125, 0.75]
 _SMOOTHING_FAST_ERROR = [0.15, 0.30]  # m
 _SMOOTHING_FAST_LAT_ACCEL = [0.5, 1.0]  # m/s^2
+_SMOOTHING_FAST_HOLD = 1.0  # s
+_SMOOTHING_RELEASE_TAU = 1.0  # s
 
 
 class LaneCenteringController:
   def __init__(self) -> None:
     self._correction = 0.0
     self._smoothed_error = 0.0
+    self._smoothing_fast = 0.0
 
   def reset(self) -> None:
     self._correction = 0.0
     self._smoothed_error = 0.0
+    self._smoothing_fast = 0.0
+
+  def _release(self, tau: float) -> None:
+    self._correction = float(smooth_value(0.0, self._correction, tau, dt=DT_CTRL))
+    # Slower than the output fade, so brief lane-line dropouts don't erase the smoothed error.
+    self._smoothed_error = float(smooth_value(0.0, self._smoothed_error, _SMOOTHING_RELEASE_TAU, dt=DT_CTRL))
 
   def _smooth_error(self, error: float, lookahead: float, v_ego: float, model_curvature: float) -> float:
     fast = max(np.interp(abs(error), _SMOOTHING_FAST_ERROR, [0.0, 1.0]),
                np.interp(abs(model_curvature) * v_ego ** 2, _SMOOTHING_FAST_LAT_ACCEL, [0.0, 1.0]))
-    tau = (1.0 - fast) * float(np.interp(v_ego, _SMOOTHING_SPEEDS, _SMOOTHING_TAUS))
-    # Filter error / lookahead^2 (curvature units), so a held error isn't rescaled as speed and lookahead change.
+    # Stay fast for a moment after a big error or a turn ends, so a held value is released as quickly as it was taken.
+    self._smoothing_fast = max(float(fast), self._smoothing_fast - DT_CTRL / _SMOOTHING_FAST_HOLD)
+    tau = (1.0 - self._smoothing_fast) * float(np.interp(v_ego, _SMOOTHING_SPEEDS, _SMOOTHING_TAUS))
+    # Filter error / lookahead^2 (curvature units), so a held error keeps its curvature as speed and lookahead change.
     scaled = error / lookahead ** 2
-    self._smoothed_error = scaled if tau <= DT_CTRL else float(smooth_value(scaled, self._smoothed_error, tau, dt=DT_CTRL))
+    self._smoothed_error = float(smooth_value(scaled, self._smoothed_error, tau, dt=DT_CTRL))
     return self._smoothed_error * lookahead ** 2
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
@@ -83,7 +94,7 @@ class LaneCenteringController:
       return model_curvature
 
     if pause_on_signal and turn_signal_active:
-      self._correction = float(smooth_value(0.0, self._correction, _SIGNAL_RELEASE_TAU, dt=DT_CTRL))
+      self._release(_SIGNAL_RELEASE_TAU)
       return model_curvature + self._correction
 
     try:
@@ -104,7 +115,7 @@ class LaneCenteringController:
       (lambda error, lookahead: self._smooth_error(error, lookahead, v_ego, model_curvature)) if smoothing else None,
     )
     if not valid:
-      self._correction = float(smooth_value(0.0, self._correction, _CONFIDENCE_RELEASE_TAU, dt=DT_CTRL))
+      self._release(_CONFIDENCE_RELEASE_TAU)
       return model_curvature + self._correction
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN

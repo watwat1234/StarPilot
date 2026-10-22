@@ -374,3 +374,31 @@ def test_smoothing_keeps_strength_scaling():
   base = _run(LaneCenteringController(), model, 6000)[-1]
   scaled = _run(LaneCenteringController(), model, 6000, strength=2.0)[-1]
   assert scaled == pytest.approx(base * 2.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("pause_phase", [
+  {"model": _centered_at(0.0, lane_change=2), "pause_on_signal": True, "turn_signal_active": True},
+  {"model": _centered_at(0.28, lane_prob=0.2)},
+])
+def test_smoothed_error_fades_with_blinker_pause_and_invalid_lanes(pause_phase):
+  # Hold an error, pause (blinker through a lane change, or lanes lost), then come back centered: the old error
+  # must not come back with the lanes.
+  pause_phase = dict(pause_phase)
+  controller = LaneCenteringController()
+  _run(controller, _centered_at(0.28), 300)
+  _run(controller, pause_phase.pop("model"), 1000, **pause_phase)
+  assert np.abs(_run(controller, _centered_at(0.0), 100)).max() < 1e-6
+
+
+@pytest.mark.parametrize("error,curvature", [(0.35, 0.0), (0.25, 0.003)])
+def test_smoothing_releases_quickly_after_large_errors_and_turns(error, curvature):
+  # After a big error or a turn (both bypass smoothing), the held value is let go as fast as without smoothing.
+  def after(smoothing):
+    controller = LaneCenteringController()
+    _run(controller, _centered_at(error), 300, curvature=curvature, smoothing=smoothing)
+    return _run(controller, _centered_at(0.0), 200, smoothing=smoothing)
+
+  smoothed, unsmoothed = after(True), after(False)
+  assert unsmoothed[0] > 0.0
+  assert smoothed[100] <= 1.1 * unsmoothed[100] + 1e-7
+  assert smoothed[199] <= 1.1 * unsmoothed[199] + 1e-7

@@ -22,20 +22,36 @@ STOCK_CRUISE_OFF_LEAD_OBJ_STATUS = 2
 STOCK_HEADWAY_S = 1.0
 NO_LEAD_DISTANCE = 204.6
 NO_LEAD_REL_SPEED = 34.6
+# openpilot's stop distance (STOP_DISTANCE in selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py, which opendbc
+# cannot import). Its target gap in steady following is vEgo * tFollow + this.
+STOP_DISTANCE_M = 6.0
+
+# Round 2b, lead filter toggle: under this speed a lead is shown only with camera support. On route d8 every slow
+# radar-only lead was a parked car, cross traffic or a blip; at speed radar-only stretches lasted at most 1.6 s.
+SLOW_LEAD_SPEED = 3.0
+SLOW_LEAD_MIN_CAMERA_PROB = 0.5
 
 # Stock BLINDSPOTS_REAR_CORNERS sets two bits that are not DBC signals.
 REAR_CORNERS_UNDEFINED_BITS = (25, 65)
 
 
 def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_override: bool = False,
-                      distance_bars: int | None = None, t_follow: float | None = None) -> dict:
-  # distance_bars and t_follow (round 2, gap toggle) replace stock's fixed 6 and 1.0 s with openpilot's personality
-  # bars (1-3) and follow time. t_follow is 0 while openpilot is disengaged, so 1.0 s is kept then.
+                      distance_bars: int | None = None, t_follow: float | None = None,
+                      follow_distance: float | None = None) -> dict:
+  # distance_bars, t_follow and follow_distance (gap toggle) replace stock's fixed 6 and 1.0 s with openpilot's
+  # personality bars (1-3) and target gap. follow_distance (desiredFollowDistance) is 0 unless openpilot tracks a
+  # lead, and negative while a lead pulls away fast; then the gap is estimated from t_follow, and t_follow is 0 while
+  # disengaged, so 1.0 s is kept then.
   if enabled:
-    headway = t_follow if t_follow else STOCK_HEADWAY_S
+    if follow_distance is not None and follow_distance > 0:
+      gap = follow_distance
+    elif t_follow:
+      gap = v_ego * t_follow + STOP_DISTANCE_M
+    else:
+      gap = v_ego * STOCK_HEADWAY_S
     values = {
       "DISTANCE_SETTING": STOCK_DISTANCE_SETTING if distance_bars is None else int(distance_bars),
-      "NEW_SIGNAL_15": float(np.clip(v_ego * headway, 0.0, NO_LEAD_DISTANCE)),
+      "NEW_SIGNAL_15": float(np.clip(gap, 0.0, NO_LEAD_DISTANCE)),
     }
   else:
     values = {"DISTANCE_SETTING": 0, "NEW_SIGNAL_15": NO_LEAD_DISTANCE}
@@ -54,6 +70,12 @@ def scc_status_values(enabled: bool, lead_visible: bool, v_ego: float, gas_overr
     values["ACC_ObjRelSpd"] = NO_LEAD_REL_SPEED
     values["ObjValid"] = 1
   return values
+
+
+def lead_display_allowed(drive_gear: bool, v_ego: float, camera_prob: float) -> bool:
+  # Round 2b, lead filter toggle. Stock never shows a lead outside drive; on d8 reversing showed a radar-only object
+  # stuck about 2.5 m ahead. Slow radar-only leads are hidden too (see SLOW_LEAD_SPEED). Only ever hides a lead.
+  return drive_gear and (v_ego >= SLOW_LEAD_SPEED or camera_prob > SLOW_LEAD_MIN_CAMERA_PROB)
 
 
 class LeadDisplayFilter:

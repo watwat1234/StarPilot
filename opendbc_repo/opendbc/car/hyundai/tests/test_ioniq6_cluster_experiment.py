@@ -8,7 +8,8 @@ from opendbc.car.structs import CarParams
 from opendbc.car.hyundai.carcontroller import CarController, LongCtrlState
 from opendbc.car.hyundai.hyundaicanfd import CanBus, create_blindspot_status_messages, hkg_can_fd_checksum
 from opendbc.car.hyundai.ioniq6_cluster_experiment import LeadDisplayFilter, adrv_0x1ea_values, \
-                                                          create_stock_like_blindspot_messages, scc_status_values
+                                                          create_stock_like_blindspot_messages, lead_display_allowed, \
+                                                          scc_status_values
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags
 
 # Stock 0x1BA bytes 3-8 (route 000000d1--48888e416c); bytes 9-23 are zero apart from the side lamps in byte 16.
@@ -81,16 +82,26 @@ class TestSccGap:
   def test_engaged_sends_personality_bars(self, bars):
     assert scc_status_values(True, True, 20.0, distance_bars=bars)["DISTANCE_SETTING"] == bars
 
-  @pytest.mark.parametrize("t_follow, headway", [(1.45, 29.0), (0.0, 20.0), (None, 20.0)])
-  def test_engaged_headway_uses_follow_time(self, t_follow, headway):
-    assert scc_status_values(True, True, 20.0, t_follow=t_follow)["NEW_SIGNAL_15"] == pytest.approx(headway)
+  @pytest.mark.parametrize("follow_distance, t_follow, headway", [
+    (41.0, 1.45, 41.0),  # openpilot's target gap
+    (0.0, 1.45, 35.0),  # no tracked lead: vEgo x tFollow + 6 m
+    (-12.0, 1.45, 35.0),  # lead pulling away fast
+    (None, 1.45, 35.0),
+    (0.0, 0.0, 20.0),  # disengaged: stock 1.0 s
+    (None, None, 20.0),
+  ])
+  def test_engaged_gap(self, follow_distance, t_follow, headway):
+    values = scc_status_values(True, True, 20.0, t_follow=t_follow, follow_distance=follow_distance)
+    assert values["NEW_SIGNAL_15"] == pytest.approx(headway)
 
-  def test_headway_is_clipped(self):
-    assert scc_status_values(True, True, 150.0, t_follow=1.6)["NEW_SIGNAL_15"] == 204.6
+  @pytest.mark.parametrize("follow_distance, t_follow", [(300.0, 1.6), (0.0, 1.6)])
+  def test_headway_is_clipped(self, follow_distance, t_follow):
+    values = scc_status_values(True, True, 150.0, t_follow=t_follow, follow_distance=follow_distance)
+    assert values["NEW_SIGNAL_15"] == 204.6
 
   @pytest.mark.parametrize("lead_visible", [True, False])
   def test_disengaged_unchanged(self, lead_visible):
-    assert scc_status_values(False, lead_visible, 20.0, distance_bars=3, t_follow=1.5) == \
+    assert scc_status_values(False, lead_visible, 20.0, distance_bars=3, t_follow=1.5, follow_distance=40.0) == \
            scc_status_values(False, lead_visible, 20.0)
 
   def test_only_gap_fields_change(self):
@@ -98,6 +109,26 @@ class TestSccGap:
     round_1 = scc_status_values(True, True, 20.0)
     assert {k: v for k, v in gap.items() if k not in ("DISTANCE_SETTING", "NEW_SIGNAL_15")} == \
            {k: v for k, v in round_1.items() if k not in ("DISTANCE_SETTING", "NEW_SIGNAL_15")}
+
+
+DRIVE_GEAR, OTHER_GEAR = True, False
+
+
+class TestLeadDisplayAllowed:
+  @pytest.mark.parametrize("v_ego, camera_prob", [(0.0, 1.0), (2.0, 0.9), (10.0, 0.0)])
+  def test_never_outside_drive(self, v_ego, camera_prob):
+    assert not lead_display_allowed(OTHER_GEAR, v_ego, camera_prob)
+
+  @pytest.mark.parametrize("v_ego, camera_prob, allowed", [
+    (2.0, 0.3, False),
+    (2.0, 0.9, True),
+    (10.0, 0.0, True),
+    (2.99, 0.5, False),  # boundaries: under 3 m/s, more than 0.5 needed
+    (2.99, 0.51, True),
+    (3.0, 0.0, True),
+  ])
+  def test_slow_leads_need_the_camera(self, v_ego, camera_prob, allowed):
+    assert lead_display_allowed(DRIVE_GEAR, v_ego, camera_prob) == allowed
 
 
 def _run_filter(lead_filter, pattern):
@@ -369,7 +400,7 @@ class TestRound2Wiring:
     msgs = _controller_msgs(toggles, t_follow=1.5, distance_bars=bars)
     dat = _by_address(msgs)[0x1A0]
     assert dat[11] & 0x7 == bars
-    assert int.from_bytes(dat[24:26], "little") & 0x7FF == 375  # 25 m/s x 1.5 s
+    assert int.from_bytes(dat[24:26], "little") & 0x7FF == 435  # 25 m/s x 1.5 s + 6 m
 
   def test_gap_falls_back_to_stock_headway_without_follow_time(self):
     dat = _by_address(_controller_msgs(_toggles(**SCC_ON, ioniq6_hud_scc_gap=True), t_follow=0.0))[0x1A0]

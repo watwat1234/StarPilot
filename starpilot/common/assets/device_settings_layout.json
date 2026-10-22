@@ -5345,6 +5345,18 @@
         "galaxy_only": true,
         "requires_offroad": true,
         "settings_tier": "advanced"
+      },
+      {
+        "key": "Ioniq6HudAdjacentCars",
+        "label": "Adjacent Cars on Cluster (Experiment)",
+        "description": "ADRV_0x1ea: draws cars in the next lanes from the front radar while engaged in drive, and sets the active bit itself (Stock ADRV 0x1EA Status not needed). Cars ahead show after 0.4 s; a car you pass slides back into the rear slot and stays while its blind-spot icon is on. Cars coming up from behind show only once the front radar sees them. Display only; openpilot's driving is unchanged.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "Ioniq6HudExperiment",
+        "vehicle_makes": ["Hyundai"],
+        "galaxy_only": true,
+        "requires_offroad": true,
+        "settings_tier": "advanced"
       }
     ]
   }

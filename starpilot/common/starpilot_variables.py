@@ -1080,6 +1080,7 @@ class StarPilotVariables:
     toggle.ioniq6_hud_bsm_stock = self.get_value("Ioniq6HudBsmStock", condition=ioniq6_hud_experiment)
     toggle.ioniq6_hud_scc_gap = self.get_value("Ioniq6HudSccGap", condition=toggle.ioniq6_hud_scc_status)
     toggle.ioniq6_hud_lead_filter = self.get_value("Ioniq6HudLeadFilter", condition=toggle.ioniq6_hud_scc_status)
+    toggle.ioniq6_hud_adjacent_cars = self.get_value("Ioniq6HudAdjacentCars", condition=ioniq6_hud_experiment)
     toggle.remap_cancel_to_distance = self.get_value(
       "RemapCancelToDistance",
       condition=toggle.car_make == "gm" and toggle.has_pedal and "BOLT" in toggle.car_model,

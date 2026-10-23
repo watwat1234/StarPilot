@@ -16,7 +16,6 @@ from openpilot.selfdrive.controls.lib.bolt_turn_damping import (
   BOLT_TURN_DAMPING_KD,
   BOLT_TURN_DAMPING_MAX_RATE,
   BoltTurnDamping,
-  get_bolt_turn_error_rate,
 )
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 
@@ -28,7 +27,7 @@ def settled(level, v_ego=SLOW, setpoint=2.0, measurement=1.8, frames=200):
   damping = BoltTurnDamping(DT_CTRL)
   kd = 0.0
   for _ in range(frames):
-    kd = damping.update(level, v_ego, setpoint, measurement, False)
+    kd, _ = damping.update(level, v_ego, setpoint, measurement, 0.0, False)
   return kd
 
 
@@ -56,20 +55,38 @@ class TestBoltTurnDampingGain:
     assert all(a >= b for a, b in zip(gains, gains[1:], strict=False))
     assert gains[25] == pytest.approx(0.5)
 
-  def test_off_while_pressed_then_fades_back(self):
+  def test_fades_out_while_pressed_then_back(self):
     damping = BoltTurnDamping(DT_CTRL)
     for _ in range(200):
-      damping.update(3, SLOW, 2.0, 1.8, False)
-    assert damping.update(3, SLOW, 2.0, 1.8, True) == 0.0
-    after_release = [damping.update(3, SLOW, 2.0, 1.8, False) for _ in range(150)]
+      damping.update(3, SLOW, 2.0, 1.8, 0.0, False)
+    pressed = [damping.update(3, SLOW, 2.0, 1.8, 0.0, True)[0] for _ in range(30)]
+    assert pressed[0] == pytest.approx(0.95)  # no output step on the first pressed frame
+    assert pressed[19] == 0.0 and pressed[-1] == 0.0
+    after_release = [damping.update(3, SLOW, 2.0, 1.8, 0.0, False)[0] for _ in range(150)]
     assert after_release[0] == pytest.approx(0.01)
     assert after_release[-1] == pytest.approx(1.0)
 
+  def test_one_frame_press_flicker_barely_moves_gain(self):
+    damping = BoltTurnDamping(DT_CTRL)
+    for _ in range(200):
+      damping.update(3, SLOW, 2.0, 1.8, 0.0, False)
+    damping.update(3, SLOW, 2.0, 1.8, 0.0, True)
+    assert damping.update(3, SLOW, 2.0, 1.8, 0.0, False)[0] == pytest.approx(0.96)
+
+  def test_reset_starts_from_zero_gain_and_no_setpoint_history(self):
+    damping = BoltTurnDamping(DT_CTRL)
+    for _ in range(200):
+      damping.update(3, SLOW, 2.0, 1.8, 0.0, False)
+    damping.reset()
+    kd, error_rate = damping.update(3, SLOW, -2.0, -1.8, 0.0, False)
+    assert kd == pytest.approx(0.01)
+    assert error_rate == 0.0  # the jump from +2 to -2 across the reset is not a rate
+
   def test_switching_level_ramps(self):
     damping = BoltTurnDamping(DT_CTRL)
-    gains = [damping.update(3, SLOW, 2.0, 1.8, False) for _ in range(150)]
-    gains += [damping.update(1, SLOW, 2.0, 1.8, False) for _ in range(150)]
-    gains += [damping.update(0, SLOW, 2.0, 1.8, False) for _ in range(150)]
+    gains = [damping.update(3, SLOW, 2.0, 1.8, 0.0, False)[0] for _ in range(150)]
+    gains += [damping.update(1, SLOW, 2.0, 1.8, 0.0, False)[0] for _ in range(150)]
+    gains += [damping.update(0, SLOW, 2.0, 1.8, 0.0, False)[0] for _ in range(150)]
     steps = np.abs(np.diff([0.0] + gains))
     assert steps.max() <= 0.01 + 1e-9
     assert gains[149] == pytest.approx(1.0)
@@ -81,18 +98,25 @@ class TestBoltTurnDampingGain:
     assert settled(-1) == 0.0
 
 
-class TestBoltTurnErrorRate:
-  def test_zero_when_following_the_plan(self):
-    assert get_bolt_turn_error_rate(1.5, 1.5) == 0.0
+def error_rates(setpoints, measurement_rate):
+  damping = BoltTurnDamping(DT_CTRL)
+  return [damping.update(3, SLOW, sp, 1.0, measurement_rate, False)[1] for sp in setpoints]
 
-  def test_sign_opposes_wheel_motion_away_from_plan(self):
-    assert get_bolt_turn_error_rate(0.0, 3.0) == -3.0
-    assert get_bolt_turn_error_rate(0.0, -3.0) == 3.0
+
+class TestBoltTurnErrorRate:
+  def test_zero_when_wheel_tracks_setpoint(self):
+    # setpoint ramps at 2 m/s^3 and the (already filtered) wheel rate matches once the filter settles
+    rates = error_rates([1.0 + 2.0 * DT_CTRL * i for i in range(200)], 2.0)
+    assert rates[-1] == pytest.approx(0.0, abs=1e-3)
+
+  def test_sign_opposes_wheel_motion_away_from_setpoint(self):
+    assert error_rates([1.0] * 10, 3.0)[-1] == -3.0
+    assert error_rates([1.0] * 10, -3.0)[-1] == 3.0
 
   def test_wide_clip(self):
-    assert get_bolt_turn_error_rate(0.0, 20.0) == -BOLT_TURN_DAMPING_MAX_RATE
-    assert get_bolt_turn_error_rate(0.0, -20.0) == BOLT_TURN_DAMPING_MAX_RATE
-    assert get_bolt_turn_error_rate(0.0, 5.0) == -5.0  # beyond the 2.5 PID clip
+    assert error_rates([1.0] * 10, 20.0)[-1] == -BOLT_TURN_DAMPING_MAX_RATE
+    assert error_rates([1.0] * 10, -20.0)[-1] == BOLT_TURN_DAMPING_MAX_RATE
+    assert error_rates([1.0] * 10, 5.0)[-1] == -5.0  # beyond the 2.5 PID clip
 
 
 def build(car_name, v_ego, level):
@@ -112,10 +136,11 @@ def build(car_name, v_ego, level):
   return controller, VM, CS, params, SimpleNamespace(bolt_turn_damping_level=level)
 
 
-def run_turn(car_name, v_ego, level, angle_rate_deg, frames=150, target_lat_accel=1.5, switch=None):
+def run_turn(car_name, v_ego, level, angle_rate_deg, frames=150, target_lat_accel=1.5, switch=None, accel=0.0):
   """Hold a steady planned turn while the wheel turns further at angle_rate_deg per second.
 
-  switch = (frame, level) changes the level mid-run, like flipping the onroad favorite."""
+  switch = (frame, level) changes the level mid-run, like flipping the onroad favorite.
+  accel changes the speed each frame while the wheel and the planned curvature stay put."""
   controller, VM, CS, params, toggles = build(car_name, v_ego, level)
   # measurement = -curvature(angle) * v^2, linear in angle with no roll
   angle = target_lat_accel / (-VM.calc_curvature(math.radians(1.0), v_ego, 0.0) * v_ego ** 2)
@@ -128,6 +153,7 @@ def run_turn(car_name, v_ego, level, angle_rate_deg, frames=150, target_lat_acce
     if switch is not None and frame == switch[0]:
       toggles.bolt_turn_damping_level = switch[1]
     CS.steeringAngleDeg = angle
+    CS.vEgo = v_ego + accel * DT_CTRL * frame
     output, _, lac_log = controller.update(True, CS, VM, params, False, desired_curvature, False, 0.2, None, None,
                                            toggles)
     outputs.append(output)
@@ -146,6 +172,11 @@ class TestBoltTurnDampingInController:
   def test_no_damping_when_wheel_follows_plan(self):
     _, _, logs = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, 3, angle_rate_deg=0.0)
     assert abs(logs[-1].d) < 1e-3
+
+  def test_no_damping_from_speed_change_with_steady_wheel(self):
+    # pulling away through a tight turn: lat accel = curvature * v^2 rises with speed on both sides of the error
+    _, _, logs = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 4.0, 3, angle_rate_deg=0.0, frames=200, accel=1.5)
+    assert max(abs(lac_log.d) for lac_log in logs[50:]) < 0.1
 
   def test_level_off_has_no_d(self):
     _, _, logs = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, 0, angle_rate_deg=40.0)

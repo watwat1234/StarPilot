@@ -10,7 +10,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.pid import PIDController
-from openpilot.selfdrive.controls.lib.bolt_turn_damping import BoltTurnDamping, get_bolt_turn_error_rate
+from openpilot.selfdrive.controls.lib.bolt_turn_damping import BoltTurnDamping
 from openpilot.selfdrive.controls.lib.drive_helpers import MIN_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import *  # noqa: F403
@@ -264,6 +264,7 @@ class LatControlTorque(LatControl):
       self.jerk_filter.x = 0.0
       self.prev_desired_lateral_accel = future_desired_lateral_accel
       self.ioniq_6_directional_taper_filter.x = 1.0
+      self.bolt_turn_damping.reset()
     else:
       if self.prev_steering_pressed and not CS.steeringPressed:
         self.pid.i *= self.steer_release_i_decay
@@ -602,9 +603,9 @@ class LatControlTorque(LatControl):
                            CS.vEgo < self.low_speed_reset_threshold or unwind_detected)
       error_rate = 0.0 if self.is_genesis_gv70 and CS.steeringPressed else -measurement_rate
       if self.is_bolt_2022_2023:
-        self.pid._k_d = [[0.0], [self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping_level", 0),
-                                                              CS.vEgo, setpoint, measurement, CS.steeringPressed)]]
-        error_rate = get_bolt_turn_error_rate(desired_lateral_jerk, self.measurement_rate_filter.x)
+        bolt_kd, error_rate = self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping_level", 0), CS.vEgo,
+                                                            setpoint, measurement, self.measurement_rate_filter.x, CS.steeringPressed)
+        self.pid._k_d = [[0.0], [bolt_kd]]
       output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)

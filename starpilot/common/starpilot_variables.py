@@ -76,6 +76,9 @@ THRESHOLD = 1 - 1 / math.e                # Requires the condition to be true fo
 NON_DRIVING_GEARS = [GearShifter.neutral, GearShifter.park, GearShifter.reverse, GearShifter.unknown]
 
 ALWAYS_ON_LATERAL_UNSUPPORTED_CAR_MAKES = frozenset({"volvo"})
+BOLT_TURN_DAMPING_CARS = frozenset({
+  GM_CAR.CHEVROLET_BOLT_ACC_2022_2023, GM_CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL, GM_CAR.CHEVROLET_BOLT_CC_2022_2023,
+})
 
 # Temporary fallback until the weather-compatible API is hosted locally.
 STARPILOT_API = os.getenv("STARPILOT_API", "https://frogpilot.com/api")
@@ -824,6 +827,9 @@ class StarPilotVariables:
     )
     toggle.lane_centering_smoothing = self.get_value(
       "LaneCenteringSmoothing", condition=toggle.lane_centering, default=True,
+    )
+    toggle.bolt_turn_damping_level = self.get_value(
+      "BoltTurnDamping", cast=int, condition=toggle.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=3,
     )
 
     advanced_longitudinal_tuning = toggle.openpilot_longitudinal and self.get_value("AdvancedLongitudinalTune")

@@ -392,6 +392,34 @@
         "settings_tier": "simple"
       },
       {
+        "key": "BoltTurnDamping",
+        "label": "Smooth Slow Turns",
+        "description": "Chevy Bolt 2022/23 only. Calms the back-and-forth steering wobble in slow, tight turns (below about 30 mph) by resisting the wheel when it moves faster or slower than the planned turn. Higher levels damp more. Changes fade in over about a second, so you can switch levels while driving. Off by default; has no effect on other cars or on straight roads.",
+        "picker_description": "Calms steering wobble in slow, tight turns (Bolt 2022/23).",
+        "data_type": "int",
+        "ui_type": "dropdown",
+        "options": [
+          {
+            "value": 0,
+            "label": "Off"
+          },
+          {
+            "value": 1,
+            "label": "Low"
+          },
+          {
+            "value": 2,
+            "label": "Medium"
+          },
+          {
+            "value": 3,
+            "label": "High"
+          }
+        ],
+        "vehicle_makes": ["Chevrolet"],
+        "settings_tier": "advanced"
+      },
+      {
         "key": "FordHumanTurnDetection",
         "label": "Manual Turn Release",
         "description": "Yield during an intentional manual turn while keeping the Ford steering session ready.",

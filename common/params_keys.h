@@ -214,6 +214,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BlindSpotIcon", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
     {"BlindSpotMetrics", {PERSISTENT, BOOL, "1", "0", 3}},
     {"BlindSpotPath", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
+    {"BoltTurnDamping", {PERSISTENT, INT, "0", "0", 2}},
     {"BelowSteerSpeedVolume", {PERSISTENT, INT, "101", "101", 2, SETTINGS_SIMPLE}},
     {"BorderMetrics", {PERSISTENT, BOOL, "0", "0", 3}},
     {"BorderWidth", {PERSISTENT, FLOAT, "100.0", "100.0", 2, SETTINGS_SIMPLE}},

@@ -10,6 +10,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.pid import PIDController
+from openpilot.selfdrive.controls.lib.bolt_turn_damping import BoltTurnDamping, get_bolt_turn_error_rate
 from openpilot.selfdrive.controls.lib.drive_helpers import MIN_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import *  # noqa: F403
@@ -108,6 +109,7 @@ class LatControlTorque(LatControl):
 
     self.is_bolt = CP.carFingerprint in BOLT_CARS
     self.is_bolt_2022_2023 = CP.carFingerprint in BOLT_2022_2023_CARS
+    self.bolt_turn_damping = BoltTurnDamping(self.dt)
     self.is_bolt_2018_2021 = CP.carFingerprint in BOLT_2018_2021_CARS
     self.is_bolt_2017 = CP.carFingerprint in BOLT_2017_CARS
     self.is_volt_standard = CP.carFingerprint in VOLT_STANDARD_CARS
@@ -599,6 +601,10 @@ class LatControlTorque(LatControl):
       freeze_integrator = (steer_limited_by_safety or CS.steeringPressed or
                            CS.vEgo < self.low_speed_reset_threshold or unwind_detected)
       error_rate = 0.0 if self.is_genesis_gv70 and CS.steeringPressed else -measurement_rate
+      if self.is_bolt_2022_2023:
+        self.pid._k_d = [[0.0], [self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping_level", 0),
+                                                              CS.vEgo, setpoint, measurement, CS.steeringPressed)]]
+        error_rate = get_bolt_turn_error_rate(desired_lateral_jerk, self.measurement_rate_filter.x)
       output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)

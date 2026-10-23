@@ -2027,6 +2027,7 @@ _TROUBLESHOOT_ADVANCED_LATERAL_KEYS = [
   "LaneCenteringPauseOnSignal",
   "LaneCenteringE2EAuthority",
   "LaneCenteringStrength",
+  "LaneCenteringSmoothing",
   "LaneCenterOffset",
 ]
 

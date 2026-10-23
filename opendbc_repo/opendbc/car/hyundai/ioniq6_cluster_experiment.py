@@ -176,6 +176,16 @@ ADJACENT_DT = 0.05  # updated with each 0x1EA frame (20 Hz)
 ADJACENT_LANE_Y = (2.0, 3.8)  # |yRel| window of the next lane, m (yRel > 0 is left)
 ADJACENT_MAX_RADAR_DISTANCE = 80.0
 ADJACENT_MOVING_SPEED = 2.0  # |vEgo + vRel| above this, m/s; parked cars and poles are not drawn
+# vRel is radial: alongside, a barrier or an oncoming car reads as closing slowly (highway drives de/e0, 2026-10-23:
+# barrier posts at yRel 2.5-3.3 m read 2-5 m/s over ground under ~8 m). vRel is scaled by range / dRel, capped.
+ADJACENT_ANGLE_GAIN_MAX = 2.0
+# A track seen not moving while we drive stays excluded until it reads moving where the angle is small.
+ADJACENT_LATCH_MIN_SPEED = 5.0  # vEgo, m/s
+ADJACENT_RELIABLE_DISTANCE = 10.0  # dRel, m
+ADJACENT_LATCH_FORGET_FRAMES = 40  # a latched track unseen this long is forgotten (2 s)
+# A car passed faster than this (corrected closing speed) reaches the behind slot only with the blind-spot bit; on
+# de/e0 cars passed closed at a median 2-3 m/s, and stock's bit stays off on fast passes.
+ADJACENT_BEHIND_MAX_CLOSING = 12.0  # m/s
 # Stock's distance runs short of the radar's while a car is alongside: dRel minus this offset, clamped at 0.
 ADJACENT_NEAR_OFFSET = ((4.0, 12.0), (1.75, 0.0))
 ADJACENT_AHEAD_MAX = 79.5  # stock's largest ahead distance
@@ -207,19 +217,31 @@ def adjacent_distance(d_rel: float) -> float:
   return max(d_rel - float(np.interp(d_rel, *ADJACENT_NEAR_OFFSET)), 0.0)
 
 
-def select_adjacent_track(points, v_ego: float, side_sign: int, exclude_id=None, min_distance: float = 0.0):
-  """Nearest radar track ahead in the next lane on one side (+1 left, -1 right) moving our way: (dRel, vRel, trackId).
+def corrected_rel_speed(pt) -> float:
+  """vRel along x: the radial vRel scaled by range / dRel (capped), so a track alongside keeps its true closing speed."""
+  if pt.dRel <= 0.0:
+    return pt.vRel * ADJACENT_ANGLE_GAIN_MAX
+  return pt.vRel * min(float(np.hypot(pt.dRel, pt.yRel)) / pt.dRel, ADJACENT_ANGLE_GAIN_MAX)
 
-  Oncoming traffic and stopped objects are skipped. min_distance is in stock's coordinate (adjacent_distance).
+
+def select_adjacent_track(points, v_ego: float, side_sign: int, exclude_id=None, min_distance: float = 0.0,
+                          excluded_ids=()):
+  """Nearest radar track ahead in the next lane on one side (+1 left, -1 right) moving our way:
+  (dRel, vRel, trackId, corrected vRel).
+
+  Oncoming traffic and stopped objects are skipped, judged on the corrected vRel, and so are excluded_ids (tracks
+  latched as not moving). min_distance is in stock's coordinate (adjacent_distance).
   """
   best = None
   for pt in points:
-    if pt.trackId == exclude_id or not (ADJACENT_LANE_Y[0] < side_sign * pt.yRel < ADJACENT_LANE_Y[1]):
+    if (pt.trackId == exclude_id or pt.trackId in excluded_ids or
+        not (ADJACENT_LANE_Y[0] < side_sign * pt.yRel < ADJACENT_LANE_Y[1])):
       continue
-    if (0.0 < pt.dRel < ADJACENT_MAX_RADAR_DISTANCE and pt.vRel + v_ego > ADJACENT_MOVING_SPEED and
+    rel_speed = corrected_rel_speed(pt)
+    if (0.0 < pt.dRel < ADJACENT_MAX_RADAR_DISTANCE and rel_speed + v_ego > ADJACENT_MOVING_SPEED and
         adjacent_distance(pt.dRel) >= min_distance):
       if best is None or pt.dRel < best[0]:
-        best = (pt.dRel, pt.vRel, pt.trackId)
+        best = (pt.dRel, pt.vRel, pt.trackId, rel_speed)
   return best
 
 
@@ -239,6 +261,7 @@ class AdjacentLane:
     self.coast_id = None
     self.passed_id = None  # the last passed car's track while the radar still holds it alongside
     self.coast_rel_speed = 0.0
+    self.coast_fast = False  # passed faster than ADJACENT_BEHIND_MAX_CLOSING
     self.coast_time = 0.0
     self.bit_seen = False
     self.bit_off_time = 0.0
@@ -258,12 +281,12 @@ class AdjacentLane:
     reappeared = any(pt.trackId == self.coast_id and adjacent_distance(pt.dRel) > ADJACENT_COAST_REAPPEAR
                      for pt in points)
     if (reappeared or self.coast_time > ADJACENT_COAST_LIMIT or -self.coast > ADJACENT_BEHIND_MAX or
-        (self.coast < 0.0 and self.bit_off_time > bit_grace)):
+        (self.coast < 0.0 and (self.bit_off_time > bit_grace or (self.coast_fast and not self.bit_seen)))):
       self.passed_id = None if reappeared else self.coast_id
       self.coast = None
       self.coast_id = None
 
-  def update(self, points, v_ego: float, blindspot: bool) -> tuple[float | None, float | None]:
+  def update(self, points, v_ego: float, blindspot: bool, excluded_ids=()) -> tuple[float | None, float | None]:
     """Returns (ahead, behind) distances in stock's coordinate, None for an empty slot."""
     if self.coast is not None:
       self._coast_step(points, blindspot)
@@ -274,11 +297,11 @@ class AdjacentLane:
     if self.coast is not None:
       # Any track alongside is taken to be the coasting car, also if the radar re-acquired it under a new id.
       track = select_adjacent_track(points, v_ego, self.side_sign, exclude_id=self.coast_id,
-                                    min_distance=ADJACENT_COAST_START)
+                                    min_distance=ADJACENT_COAST_START, excluded_ids=excluded_ids)
     else:
-      track = select_adjacent_track(points, v_ego, self.side_sign)
+      track = select_adjacent_track(points, v_ego, self.side_sign, excluded_ids=excluded_ids)
     if track is not None:
-      distance, rel_speed, track_id = adjacent_distance(track[0]), track[1], track[2]
+      distance, rel_speed, track_id, closing = adjacent_distance(track[0]), track[1], track[2], -track[3]
 
     if self.visible:
       if track is None:
@@ -296,6 +319,7 @@ class AdjacentLane:
           # We are passing it: dead reckoning from here, and the ahead slot is free for the next car.
           self.coast, self.coast_id, self.coast_rel_speed = distance, track_id, rel_speed
           self.coast_time, self.bit_seen, self.bit_off_time = 0.0, blindspot, 0.0
+          self.coast_fast = closing > ADJACENT_BEHIND_MAX_CLOSING
           self.visible = False
           self.on_frames = 0
     else:
@@ -317,17 +341,36 @@ class AdjacentLane:
 
 
 class AdjacentCarTracker:
-  """Both sides, updated once per 0x1EA frame. Cars are drawn only while active (engaged, in drive)."""
+  """Both sides, updated once per 0x1EA frame. Cars are drawn only while active (in drive)."""
   def __init__(self):
     self.left = AdjacentLane(1)
     self.right = AdjacentLane(-1)
 
     self.last_points = None
     self.stale_frames = 0
+    self.not_moving = {}  # trackId -> frames since last seen, for tracks latched as not moving
 
   def reset(self):
     self.left.reset()
     self.right.reset()
+    self.not_moving = {}
+
+  def _update_latch(self, points, v_ego: float):
+    seen = set()
+    for pt in points:
+      seen.add(pt.trackId)
+      moving = corrected_rel_speed(pt) + v_ego > ADJACENT_MOVING_SPEED
+      if not moving and v_ego >= ADJACENT_LATCH_MIN_SPEED:
+        self.not_moving[pt.trackId] = 0
+      elif moving and pt.dRel >= ADJACENT_RELIABLE_DISTANCE:
+        self.not_moving.pop(pt.trackId, None)
+    for track_id in list(self.not_moving):
+      if track_id in seen:
+        self.not_moving[track_id] = 0
+      else:
+        self.not_moving[track_id] += 1
+        if self.not_moving[track_id] >= ADJACENT_LATCH_FORGET_FRAMES:
+          del self.not_moving[track_id]
 
   def update(self, active: bool, points, v_ego: float, left_blindspot: bool, right_blindspot: bool) -> dict:
     # card.py stores each new radar frame's point list; the same list coming back means no new radar frame. Counted
@@ -344,8 +387,9 @@ class AdjacentCarTracker:
     if points is None or self.stale_frames >= ADJACENT_POINTS_STALE_FRAMES:
       points = []
 
-    left_ahead, left_behind = self.left.update(points, v_ego, left_blindspot)
-    right_ahead, right_behind = self.right.update(points, v_ego, right_blindspot)
+    self._update_latch(points, v_ego)
+    left_ahead, left_behind = self.left.update(points, v_ego, left_blindspot, self.not_moving)
+    right_ahead, right_behind = self.right.update(points, v_ego, right_blindspot, self.not_moving)
     cars = {"left_ahead": left_ahead, "right_ahead": right_ahead, "left_behind": left_behind,
             "right_behind": right_behind}
     return {slot: distance for slot, distance in cars.items() if distance is not None}

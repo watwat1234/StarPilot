@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from opendbc.can import CANPacker
@@ -9,7 +10,8 @@ from opendbc.car.hyundai.carcontroller import CarController, LongCtrlState
 from opendbc.car.hyundai.hyundaicanfd import CanBus, create_adrv_messages, create_blindspot_status_messages, \
                                              hkg_can_fd_checksum
 from opendbc.car.hyundai.ioniq6_cluster_experiment import AdjacentCarTracker, LeadDisplayFilter, adjacent_distance, \
-                                                          adrv_0x1ea_values, create_stock_like_blindspot_messages, \
+                                                          adrv_0x1ea_values, corrected_rel_speed, \
+                                                          create_stock_like_blindspot_messages, \
                                                           lead_display_allowed, patch_adrv_0x1ea, scc_status_values, \
                                                           select_adjacent_track
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags
@@ -578,8 +580,9 @@ class TestAdjacentSelection:
 
   def test_nearest_wins_and_exclude(self):
     points = [_pt(1, 30.0, 3.0, 0.0), _pt(2, 12.0, 3.2, -1.0), _pt(3, 5.0, 0.0, 0.0)]
-    assert select_adjacent_track(points, V_EGO, 1) == (12.0, -1.0, 2)
-    assert select_adjacent_track(points, V_EGO, 1, exclude_id=2) == (30.0, 0.0, 1)
+    assert select_adjacent_track(points, V_EGO, 1)[:3] == (12.0, -1.0, 2)
+    assert select_adjacent_track(points, V_EGO, 1, exclude_id=2)[:3] == (30.0, 0.0, 1)
+    assert select_adjacent_track(points, V_EGO, 1, excluded_ids={2})[:3] == (30.0, 0.0, 1)
 
 
 def _approach(track_id, start, rel_speed, frames, y_rel=3.0):
@@ -721,6 +724,68 @@ class TestAdjacentCarTracker:
     assert _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]], active=False) == [{}]
     out = _run_tracker(tracker, [[_pt(1, 20.0, 3.0, 0.0)]] * 8)
     assert out[:7] == [{}] * 7
+
+
+def _radial(track_id, ground_speed, start, frames, y_rel=3.0, end=0.5):
+  # a track in the left lane at a constant ground speed, with vRel read along the line of sight as the radar does
+  # (alongside, a stationary or oncoming object reads as closing slowly); gone once it is under `end` m
+  out = []
+  for i in range(frames):
+    d = start + (ground_speed - V_EGO) * 0.05 * i
+    out.append([_pt(track_id, d, y_rel, (ground_speed - V_EGO) * d / np.hypot(d, y_rel))] if d > end else [])
+  return out
+
+
+class TestAdjacentRadialSpeed:
+  # highway drives de/e0 (2026-10-23): barrier posts and oncoming cars read as moving alongside and blinked behind
+  def test_correction_recovers_the_closing_speed_alongside(self):
+    pt = _pt(1, 4.2, 2.7, -V_EGO * 4.2 / np.hypot(4.2, 2.7))
+    assert corrected_rel_speed(pt) == pytest.approx(-V_EGO)
+    assert corrected_rel_speed(_pt(1, 0.5, 3.0, -1.0)) == pytest.approx(-2.0)  # capped
+    assert corrected_rel_speed(_pt(1, 50.0, 3.0, -1.0)) == pytest.approx(-1.0, abs=0.01)
+
+  @pytest.mark.parametrize("ground_speed", [0.0, -20.0], ids=["stationary", "oncoming"])
+  def test_never_drawn(self, ground_speed):
+    out = _run_tracker(AdjacentCarTracker(), _radial(1, ground_speed, 30.0, 80) + [[]] * 40)
+    assert not any(out)
+
+  def test_a_track_seen_not_moving_stays_excluded_alongside(self):
+    # seen stationary at 20 m, then (as a radar artifact) reads ~6 m/s over ground once close, also corrected: not drawn
+    frames = [[_pt(1, 20.0, 3.0, -V_EGO)]] * 5 + [[_pt(1, 6.0, 3.0, -V_EGO + 8.0)]] * 20
+    assert not any(_run_tracker(AdjacentCarTracker(), frames))
+
+  def test_the_latch_ends_when_the_track_reads_moving_where_the_angle_is_small(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, [[_pt(1, 20.0, 3.0, -V_EGO)]] * 5)
+    out = _run_tracker(tracker, [[_pt(1, 12.0, 3.0, -1.0)]] * 10)
+    assert out[7] == {"left_ahead": 12.0}
+
+  def test_a_latched_track_unseen_for_2_s_is_forgotten(self):
+    tracker = AdjacentCarTracker()
+    _run_tracker(tracker, [[_pt(1, 20.0, 3.0, -V_EGO)]] * 5)
+    _run_tracker(tracker, [[]] * 39)
+    assert 1 in tracker.not_moving
+    _run_tracker(tracker, [[]])
+    assert 1 not in tracker.not_moving
+
+  def test_no_latch_in_stop_and_go(self):
+    # we creep at 1 m/s next to a stopped car, then it pulls away alongside: drawn
+    tracker = AdjacentCarTracker()
+    for _ in range(10):
+      tracker.update(True, [_pt(1, 6.0, 3.0, -1.0)], 1.0, False, False)
+    out = [tracker.update(True, [_pt(1, 6.0, 3.0, 3.0)], 1.0, False, False) for _ in range(10)]
+    assert "left_ahead" in out[-1]
+
+  @pytest.mark.parametrize("bit, drawn", [(False, False), (True, True)])
+  def test_a_fast_pass_reaches_the_behind_slot_only_with_the_bit(self, bit, drawn):
+    # passing a car 15 m/s slower: drawn ahead, then behind only with the blind-spot bit
+    out = _run_tracker(AdjacentCarTracker(), _radial(1, V_EGO - 15.0, 40.0, 60, end=2.5) + [[]] * 30, left_bit=bit)
+    assert any("left_ahead" in cars for cars in out)
+    assert any("left_behind" in cars for cars in out) == drawn
+
+  def test_a_normal_pass_without_the_bit_keeps_the_start_grace(self):
+    out = _run_tracker(AdjacentCarTracker(), _radial(1, V_EGO - 5.0, 15.0, 60, end=2.5) + [[]] * 30)
+    assert any("left_behind" in cars for cars in out)
 
 
 ADJACENT_ON = {"ioniq6_hud_adjacent_cars": True}

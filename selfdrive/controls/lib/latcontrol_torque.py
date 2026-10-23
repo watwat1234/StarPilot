@@ -604,7 +604,7 @@ class LatControlTorque(LatControl):
       error_rate = 0.0 if self.is_genesis_gv70 and CS.steeringPressed else -measurement_rate
       if self.is_bolt_2022_2023:
         bolt_kd, error_rate = self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping_level", 0), CS.vEgo,
-                                                            setpoint, measurement, self.measurement_rate_filter.x, CS.steeringPressed)
+                                                            setpoint, measurement, CS.steeringPressed)
         self.pid._k_d = [[0.0], [bolt_kd]]
       output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)

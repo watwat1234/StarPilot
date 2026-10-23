@@ -11,6 +11,7 @@ from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.controls.lib.bolt_turn_damping import BoltTurnDamping
+from openpilot.selfdrive.controls.lib.bolt_turn_exit_hold import BoltTurnExitHold
 from openpilot.selfdrive.controls.lib.drive_helpers import MIN_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import *  # noqa: F403
@@ -110,6 +111,7 @@ class LatControlTorque(LatControl):
     self.is_bolt = CP.carFingerprint in BOLT_CARS
     self.is_bolt_2022_2023 = CP.carFingerprint in BOLT_2022_2023_CARS
     self.bolt_turn_damping = BoltTurnDamping(self.dt)
+    self.bolt_turn_exit_hold = BoltTurnExitHold(self.dt)
     self.is_bolt_2018_2021 = CP.carFingerprint in BOLT_2018_2021_CARS
     self.is_bolt_2017 = CP.carFingerprint in BOLT_2017_CARS
     self.is_volt_standard = CP.carFingerprint in VOLT_STANDARD_CARS
@@ -265,6 +267,7 @@ class LatControlTorque(LatControl):
       self.prev_desired_lateral_accel = future_desired_lateral_accel
       self.ioniq_6_directional_taper_filter.x = 1.0
       self.bolt_turn_damping.reset()
+      self.bolt_turn_exit_hold.reset()
     else:
       if self.prev_steering_pressed and not CS.steeringPressed:
         self.pid.i *= self.steer_release_i_decay
@@ -608,6 +611,10 @@ class LatControlTorque(LatControl):
         self.pid._k_d = [[0.0], [bolt_kd]]
       output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)
+      if self.is_bolt_2022_2023:
+        output_lataccel = self.bolt_turn_exit_hold.update(getattr(starpilot_toggles, "bolt_turn_exit_hold", 0), CS.vEgo,
+                                                          gravity_adjusted_future_lateral_accel, output_lataccel,
+                                                          CS.steeringPressed, self.pid.neg_limit, self.pid.pos_limit)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       if bolt_2022_2023_tuned_path_active:
         output_torque *= get_bolt_2022_2023_center_output_scale(setpoint, CS.vEgo)

@@ -420,6 +420,21 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "BoltTurnExitHold",
+        "label": "Turn Exit Hold",
+        "description": "Chevy Bolt 2022/23 only. Keeps the car turning on slow turn exits (below about 30 mph) while the planned turn eases off, so the wheel doesn't unwind early and drift out of the lane when you let go. The value is how much of the planned turn the steering always holds: higher holds the turn more firmly. Never acts while you hold the wheel. 0% (default) turns it off; has no effect on other cars.",
+        "picker_description": "Keeps the car turning on slow turn exits (Bolt 2022/23).",
+        "data_type": "int",
+        "ui_type": "numeric",
+        "control": "slider",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "step": 10,
+        "vehicle_makes": ["Chevrolet"],
+        "settings_tier": "advanced"
+      },
+      {
         "key": "FordHumanTurnDetection",
         "label": "Manual Turn Release",
         "description": "Yield during an intentional manual turn while keeping the Ford steering session ready.",

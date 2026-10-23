@@ -831,6 +831,9 @@ class StarPilotVariables:
     toggle.bolt_turn_damping_level = self.get_value(
       "BoltTurnDamping", cast=int, condition=toggle.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=3,
     )
+    toggle.bolt_turn_exit_hold = self.get_value(
+      "BoltTurnExitHold", cast=int, condition=toggle.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=100,
+    )
 
     advanced_longitudinal_tuning = toggle.openpilot_longitudinal and self.get_value("AdvancedLongitudinalTune")
     ev_vehicle = default_ev_tuning_enabled(CP)

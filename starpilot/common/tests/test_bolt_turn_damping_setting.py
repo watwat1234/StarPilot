@@ -86,3 +86,53 @@ def test_toggle_read_matches_source():
   source = (_ROOT / "starpilot/common/starpilot_variables.py").read_text(encoding="utf-8")
   assert re.search(r'toggle\.bolt_turn_damping_level = self\.get_value\(\s*"BoltTurnDamping", cast=int, '
                    r'condition=toggle\.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=3,', source)
+
+
+def _exit_hold_setting():
+  layout = json.loads(_LAYOUT_PATH.read_text(encoding="utf-8"))
+  found = [(section["name"], param) for section in layout for param in section["params"]
+           if param["key"] == "BoltTurnExitHold"]
+  assert len(found) == 1
+  return found[0]
+
+
+def test_exit_hold_layout_entry_is_a_percent_slider_after_smooth_slow_turns():
+  section, setting = _exit_hold_setting()
+  assert section == "Lateral (Steering)"
+  assert (setting["data_type"], setting["ui_type"], setting["control"]) == ("int", "numeric", "slider")
+  assert (setting["min"], setting["max"], setting["step"], setting["unit"]) == (0, 100, 10, "%")
+  assert setting["vehicle_makes"] == ["Chevrolet"]
+  assert setting["settings_tier"] == "advanced"
+  assert "parent_key" not in setting
+  layout = json.loads(_LAYOUT_PATH.read_text(encoding="utf-8"))
+  keys = [param["key"] for section in layout for param in section["params"]]
+  assert keys.index("BoltTurnExitHold") == keys.index("BoltTurnDamping") + 1
+
+
+def test_exit_hold_key_defaults_off_and_is_managed():
+  keys = (_ROOT / "common/params_keys.h").read_text(encoding="utf-8")
+  assert '{"BoltTurnExitHold", {PERSISTENT, INT, "0", "0", 2}},' in keys
+  assert "BoltTurnExitHold" in SAFE_MODE_MANAGED_KEYS
+  galaxy = (_ROOT / "starpilot/system/the_galaxy/the_galaxy.py").read_text(encoding="utf-8")
+  lateral_keys = re.search(r"_TROUBLESHOOT_ADVANCED_LATERAL_KEYS = \[(.*?)\]", galaxy, re.S)
+  assert lateral_keys is not None and '"BoltTurnExitHold"' in lateral_keys[1]
+
+
+@pytest.mark.parametrize("stored, is_bolt, expected", [
+  (None, True, 0),   # default off
+  (60, True, 60),
+  (60, False, 0),    # other cars always read 0
+  (150, True, 100),  # clamped
+  (-10, True, 0),
+])
+def test_exit_hold_toggle_read(stored, is_bolt, expected):
+  variables = object.__new__(spv.StarPilotVariables)
+  variables.params = _FakeParams({} if stored is None else {"BoltTurnExitHold": stored})
+  variables.default_values = {"BoltTurnExitHold": "0"}
+  assert variables.get_value("BoltTurnExitHold", cast=int, condition=is_bolt, default=0, min=0, max=100) == expected
+
+
+def test_exit_hold_toggle_read_matches_source():
+  source = (_ROOT / "starpilot/common/starpilot_variables.py").read_text(encoding="utf-8")
+  assert re.search(r'toggle\.bolt_turn_exit_hold = self\.get_value\(\s*"BoltTurnExitHold", cast=int, ' +
+                   r'condition=toggle\.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=100,', source)

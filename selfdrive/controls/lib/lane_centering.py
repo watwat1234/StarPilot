@@ -30,16 +30,49 @@ _E2E_MIN_LANE_AUTHORITY = 0.20
 _E2E_BOUNDARY_LANE_AUTHORITY = 0.50
 _E2E_BOUNDARY_MARGIN = 0.40
 
+# Error smoothing (wat): low-pass the center error before the dead zone so the model's few-second sway doesn't
+# push the correction across the dead-zone edge on every swing. Fast again for big errors and in turns.
+_SMOOTHING_SPEEDS = [8.0, 13.4, 24.6, 31.3]  # m/s, ~18/30/55/70 mph
+_SMOOTHING_TAUS = [1.125, 2.25, 1.125, 0.75]
+_SMOOTHING_FAST_ERROR = [0.15, 0.30]  # m
+_SMOOTHING_FAST_LAT_ACCEL = [0.5, 1.0]  # m/s^2
+_SMOOTHING_FAST_ACCEL = [1.0, 2.0]  # m/s^2, speeding up or braking
+_SMOOTHING_FAST_HOLD = 1.0  # s
+_SMOOTHING_RELEASE_TAU = 1.0  # s
+
 
 class LaneCenteringController:
   def __init__(self) -> None:
     self._correction = 0.0
+    self._smoothed_error = 0.0
+    self._smoothing_fast = 0.0
 
   def reset(self) -> None:
     self._correction = 0.0
+    self._smoothed_error = 0.0
+    self._smoothing_fast = 0.0
+
+  def _release(self, tau: float) -> None:
+    self._correction = float(smooth_value(0.0, self._correction, tau, dt=DT_CTRL))
+    # Slower than the output fade, so brief lane-line dropouts don't erase the smoothed error.
+    self._smoothed_error = float(smooth_value(0.0, self._smoothed_error, _SMOOTHING_RELEASE_TAU, dt=DT_CTRL))
+
+  def _smooth_error(self, error: float, lookahead: float, v_ego: float, model_curvature: float, a_ego: float) -> float:
+    fast = max(np.interp(abs(error), _SMOOTHING_FAST_ERROR, [0.0, 1.0]),
+               np.interp(abs(model_curvature) * v_ego ** 2, _SMOOTHING_FAST_LAT_ACCEL, [0.0, 1.0]),
+               # The lookahead (and the error-to-curvature gain) moves with speed, so a held error goes stale.
+               np.interp(abs(a_ego), _SMOOTHING_FAST_ACCEL, [0.0, 1.0]) if np.isfinite(a_ego) else 1.0)
+    # Stay fast for a moment after a big error or a turn ends, so a held value is released as quickly as it was taken.
+    self._smoothing_fast = max(float(fast), self._smoothing_fast - DT_CTRL / _SMOOTHING_FAST_HOLD)
+    tau = (1.0 - self._smoothing_fast) * float(np.interp(v_ego, _SMOOTHING_SPEEDS, _SMOOTHING_TAUS))
+    # Filter error / lookahead^2 (curvature units), so a held error keeps its curvature as speed and lookahead change.
+    scaled = error / lookahead ** 2
+    self._smoothed_error = float(smooth_value(scaled, self._smoothed_error, tau, dt=DT_CTRL))
+    return self._smoothed_error * lookahead ** 2
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active, model_valid,
-             pause_on_signal=False, turn_signal_active=False, driver_override=False, strength=1.0) -> float:
+             pause_on_signal=False, turn_signal_active=False, driver_override=False, strength=1.0,
+             smoothing=False, a_ego=0.0) -> float:
     model_curvature = float(model_curvature)
 
     try:
@@ -64,7 +97,7 @@ class LaneCenteringController:
       return model_curvature
 
     if pause_on_signal and turn_signal_active:
-      self._correction = float(smooth_value(0.0, self._correction, _SIGNAL_RELEASE_TAU, dt=DT_CTRL))
+      self._release(_SIGNAL_RELEASE_TAU)
       return model_curvature + self._correction
 
     try:
@@ -75,14 +108,17 @@ class LaneCenteringController:
       self.reset()
       return model_curvature
 
+    if not smoothing:
+      self._smoothed_error = 0.0
     valid, raw_correction = self._raw_correction(
       model_v2,
       v_ego,
       float(np.clip(offset, -_MAX_OFFSET, _MAX_OFFSET)),
       float(np.clip(e2e_authority, 0.0, 1.0)),
+      (lambda error, lookahead: self._smooth_error(error, lookahead, v_ego, model_curvature, float(a_ego))) if smoothing else None,
     )
     if not valid:
-      self._correction = float(smooth_value(0.0, self._correction, _CONFIDENCE_RELEASE_TAU, dt=DT_CTRL))
+      self._release(_CONFIDENCE_RELEASE_TAU)
       return model_curvature + self._correction
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
@@ -99,7 +135,8 @@ class LaneCenteringController:
     return bool(x[0] <= distance <= x[-1])
 
   @staticmethod
-  def _raw_correction(model_v2, v_ego: float, offset: float, e2e_authority: float) -> tuple[bool, float]:
+  def _raw_correction(model_v2, v_ego: float, offset: float, e2e_authority: float,
+                      error_filter=None) -> tuple[bool, float]:
     try:
       lane_lines = model_v2.laneLines
       probs = np.asarray(model_v2.laneLineProbs, dtype=float)
@@ -138,6 +175,8 @@ class LaneCenteringController:
       target_y = 0.5 * (left + right) + float(np.clip(offset, -max_safe_offset, max_safe_offset))
       model_y = float(np.interp(lookahead, pos_x, pos_y))
       error = target_y - model_y
+      if error_filter is not None:
+        error = error_filter(error, lookahead)
       error_abs = abs(error)
       if error_abs <= _CENTER_ERROR_DEADBAND:
         error = 0.0

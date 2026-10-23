@@ -5231,6 +5231,16 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "LaneCenteringSmoothing",
+        "label": "Smooth Lane Centering",
+        "description": "Average out the vision model's side-to-side sway before lane centering reacts, so small corrections don't add to a weave. Larger drifts and turns still get the full, quick response.",
+        "picker_description": "Keeps lane centering from adding to a weave.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LaneCentering",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "HondaLateralPidKpScale",
         "label": "Honda PID Kp Scale",
         "description": "Scale the active Honda lateralTuning.pid.kpV values from openDBC. Applies live to Honda PID lateral only.",

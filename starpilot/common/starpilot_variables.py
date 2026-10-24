@@ -828,8 +828,8 @@ class StarPilotVariables:
     toggle.lane_centering_smoothing = self.get_value(
       "LaneCenteringSmoothing", condition=toggle.lane_centering, default=True,
     )
-    toggle.bolt_turn_damping_level = self.get_value(
-      "BoltTurnDamping", cast=int, condition=toggle.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=3,
+    toggle.bolt_turn_damping = self.get_value(
+      "BoltTurnDamping", cast=int, condition=toggle.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=100,
     )
     toggle.bolt_turn_exit_hold = self.get_value(
       "BoltTurnExitHold", cast=int, condition=toggle.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=100,

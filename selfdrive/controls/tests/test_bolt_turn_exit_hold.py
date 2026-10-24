@@ -114,7 +114,7 @@ def build(car_name, v_ego, hold_percent):
   params.stiffnessFactor = 1.0
   params.roll = 0.0
   params.angleOffsetDeg = 0.0
-  return controller, VM, CS, params, SimpleNamespace(bolt_turn_damping_level=0, bolt_turn_exit_hold=hold_percent)
+  return controller, VM, CS, params, SimpleNamespace(bolt_turn_damping=0, bolt_turn_exit_hold=hold_percent)
 
 
 def run_exit(car_name, hold_percent, v_ego=7.0, past=0.3, initial_i=0.0, side=1.0):

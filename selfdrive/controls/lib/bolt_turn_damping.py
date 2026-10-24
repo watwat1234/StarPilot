@@ -9,8 +9,8 @@ from openpilot.common.filter_simple import FirstOrderFilter
 # Bolt 2022/23 slow tight turns swing the wheel back and forth (~1.6-2 s period, route 00000180--e85874451d):
 # the low-speed P is ~3.3 at 15 mph, the torque map is ~5x steeper near zero output, and the PID has no D.
 # This adds a D term on the rate of the tracking error, only at low speed and in real turns.
-BOLT_TURN_DAMPING_KD = [0.0, 0.3, 0.6, 1.0]  # by level: Off / Low / Medium / High
-BOLT_TURN_DAMPING_RAMP_TIME = 1.0  # s, from 0 to the highest level's gain
+BOLT_TURN_DAMPING_MAX_KD = 1.0  # at 100% on the setting slider
+BOLT_TURN_DAMPING_RAMP_TIME = 1.0  # s, from 0 to the 100% gain
 BOLT_TURN_DAMPING_SPEED_BP = [20 * CV.MPH_TO_MS, 30 * CV.MPH_TO_MS]
 BOLT_TURN_DAMPING_SPEED_V = [1.0, 0.0]
 BOLT_TURN_DAMPING_LAT_ACCEL_BP = [0.3, 0.8]  # m/s^2
@@ -23,7 +23,7 @@ BOLT_TURN_DAMPING_RATE_RC = 1 / (2 * np.pi * 2.0)  # s, passes the ~0.5 Hz swing
 class BoltTurnDamping:
   def __init__(self, dt):
     self.rate_span = BOLT_TURN_DAMPING_RATE_FRAMES * dt
-    self.ramp_step = dt * BOLT_TURN_DAMPING_KD[-1] / BOLT_TURN_DAMPING_RAMP_TIME
+    self.ramp_step = dt * BOLT_TURN_DAMPING_MAX_KD / BOLT_TURN_DAMPING_RAMP_TIME
     self.setpoint_rate_filter = FirstOrderFilter(0.0, BOLT_TURN_DAMPING_RATE_RC, dt)
     self.measurement_rate_filter = FirstOrderFilter(0.0, BOLT_TURN_DAMPING_RATE_RC, dt)
     self.history = deque(maxlen=BOLT_TURN_DAMPING_RATE_FRAMES + 1)
@@ -36,8 +36,8 @@ class BoltTurnDamping:
     self.setpoint_rate_filter.x = 0.0
     self.measurement_rate_filter.x = 0.0
 
-  def update(self, level, v_ego, setpoint, measurement, steering_pressed):
-    """Return (D gain, tracking-error rate). The gain ramps toward the level's, so switching mid-turn fades."""
+  def update(self, percent, v_ego, setpoint, measurement, steering_pressed):
+    """Return (D gain, tracking-error rate). The gain ramps toward the setting's, so changing it mid-turn fades."""
     if not self.history:
       self.history.extend([(setpoint, measurement)] * BOLT_TURN_DAMPING_RATE_FRAMES)
     self.history.append((setpoint, measurement))
@@ -54,7 +54,7 @@ class BoltTurnDamping:
       # D on wheel motion would resist the driver; drop it at once and fade back in after release
       self.kd = 0.0
       return 0.0, error_rate
-    target = BOLT_TURN_DAMPING_KD[int(np.clip(level, 0, len(BOLT_TURN_DAMPING_KD) - 1))]
+    target = BOLT_TURN_DAMPING_MAX_KD * float(np.clip(percent, 0, 100)) / 100
     self.kd = rate_limit(target, self.kd, -self.ramp_step, self.ramp_step)
     speed_weight = np.interp(v_ego, BOLT_TURN_DAMPING_SPEED_BP, BOLT_TURN_DAMPING_SPEED_V)
     turn_weight = np.interp(max(abs(setpoint), abs(measurement)), BOLT_TURN_DAMPING_LAT_ACCEL_BP,

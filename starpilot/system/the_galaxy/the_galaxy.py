@@ -2029,6 +2029,8 @@ _TROUBLESHOOT_ADVANCED_LATERAL_KEYS = [
   "LaneCenteringStrength",
   "LaneCenteringSmoothing",
   "LaneCenterOffset",
+  "BoltTurnDamping",
+  "BoltTurnExitHold",
 ]
 
 _TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS = [

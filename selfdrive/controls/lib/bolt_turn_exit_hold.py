@@ -1,6 +1,7 @@
 import numpy as np
 
 from opendbc.car import rate_limit
+# same low-speed band as the damping on purpose: both act on the same slow turns
 from openpilot.selfdrive.controls.lib.bolt_turn_damping import BOLT_TURN_DAMPING_SPEED_BP, BOLT_TURN_DAMPING_SPEED_V
 
 # Bolt 2022/23 slow turn exits unwind early (route 00000181--e3ab2a9962): with the wheel a little past the easing

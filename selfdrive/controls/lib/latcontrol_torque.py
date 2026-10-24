@@ -617,8 +617,8 @@ class LatControlTorque(LatControl):
           getattr(starpilot_toggles, "bolt_turn_exit_hold", 0), CS.vEgo,
           (future_desired_lateral_accel, gravity_adjusted_future_lateral_accel, setpoint), output_lataccel,
           CS.steeringPressed, self.pid.neg_limit, self.pid.pos_limit)
-        if held_lataccel != output_lataccel:
-          self.pid.i = bolt_pid_i  # anti-windup: the floor is in control, not the PID
+        if held_lataccel != output_lataccel and (self.pid.i - bolt_pid_i) * held_lataccel < 0:
+          self.pid.i = bolt_pid_i  # anti-windup: I can't move further below the floor that is in control
         output_lataccel = held_lataccel
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       if bolt_2022_2023_tuned_path_active:

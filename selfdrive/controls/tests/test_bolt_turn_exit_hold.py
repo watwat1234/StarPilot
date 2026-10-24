@@ -117,7 +117,7 @@ def build(car_name, v_ego, hold_percent):
   return controller, VM, CS, params, SimpleNamespace(bolt_turn_damping_level=0, bolt_turn_exit_hold=hold_percent)
 
 
-def run_exit(car_name, hold_percent, v_ego=7.0, past=0.3):
+def run_exit(car_name, hold_percent, v_ego=7.0, past=0.3, initial_i=0.0):
   """Route 181 16:00:32 shape: a right turn planned at 2.9 m/s^2 eases to 1.2 while the wheel stays 0.3 past it.
 
   Returns the torque in the turn's direction (the controller returns it negated) and the controller."""
@@ -126,6 +126,7 @@ def run_exit(car_name, hold_percent, v_ego=7.0, past=0.3):
   plans = [2.9] * 150 + [2.9 - 1.7 * i / 100 for i in range(100)] + [1.2] * 50
   controller.curvature_request_buffer = deque([plans[0] / v_ego ** 2] * controller.request_buffer_len,
                                               maxlen=controller.request_buffer_len)
+  controller.pid.i = initial_i
   torque = []
   for plan in plans:
     CS.steeringAngleDeg = (plan + past) / per_degree
@@ -157,6 +158,26 @@ class TestBoltTurnExitHoldInController:
         CS.steeringAngleDeg = 2.0 * math.sin(frame * DT_CTRL * 3.0)
         run.append(controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)[0])
       outputs.append(run)
+    assert outputs[0] == outputs[1]
+
+  def test_integrator_recovers_toward_floor_while_held(self):
+    # I wound toward center earlier and the wheel is now short of the plan: I must still grow back into the turn
+    held, held_torque = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 100, past=-0.3, initial_i=-4.0)
+    off, off_torque = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, past=-0.3, initial_i=-4.0)
+    assert held_torque != off_torque  # the floor was in control
+    assert held.pid.i > -3.5
+    assert held.pid.i == pytest.approx(off.pid.i)  # and I moved just as without the hold
+
+  def test_small_turn_on_crown_gets_no_hold(self):
+    # a small planned right turn whose roll-adjusted plan points left: the floor stays off
+    outputs = []
+    for hold_percent in (0, 100):
+      controller, VM, CS, params, toggles = build(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, hold_percent)
+      params.roll = 0.05  # ~0.49 m/s^2 of roll compensation against a 0.2 plan
+      per_degree = -VM.calc_curvature(math.radians(1.0), SLOW, 0.0) * SLOW ** 2
+      CS.steeringAngleDeg = 1.0 / per_degree  # wheel past the plan, so the PID asks for less than 0.2
+      outputs.append([controller.update(True, CS, VM, params, False, 0.2 / SLOW ** 2, False, 0.2, None, None,
+                                        toggles)[0] for _ in range(200)])
     assert outputs[0] == outputs[1]
 
   def test_exit_unwinds_without_hold(self):

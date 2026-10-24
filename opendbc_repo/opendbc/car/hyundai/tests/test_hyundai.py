@@ -270,6 +270,14 @@ class TestHyundaiFingerprint:
 
     assert dat[3:] == factory[3:]
 
+  def test_ioniq_6_offline_torque_tune(self):
+    # Learned latAccelFactor on wat-ioniq drives is ~4.55; keep it inside torqued's +/-30% band
+    CP = CarInterface.get_params(CAR.HYUNDAI_IONIQ_6, gen_empty_fingerprint(), [], False, False, False, None)
+    torque = CP.lateralTuning.torque
+    assert torque.latAccelFactor == pytest.approx(4.5)
+    assert CP.maxLateralAccel == pytest.approx(3.0)
+    assert torque.friction == pytest.approx(0.09)
+
   def test_carnival_hev_low_speed_torque_rate_limits(self):
     CP = CarInterface.get_params(CAR.KIA_CARNIVAL_HEV_4TH_GEN, gen_empty_fingerprint(), [],
                                  False, False, False, None)

@@ -13,18 +13,24 @@ QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
 TIMELINE_FILENAME = "timeline.json"
 THUMBNAIL_FILENAME = "thumbnail.jpg"
 # Part of the timeline cache key: bump it when the parsed output changes, so cached minutes are parsed again.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 # The camera writes one thumbnail per minute, a few seconds in; one this far in is the next minute's, written just
 # before the rotation.
 LATE_THUMBNAIL_SECONDS = 30
 SEGMENT_DIR = re.compile(r"^(.+--.+)--(\d+)$")
 ALERT_LEVELS = {"normal": 0, "userPrompt": 1, "critical": 2}
+MESSAGE_TYPES = ("selfdriveState", "carState", "starpilotCarState", "thumbnail")
 
 
-def _state(selfdrive_state):
-  if selfdrive_state.active:
+def _state(selfdrive_state, aol, steering_pressed):
+  # "overriding" counts as active in selfdrived; Always-On Lateral steers while selfdrived stays disabled.
+  if str(selfdrive_state.state) == "overriding":
+    return "overriding"
+  if selfdrive_state.enabled:
     return "engaged"
-  return "overriding" if selfdrive_state.enabled else "disengaged"
+  if aol:
+    return "overriding" if steering_pressed else "aol"
+  return "disengaged"
 
 
 def summarize(events):
@@ -37,14 +43,19 @@ def summarize(events):
   start = None
   spans = []
   thumbnail, thumbnail_at, late = None, None, None
+  aol, steering_pressed = False, False  # latest values, applied at each selfdriveState
   for mono_time, which, message in events:
     if start is None:
       if which != "initData":
         start = mono_time
       continue
     seconds = round(max(0.0, (mono_time - start) / 1e9), 2)
-    if which == "selfdriveState":
-      key = [_state(message), ALERT_LEVELS.get(str(message.alertStatus), 0)]
+    if which == "carState":
+      steering_pressed = message.steeringPressed
+    elif which == "starpilotCarState":
+      aol = message.alwaysOnLateralEnabled
+    elif which == "selfdriveState":
+      key = [_state(message, aol, steering_pressed), ALERT_LEVELS.get(str(message.alertStatus), 0)]
       if spans and spans[-1][2:] == key:
         spans[-1][1] = seconds
       else:
@@ -73,7 +84,7 @@ def read_events(qlog_path):
   try:
     for event in log.Event.read_multiple_bytes(data):
       which = event.which()
-      yield event.logMonoTime, which, getattr(event, which) if which in ("selfdriveState", "thumbnail") else None
+      yield event.logMonoTime, which, getattr(event, which) if which in MESSAGE_TYPES else None
   except capnp.KjException:
     return  # cut off mid-message (power lost while recording): keep what was read, as LogReader does
 

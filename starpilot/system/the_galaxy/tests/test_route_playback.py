@@ -655,6 +655,7 @@ def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_ch
 def test_summarize_draws_aol_only_steered_aol_and_preenabled():
   timeline = route_timeline.summarize(_events(
     5,
+    (0.0, "starpilotCarState", _aol(False)),
     (0.0, "selfdriveState", _state(False, False)),
     (1.0, "starpilotCarState", _aol(True)),
     (1.0, "selfdriveState", _state(False, False)),
@@ -667,6 +668,7 @@ def test_summarize_draws_aol_only_steered_aol_and_preenabled():
     (6.0, "selfdriveState", _state(True, True)),  # engaged wins over AOL
     (7.0, "carState", _car(True)),
     (7.0, "selfdriveState", _state(True, True)),  # steering while engaged without an override state: engaged
+    (7.5, "selfdriveState", _state(True, True, state="overriding")),  # overriding wins over AOL
     (8.0, "starpilotCarState", _aol(False)),
     (8.0, "selfdriveState", _state(False, False)),
     (9.0, "selfdriveState", _state(False, False)),
@@ -677,9 +679,23 @@ def test_summarize_draws_aol_only_steered_aol_and_preenabled():
     [1.0, 2.0, "aol", 0],
     [2.0, 3.0, "overriding", 0],
     [3.0, 5.0, "aol", 0],
-    [5.0, 8.0, "engaged", 0],
+    [5.0, 7.5, "engaged", 0],
+    [7.5, 8.0, "overriding", 0],
     [8.0, 9.0, "disengaged", 0],
   ]
+
+
+def test_summarize_classifies_states_logged_before_the_minutes_first_aol_message_with_it():
+  # Each qlog starts fresh; a selfdriveState can come before the first starpilotCarState of the minute.
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "selfdriveState", _state(False, False)),
+    (0.05, "selfdriveState", _state(False, False)),
+    (0.08, "starpilotCarState", _aol(True)),
+    (0.1, "selfdriveState", _state(False, False)),
+    (1.0, "selfdriveState", _state(False, False)),
+  ))[0]
+  assert timeline["spans"] == [[0.0, 1.0, "aol", 0]]
 
 
 def test_summarize_without_aol_messages_ignores_steering_while_disengaged():

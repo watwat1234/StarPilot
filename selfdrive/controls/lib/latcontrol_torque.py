@@ -609,12 +609,17 @@ class LatControlTorque(LatControl):
         bolt_kd, error_rate = self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping_level", 0), CS.vEgo,
                                                             setpoint, measurement, CS.steeringPressed)
         self.pid._k_d = [[0.0], [bolt_kd]]
+        bolt_pid_i = self.pid.i
       output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)
       if self.is_bolt_2022_2023:
-        output_lataccel = self.bolt_turn_exit_hold.update(getattr(starpilot_toggles, "bolt_turn_exit_hold", 0), CS.vEgo,
-                                                          gravity_adjusted_future_lateral_accel, output_lataccel,
-                                                          CS.steeringPressed, self.pid.neg_limit, self.pid.pos_limit)
+        held_lataccel = self.bolt_turn_exit_hold.update(
+          getattr(starpilot_toggles, "bolt_turn_exit_hold", 0), CS.vEgo,
+          (future_desired_lateral_accel, gravity_adjusted_future_lateral_accel, setpoint), output_lataccel,
+          CS.steeringPressed, self.pid.neg_limit, self.pid.pos_limit)
+        if held_lataccel != output_lataccel:
+          self.pid.i = bolt_pid_i  # anti-windup: the floor is in control, not the PID
+        output_lataccel = held_lataccel
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
       if bolt_2022_2023_tuned_path_active:
         output_torque *= get_bolt_2022_2023_center_output_scale(setpoint, CS.vEgo)

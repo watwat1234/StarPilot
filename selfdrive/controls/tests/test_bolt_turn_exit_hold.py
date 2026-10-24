@@ -24,7 +24,7 @@ def settled(hold_percent, output, v_ego=SLOW, plan=2.0, limits=LIMITS, frames=20
   hold = BoltTurnExitHold(DT_CTRL)
   result = output
   for _ in range(frames):
-    result = hold.update(hold_percent, v_ego, plan, output, False, *limits)
+    result = hold.update(hold_percent, v_ego, plan if isinstance(plan, tuple) else (plan,) * 3, output, False, *limits)
   return result
 
 
@@ -41,6 +41,16 @@ class TestBoltTurnExitHoldFloor:
   def test_no_plan_leaves_output_alone(self):
     assert settled(100, 0.7, plan=0.0) == 0.7
     assert settled(100, -0.7, plan=0.0) == -0.7
+
+  @pytest.mark.parametrize("targets", [(1.0, -0.1, 0.5), (1.0, 1.0, -0.2), (-1.0, 0.1, -1.0), (0.0, 0.3, 0.0)])
+  def test_no_floor_unless_targets_agree(self, targets):
+    # road crown (roll-adjusted plan flips) or the plan flipping sides ahead of the setpoint
+    assert settled(100, -0.4, plan=targets) == -0.4
+    assert settled(100, 0.4, plan=targets) == 0.4
+
+  def test_floor_follows_smallest_target(self):
+    assert settled(60, 0.0, plan=(2.0, 1.8, 1.0)) == pytest.approx(0.6)
+    assert settled(60, 0.0, plan=(-1.0, -2.0, -1.5)) == pytest.approx(-0.6)
 
   def test_off_by_default(self):
     assert settled(0, -1.0) == -1.0
@@ -62,18 +72,18 @@ class TestBoltTurnExitHoldFloor:
   def test_off_at_once_while_pressed_then_ramps_back(self):
     hold = BoltTurnExitHold(DT_CTRL)
     for _ in range(200):
-      hold.update(100, SLOW, 2.0, 0.0, False, *LIMITS)
+      hold.update(100, SLOW, (2.0,) * 3, 0.0, False, *LIMITS)
     for _ in range(30):
-      assert hold.update(100, SLOW, 2.0, -0.5, True, *LIMITS) == -0.5
-    after_release = [hold.update(100, SLOW, 2.0, 0.0, False, *LIMITS) for _ in range(50)]
+      assert hold.update(100, SLOW, (2.0,) * 3, -0.5, True, *LIMITS) == -0.5
+    after_release = [hold.update(100, SLOW, (2.0,) * 3, 0.0, False, *LIMITS) for _ in range(50)]
     assert after_release[0] == pytest.approx(2.0 * DT_CTRL / 0.25)
     assert after_release[24] == pytest.approx(2.0)
     assert np.abs(np.diff([0.0] + after_release)).max() <= 2.0 * DT_CTRL / 0.25 + 1e-9
 
   def test_setting_change_ramps(self):
     hold = BoltTurnExitHold(DT_CTRL)
-    floors = [hold.update(100, SLOW, 1.0, 0.0, False, *LIMITS) for _ in range(150)]
-    floors += [hold.update(40, SLOW, 1.0, 0.0, False, *LIMITS) for _ in range(150)]
+    floors = [hold.update(100, SLOW, (1.0,) * 3, 0.0, False, *LIMITS) for _ in range(150)]
+    floors += [hold.update(40, SLOW, (1.0,) * 3, 0.0, False, *LIMITS) for _ in range(150)]
     assert np.abs(np.diff([0.0] + floors)).max() <= DT_CTRL / 0.25 + 1e-9
     assert floors[149] == pytest.approx(1.0)
     assert floors[-1] == pytest.approx(0.4)
@@ -85,9 +95,9 @@ class TestBoltTurnExitHoldFloor:
   def test_reset_fades_back_in(self):
     hold = BoltTurnExitHold(DT_CTRL)
     for _ in range(200):
-      hold.update(100, SLOW, 2.0, 0.0, False, *LIMITS)
+      hold.update(100, SLOW, (2.0,) * 3, 0.0, False, *LIMITS)
     hold.reset()
-    assert hold.update(100, SLOW, 2.0, 0.0, False, *LIMITS) == pytest.approx(2.0 * DT_CTRL * DT_CTRL / 0.25)
+    assert hold.update(100, SLOW, (2.0,) * 3, 0.0, False, *LIMITS) == pytest.approx(2.0 * DT_CTRL * DT_CTRL / 0.25)
 
 
 def build(car_name, v_ego, hold_percent):
@@ -129,6 +139,26 @@ class TestBoltTurnExitHoldInController:
     _, torque = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 60)
     assert min(torque[150:]) > 0.3
 
+  def test_integrator_does_not_wind_up_while_held(self):
+    # the wheel stays past the plan: without the hold I builds toward center; while the floor holds it stays put
+    off, _ = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 0)
+    held, _ = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 60)
+    assert off.pid.i < -0.3
+    assert held.pid.i > off.pid.i + 0.2
+
+  @pytest.mark.parametrize("roll", [0.03, -0.03])
+  def test_road_crown_on_straight_gets_no_hold(self, roll):
+    outputs = []
+    for hold_percent in (0, 100):
+      controller, VM, CS, params, toggles = build(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, hold_percent)
+      params.roll = roll
+      run = []
+      for frame in range(200):
+        CS.steeringAngleDeg = 2.0 * math.sin(frame * DT_CTRL * 3.0)
+        run.append(controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)[0])
+      outputs.append(run)
+    assert outputs[0] == outputs[1]
+
   def test_exit_unwinds_without_hold(self):
     _, torque = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 0)
     assert torque[-1] < -0.3
@@ -148,18 +178,29 @@ class TestBoltTurnExitHoldInController:
     _, on = run_exit(car_name, 100, v_ego=v_ego)
     assert on == off
 
-  def test_driver_pressing_gets_no_hold(self):
-    # the driver takes the wheel at the end of the exit: the same torque as with the hold off
+  def test_driver_pressing_gets_no_hold(self, monkeypatch):
+    # the driver takes the wheel at the end of a held exit: the hold passes the PID output through untouched
     pressed = []
     for hold_percent in (0, 100):
       controller, _ = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, hold_percent)
+      calls = []
+      original = BoltTurnExitHold.update
+
+      def spy(self, *args, original=original, calls=calls):
+        result = original(self, *args)
+        calls.append((args[3], result))
+        return result
+      monkeypatch.setattr(BoltTurnExitHold, "update", spy)
       _, VM, CS, params, toggles = build(GM.CHEVROLET_BOLT_ACC_2022_2023, 7.0, hold_percent)
       CS.steeringPressed = True
       CS.steeringAngleDeg = 1.5 / (-VM.calc_curvature(math.radians(1.0), 7.0, 0.0) * 7.0 ** 2)
       output, _, _ = controller.update(True, CS, VM, params, False, 1.2 / 7.0 ** 2, False, 0.2, None, None, toggles)
-      pressed.append(output)
-    assert pressed[0] == pytest.approx(pressed[1], abs=1e-6)  # earlier frames' output state differs by ~1e-11
-    assert controller.bolt_turn_exit_hold.release_weight == 0.0
+      monkeypatch.undo()
+      assert calls[-1][0] == calls[-1][1]
+      assert controller.bolt_turn_exit_hold.release_weight == 0.0
+      pressed.append(-output)
+    # less stored-up I after a held exit, so no bigger push toward center than with the hold off
+    assert pressed[1] >= pressed[0]
 
   def test_disengage_resets_hold_state(self):
     controller, _ = run_exit(GM.CHEVROLET_BOLT_ACC_2022_2023, 60)

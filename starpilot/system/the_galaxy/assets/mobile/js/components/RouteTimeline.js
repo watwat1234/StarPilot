@@ -7,7 +7,7 @@ const BUSY_RETRY_MS = 3000
 const ONROAD_RETRY_MS = 60000
 const KEY_STEP_SECONDS = 10
 const SEGMENT_SECONDS = 60
-const STATE_COLORS = { engaged: "#178644", aol: "#1a9e9e", overriding: "#919b95", disengaged: "#173349" }
+const STATE_COLORS = { engaged: "#178644", aol: "#173349", overriding: "#919b95", disengaged: "#211b3a" }
 const ALERT_COLORS = [null, "#da6f25", "#c92231"]
 
 function installStyle() {

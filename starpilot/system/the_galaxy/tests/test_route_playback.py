@@ -605,8 +605,17 @@ def test_real_ffmpeg_remux_of_raw_hevc_gives_a_playable_fmp4_pair(tmp_path, monk
 # Stage 3: route timeline.
 
 
-def _state(enabled, active, alert="normal"):
-  return SimpleNamespace(enabled=enabled, active=active, alertStatus=alert)
+def _state(enabled, active, alert="normal", state=None):
+  state = state or ("enabled" if active else "preEnabled" if enabled else "disabled")
+  return SimpleNamespace(enabled=enabled, active=active, alertStatus=alert, state=state)
+
+
+def _aol(enabled):
+  return SimpleNamespace(alwaysOnLateralEnabled=enabled)
+
+
+def _car(steering_pressed):
+  return SimpleNamespace(steeringPressed=steering_pressed)
 
 
 def _events(start_ns, *timed):
@@ -622,7 +631,7 @@ def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_ch
     (4.8, "thumbnail", SimpleNamespace(thumbnail=b"\xff\xd8first")),
     (10.0, "selfdriveState", _state(True, True)),
     (20.0, "selfdriveState", _state(True, True)),
-    (30.0, "selfdriveState", _state(True, False)),
+    (30.0, "selfdriveState", _state(True, True, state="overriding")),
     (40.0, "selfdriveState", _state(True, True, "userPrompt")),
     (45.0, "selfdriveState", _state(True, True, "critical")),
     (50.0, "selfdriveState", _state(True, True)),
@@ -643,7 +652,59 @@ def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_ch
   assert late == (59.95, b"\xff\xd8second")
 
 
-@pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", None))])
+def test_summarize_draws_aol_only_steered_aol_and_preenabled():
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "starpilotCarState", _aol(False)),
+    (0.0, "selfdriveState", _state(False, False)),
+    (1.0, "starpilotCarState", _aol(True)),
+    (1.0, "selfdriveState", _state(False, False)),
+    (2.0, "carState", _car(True)),
+    (2.0, "selfdriveState", _state(False, False)),
+    (3.0, "carState", _car(False)),
+    (3.0, "selfdriveState", _state(False, False)),
+    (4.0, "selfdriveState", _state(False, False)),  # flags carried from the latest messages
+    (5.0, "selfdriveState", _state(True, False)),  # preEnabled
+    (6.0, "selfdriveState", _state(True, True)),  # engaged wins over AOL
+    (7.0, "carState", _car(True)),
+    (7.0, "selfdriveState", _state(True, True)),  # steering while engaged without an override state: engaged
+    (7.5, "selfdriveState", _state(True, True, state="overriding")),  # overriding wins over AOL
+    (8.0, "starpilotCarState", _aol(False)),
+    (8.0, "selfdriveState", _state(False, False)),
+    (9.0, "selfdriveState", _state(False, False)),
+  ))[0]
+
+  assert timeline["spans"] == [
+    [0.0, 1.0, "disengaged", 0],
+    [1.0, 2.0, "aol", 0],
+    [2.0, 3.0, "overriding", 0],
+    [3.0, 5.0, "aol", 0],
+    [5.0, 7.5, "engaged", 0],
+    [7.5, 8.0, "overriding", 0],
+    [8.0, 9.0, "disengaged", 0],
+  ]
+
+
+def test_summarize_classifies_states_logged_before_the_minutes_first_aol_message_with_it():
+  # Each qlog starts fresh; a selfdriveState can come before the first starpilotCarState of the minute.
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "selfdriveState", _state(False, False)),
+    (0.05, "selfdriveState", _state(False, False)),
+    (0.08, "starpilotCarState", _aol(True)),
+    (0.1, "selfdriveState", _state(False, False)),
+    (1.0, "selfdriveState", _state(False, False)),
+  ))[0]
+  assert timeline["spans"] == [[0.0, 1.0, "aol", 0]]
+
+
+def test_summarize_without_aol_messages_ignores_steering_while_disengaged():
+  timeline = route_timeline.summarize(_events(
+    5, (0.0, "carState", _car(True)), (0.0, "selfdriveState", _state(False, False)), (1.0, "selfdriveState", _state(False, False))))[0]
+  assert timeline["spans"] == [[0.0, 1.0, "disengaged", 0]]
+
+
+@pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", _car(True)))])
 def test_summarize_without_state_or_thumbnail_is_empty(events):
   assert route_timeline.summarize(events) == ({"spans": [], "thumbnailAt": None}, None, None)
 
@@ -722,7 +783,7 @@ def test_the_timeline_cache_key_carries_the_parser_version_and_the_video_key_doe
   old_key = hashlib.md5(f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()
   assert route_playback._cache_dir_for(tmp_path, source).name == old_key
   assert route_playback._timeline_dir_for(tmp_path, source).name not in (old_key, "")
-  assert route_timeline.CACHE_VERSION == 2
+  assert route_timeline.CACHE_VERSION == 3
 
 
 def _fake_parser(monkeypatch, thumbnail=b"\xff\xd8jpeg", failure=None, write=True, then_fail=None):
@@ -1125,9 +1186,16 @@ def event(seconds, which):
 
 messages = [event(32.0, "initData")[0], event(2400.0, "sentinel")[0]]
 for tenth in range(600):
+  # Always-On Lateral from 2 to 8 s, steered from 4 to 5 s.
+  message, starpilot = event(2400.0 + tenth / 10, "starpilotCarState")
+  starpilot.alwaysOnLateralEnabled = 20 <= tenth < 80
+  messages.append(message)
+  message, car = event(2400.0 + tenth / 10, "carState")
+  car.steeringPressed = 40 <= tenth < 50 or 300 <= tenth < 350
+  messages.append(message)
   message, state = event(2400.0 + tenth / 10, "selfdriveState")
-  state.enabled = tenth >= 100
-  state.active = tenth >= 100 and not 300 <= tenth < 350
+  state.enabled = state.active = tenth >= 100
+  state.state = "overriding" if 300 <= tenth < 350 else "enabled" if tenth >= 100 else "disabled"
   state.alertStatus = "critical" if 500 <= tenth < 520 else "normal"
   messages.append(message)
   # Thumbnails at the given tenths of a second, each tagged with its tenth.
@@ -1167,7 +1235,11 @@ def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, monkeypatch, offro
   assert _get(client, _segment_url(41)).get_json() == response.get_json()
   assert len(runs) == 1
   assert response.get_json() == {"thumbnailAt": 5.0, "spans": [
-    [0.0, 10.0, "disengaged", 0],
+    [0.0, 2.0, "disengaged", 0],
+    [2.0, 4.0, "aol", 0],
+    [4.0, 5.0, "overriding", 0],
+    [5.0, 8.0, "aol", 0],
+    [8.0, 10.0, "disengaged", 0],
     [10.0, 30.0, "engaged", 0],
     [30.0, 35.0, "overriding", 0],
     [35.0, 50.0, "engaged", 0],

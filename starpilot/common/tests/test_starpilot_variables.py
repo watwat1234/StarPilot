@@ -332,6 +332,39 @@ def test_disabled_conditional_experimental_toggles_are_off(monkeypatch, tmp_path
   assert toggles.conditional_signal_lane_detection is False
 
 
+@pytest.mark.parametrize("log_mono_time, live_valid, use_params", [
+  (1000, True, True),
+  (1003, False, False),
+  (1002, True, False),
+  (1001, False, True),
+])
+def test_live_torque_cache_is_read_as_event(monkeypatch, tmp_path, log_mono_time, live_valid, use_params):
+  from cereal import log
+
+  params_cls = spv.Params
+
+  def isolated_params(_path=None, memory=False, return_defaults=False):
+    return params_cls(str(tmp_path / ("memory" if memory else "params")), return_defaults=return_defaults)
+
+  monkeypatch.setattr(spv, "Params", isolated_params)
+  monkeypatch.setattr(spv.HARDWARE, "get_device_type", lambda: "pc")
+  params = isolated_params()
+  params.put_bool("AdvancedLateralTune", True)
+  params.put_bool("ForceAutoTune", True)
+
+  # torqued caches the whole Event; the logMonoTime bits must not leak into the parsed fields
+  msg = log.Event.new_message(logMonoTime=log_mono_time, valid=True)
+  msg.init("liveTorqueParameters")
+  msg.liveTorqueParameters.liveValid = live_valid
+  msg.liveTorqueParameters.useParams = use_params
+  params.put("LiveTorqueParameters", msg.to_bytes())
+
+  toggles = spv.StarPilotVariables().starpilot_toggles
+
+  assert toggles.liveValid is live_valid
+  assert toggles.force_auto_tune is (not use_params)
+
+
 def test_big_ui_exposes_developer_toggles_without_persisting_developer_ui(monkeypatch, tmp_path):
   params_cls = spv.Params
 

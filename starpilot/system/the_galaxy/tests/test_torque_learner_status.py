@@ -18,6 +18,9 @@ class FakeParams:
   def get(self, key):
     return self.values.get(key)
 
+  def get_bool(self, key):
+    return bool(self.values.get(key))
+
   def get_param_path(self, key):
     return str(self.tmp_path / key)
 
@@ -29,10 +32,10 @@ def _points(counts):
   return points
 
 
-def _cache(counts, live_valid, cal_perc, version=torqued.VERSION):
+def _cache(counts, live_valid, cal_perc, version=torqued.VERSION, use_params=True, raw=5.55):
   return log.Event.new_message(liveTorqueParameters={
-    "version": version, "liveValid": live_valid, "calPerc": cal_perc, "points": _points(counts),
-    "latAccelFactorFiltered": 4.5, "latAccelFactorRaw": 5.55, "latAccelOffsetFiltered": 0.0,
+    "version": version, "liveValid": live_valid, "useParams": use_params, "calPerc": cal_perc, "points": _points(counts),
+    "latAccelFactorFiltered": 4.5, "latAccelFactorRaw": raw, "latAccelOffsetFiltered": 0.0,
     "frictionCoefficientFiltered": 0.09,
   }).to_bytes()
 
@@ -42,10 +45,10 @@ def _cp(fingerprint="HYUNDAI_IONIQ_6", lat_accel_factor=4.5):
                                    lateralTuning={"torque": {"friction": 0.09, "latAccelFactor": lat_accel_factor}}).to_bytes()
 
 
-def _params(tmp_path, cache, prev=b"default", current=b"default"):
+def _params(tmp_path, cache, prev=b"default", current=b"default", **bools):
   return FakeParams(tmp_path, {"LiveTorqueParameters": cache,
                                "CarParamsPrevRoute": _cp() if prev == b"default" else prev,
-                               "CarParamsPersistent": _cp() if current == b"default" else current})
+                               "CarParamsPersistent": _cp() if current == b"default" else current, **bools})
 
 
 @pytest.fixture
@@ -62,7 +65,7 @@ def with_exemption(monkeypatch):
     def get_valid_percent(self):
       total_perc = min(len(self) / self.min_points_total * 100, 100)
       percs = [len(v) / self.buckets_min_points[b] * 100 for b, v in self.buckets.items() if not self._is_excusable(b)]
-      return int((total_perc + min(min(percs), 100)) / 2)
+      return int((total_perc + (min(min(percs), 100) if percs else 0)) / 2)
   monkeypatch.setattr(torqued, "TorqueBuckets", ExemptBuckets)
 
 
@@ -116,6 +119,23 @@ def test_last_drive_omitted_when_both_modes_match(tmp_path):
 def test_bucket_counts_capped_like_torqued(tmp_path):
   rows = tls.snapshot_items(_params(tmp_path, _cache([0, 0, 0, 2000, 0, 0, 0, 0], False, 0)))
   assert rows[4]["value"] == "1500 · done"
+
+
+@pytest.mark.parametrize("bools, expected", [
+  ({}, "factor 4.50 not applied: auto-tune off (learner 5.55)"),
+  ({"ForceAutoTune": b"1"}, "factor 4.50 not applied: auto-tune off (learner 5.55)"),
+  ({"AdvancedLateralTune": b"1", "ForceAutoTune": b"1"}, "factor 4.50 in use (learner 5.55)"),
+])
+def test_factor_applied_only_with_auto_tune(tmp_path, bools, expected):
+  # e.g. GM is outside torqued.ALLOWED_CARS, so useParams is False unless ForceAutoTune is on.
+  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, use_params=False), **bools))
+  assert expected in rows[0]["value"]
+
+
+@pytest.mark.parametrize("raw", [0.0, float("nan")])
+def test_missing_raw_factor_is_omitted(tmp_path, raw):
+  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, raw=raw)))
+  assert "factor 4.50 in use · offset" in rows[0]["value"]
 
 
 def test_changed_tune_is_not_stale(tmp_path):

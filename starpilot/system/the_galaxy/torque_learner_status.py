@@ -5,6 +5,7 @@ torqued writes the cache once a minute onroad, so these rows are as fresh as tha
 come from torqued's own TorqueBuckets, loaded the way torqued restores the cache.
 """
 import inspect
+import math
 import os
 from datetime import UTC, datetime
 
@@ -23,14 +24,25 @@ def allow_empty_buckets(buckets_cls, fingerprint):
   return fingerprint == CAR.HYUNDAI_IONIQ_6
 
 
-def load_buckets(torqued, points, decimated, allow_empty):
+def load_buckets(torqued, points, allow_empty):
+  # One load (np.append per point is the slow part); the normal-mode buckets share the decimated ones' queues.
   kwargs = {} if allow_empty is None else {"allow_empty_buckets": allow_empty}
-  buckets = torqued.TorqueBuckets(x_bounds=torqued.STEER_BUCKET_BOUNDS,
-                                  min_points=torqued.MIN_BUCKET_POINTS / 10 if decimated else torqued.MIN_BUCKET_POINTS,
-                                  min_points_total=torqued.MIN_POINTS_TOTAL_QLOG if decimated else torqued.MIN_POINTS_TOTAL,
-                                  points_per_bucket=torqued.POINTS_PER_BUCKET, rowsize=3, **kwargs)
-  buckets.load_points(points)
-  return buckets
+  modes = {mode: torqued.TorqueBuckets(x_bounds=torqued.STEER_BUCKET_BOUNDS,
+                                       min_points=torqued.MIN_BUCKET_POINTS / 10 if mode == "decimated" else torqued.MIN_BUCKET_POINTS,
+                                       min_points_total=torqued.MIN_POINTS_TOTAL_QLOG if mode == "decimated" else torqued.MIN_POINTS_TOTAL,
+                                       points_per_bucket=torqued.POINTS_PER_BUCKET, rowsize=3, **kwargs)
+           for mode in ("decimated", "normal")}
+  modes["decimated"].load_points(points)
+  modes["normal"].buckets = modes["decimated"].buckets
+  return modes
+
+
+def applied(params, use_params):
+  # controlsd applies the live values only with useParams or ForceAutoTune (gated by AdvancedLateralTune).
+  try:
+    return use_params or (params.get_bool("AdvancedLateralTune") and params.get_bool("ForceAutoTune"))
+  except Exception:
+    return use_params
 
 
 def bucket_label(lo, hi):
@@ -79,13 +91,13 @@ def _build(params):
   with log.Event.from_bytes(cache) as evt:
     ltp = evt.liveTorqueParameters
     points = [list(p) for p in ltp.points]
-    cached = {k: getattr(ltp, k) for k in ("liveValid", "calPerc", "version", "latAccelFactorFiltered", "latAccelFactorRaw",
-                                           "latAccelOffsetFiltered", "frictionCoefficientFiltered")}
+    cached = {k: getattr(ltp, k) for k in ("liveValid", "useParams", "calPerc", "version", "latAccelFactorFiltered",
+                                           "latAccelFactorRaw", "latAccelOffsetFiltered", "frictionCoefficientFiltered")}
 
   # The next drive compares this cache's CarParams with its own; only a torqued VERSION bump is knowable now.
   stale = cached["version"] != torqued.VERSION
   allow_empty = allow_empty_buckets(torqued.TorqueBuckets, _fingerprint(params))
-  modes = {mode: load_buckets(torqued, points, mode == "decimated", allow_empty) for mode in ("decimated", "normal")}
+  modes = load_buckets(torqued, points, allow_empty)
   last = [mode for mode, buckets in modes.items() if buckets.get_valid_percent() == cached["calPerc"]]
   next_mode = "normal" if cached["liveValid"] else "decimated"
   buckets = modes[next_mode]
@@ -94,8 +106,9 @@ def _build(params):
            f"points {len(buckets)} / {buckets.min_points_total}", f"next drive: {next_mode}"]
   if len(last) == 1:
     parts.append(f"last drive: {last[0]}")
-  raw = f" (learner {cached['latAccelFactorRaw']:.2f})" if cached["latAccelFactorRaw"] else ""
-  parts += [f"factor {cached['latAccelFactorFiltered']:.2f} in use{raw}", f"offset {cached['latAccelOffsetFiltered']:+.2f}",
+  raw = f" (learner {cached['latAccelFactorRaw']:.2f})" if math.isfinite(cached["latAccelFactorRaw"]) and cached["latAccelFactorRaw"] else ""
+  in_use = "in use" if applied(params, cached["useParams"]) else "not applied: auto-tune off"
+  parts += [f"factor {cached['latAccelFactorFiltered']:.2f} {in_use}{raw}",f"offset {cached['latAccelOffsetFiltered']:+.2f}",
             f"friction {cached['frictionCoefficientFiltered']:.3f}"]
   age = _age_text(params)
   if age:

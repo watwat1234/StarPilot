@@ -95,8 +95,8 @@ def test_exemption_only_for_ioniq_6(tmp_path, with_exemption):
 
 
 def test_without_exemption_outer_buckets_count(tmp_path):
-  # Dom-wat's torqued has no allow_empty_buckets: the empty outer bucket caps calPerc at 50.
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50)))
+  # No exemption (any car on Dom-wat, non-Ioniq 6 on wat-ioniq): the empty outer bucket caps calPerc at 50.
+  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), current=_cp("CHEVROLET_BOLT_EUV")))
   assert "last drive: decimated" in rows[0]["value"]
   assert rows[1]["value"] == "0 / 10 (normal 100) · short 10"
 

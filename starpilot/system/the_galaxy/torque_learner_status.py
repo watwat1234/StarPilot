@@ -1,7 +1,8 @@
 """Torque learner (torqued) progress for the Galaxy Troubleshoot page, read from the LiveTorqueParameters cache.
 
 torqued writes the cache once a minute onroad, so these rows are as fresh as that. Negative torque is a left curve
-(torqued negates carOutput torque; checked against the GPS track on both cars, 2026-10-25).
+(torqued negates carOutput torque; checked against the GPS track on both cars, 2026-10-25). Counts and percentages
+come from torqued's own TorqueBuckets, loaded the way torqued restores the cache.
 """
 import inspect
 import os
@@ -14,30 +15,22 @@ def _row(row_id, label, value):
   return {"id": row_id, "label": label, "value": value, "resettable": False}
 
 
-def bucket_counts(points, bounds):
-  counts = [0] * len(bounds)
-  for point in points:
-    for i, (lo, hi) in enumerate(bounds):
-      if lo <= point[0] < hi:
-        counts[i] += 1
-        break
-  return counts
-
-
-def valid_percent(counts, min_points, min_total, exempt):
-  # Mirrors PointBuckets.get_valid_percent (helpers.py), with wat-ioniq's excusable outer buckets.
-  total_perc = min(sum(counts) / min_total * 100, 100)
-  bucket_percs = [c / m * 100 for c, m, e in zip(counts, min_points, exempt, strict=True) if not e]
-  return int((total_perc + (min(min(bucket_percs), 100) if bucket_percs else 0)) / 2)
-
-
-def exempt_buckets(estimator_cls, fingerprint, n):
-  # wat-ioniq only: torqued.main passes allow_empty_buckets for the Ioniq 6, excusing the two outer buckets.
-  if "allow_empty_buckets" not in inspect.signature(estimator_cls.__init__).parameters:
-    return [False] * n
+def allow_empty_buckets(buckets_cls, fingerprint):
+  # wat-ioniq only (None elsewhere): mirrors torqued.main, which excuses the outer buckets for the Ioniq 6.
+  if "allow_empty_buckets" not in inspect.signature(buckets_cls.__init__).parameters:
+    return None
   from opendbc.car.hyundai.values import CAR
-  allowed = fingerprint == CAR.HYUNDAI_IONIQ_6
-  return [allowed and i in (0, n - 1) for i in range(n)]
+  return fingerprint == CAR.HYUNDAI_IONIQ_6
+
+
+def load_buckets(torqued, points, decimated, allow_empty):
+  kwargs = {} if allow_empty is None else {"allow_empty_buckets": allow_empty}
+  buckets = torqued.TorqueBuckets(x_bounds=torqued.STEER_BUCKET_BOUNDS,
+                                  min_points=torqued.MIN_BUCKET_POINTS / 10 if decimated else torqued.MIN_BUCKET_POINTS,
+                                  min_points_total=torqued.MIN_POINTS_TOTAL_QLOG if decimated else torqued.MIN_POINTS_TOTAL,
+                                  points_per_bucket=torqued.POINTS_PER_BUCKET, rowsize=3, **kwargs)
+  buckets.load_points(points)
+  return buckets
 
 
 def bucket_label(lo, hi):
@@ -67,6 +60,16 @@ def _age_text(params):
   return f"{int(age // 3600)} h ago" if age < 86400 else f"{int(age // 86400)} d ago"
 
 
+def _fingerprint(params):
+  # The cache was written under CarParamsPersistent; PrevRoute is the fallback if Persistent was cleared.
+  for key in ("CarParamsPersistent", "CarParamsPrevRoute"):
+    cp_bytes = params.get(key)
+    if cp_bytes:
+      with car.CarParams.from_bytes(cp_bytes) as cp:
+        return str(cp.carFingerprint)
+  return ""
+
+
 def _build(params):
   from openpilot.selfdrive.locationd import torqued
 
@@ -79,43 +82,35 @@ def _build(params):
     cached = {k: getattr(ltp, k) for k in ("liveValid", "calPerc", "version", "latAccelFactorFiltered", "latAccelFactorRaw",
                                            "latAccelOffsetFiltered", "frictionCoefficientFiltered")}
 
-  current_cp, prev_cp = params.get("CarParamsPersistent"), params.get("CarParamsPrevRoute")
-  fingerprint, stale = "", prev_cp is None
-  if current_cp:
-    with car.CarParams.from_bytes(current_cp) as cp:
-      fingerprint = str(cp.carFingerprint)
-      if prev_cp:
-        with car.CarParams.from_bytes(prev_cp) as prev:
-          stale = (torqued.TorqueEstimator.get_restore_key(prev, cached["version"]) !=
-                   torqued.TorqueEstimator.get_restore_key(cp, torqued.VERSION))
-
-  bounds, normal_min = torqued.STEER_BUCKET_BOUNDS, torqued.MIN_BUCKET_POINTS
-  counts = bucket_counts(points, bounds)
-  exempt = exempt_buckets(torqued.TorqueEstimator, fingerprint, len(bounds))
-  modes = {"decimated": (normal_min / 10, torqued.MIN_POINTS_TOTAL_QLOG), "normal": (normal_min, torqued.MIN_POINTS_TOTAL)}
-  last = [m for m, (mins, total) in modes.items() if valid_percent(counts, mins, total, exempt) == cached["calPerc"]]
+  # The next drive compares this cache's CarParams with its own; only a torqued VERSION bump is knowable now.
+  stale = cached["version"] != torqued.VERSION
+  allow_empty = allow_empty_buckets(torqued.TorqueBuckets, _fingerprint(params))
+  modes = {mode: load_buckets(torqued, points, mode == "decimated", allow_empty) for mode in ("decimated", "normal")}
+  last = [mode for mode, buckets in modes.items() if buckets.get_valid_percent() == cached["calPerc"]]
   next_mode = "normal" if cached["liveValid"] else "decimated"
-  mins, min_total = modes[next_mode]
+  buckets = modes[next_mode]
 
   parts = [f"Valid ({cached['calPerc']}%)" if cached["liveValid"] else f"Learning {cached['calPerc']}%",
-           f"points {sum(counts)} / {min_total}", f"next drive: {next_mode}"]
+           f"points {len(buckets)} / {buckets.min_points_total}", f"next drive: {next_mode}"]
   if len(last) == 1:
     parts.append(f"last drive: {last[0]}")
-  raw = f" (raw {cached['latAccelFactorRaw']:.2f})" if cached["latAccelFactorRaw"] else ""
-  parts += [f"factor {cached['latAccelFactorFiltered']:.2f}{raw}", f"offset {cached['latAccelOffsetFiltered']:+.2f}",
+  raw = f" (learner {cached['latAccelFactorRaw']:.2f})" if cached["latAccelFactorRaw"] else ""
+  parts += [f"factor {cached['latAccelFactorFiltered']:.2f} in use{raw}", f"offset {cached['latAccelOffsetFiltered']:+.2f}",
             f"friction {cached['frictionCoefficientFiltered']:.3f}"]
   age = _age_text(params)
   if age:
     parts.append(age)
   if stale:
-    parts.append("cache is from another tune or car: torqued will start fresh")
+    parts.append("cache is from an older torqued: it will start fresh")
   rows = [_row("torque_learner", "Torque learner", " · ".join(parts))]
   if stale:
     return rows
 
-  for i, (lo, hi) in enumerate(bounds):
-    text = bucket_text(counts[i], mins[i], normal_min[i], exempt[i], next_mode == "decimated")
-    rows.append(_row(f"torque_learner_bucket_{i}", bucket_label(lo, hi), text))
+  excusable = getattr(buckets, "_is_excusable", lambda bound: False)
+  for i, (bound, queue) in enumerate(buckets.buckets.items()):
+    text = bucket_text(len(queue), buckets.buckets_min_points[bound], torqued.MIN_BUCKET_POINTS[i], excusable(bound),
+                       next_mode == "decimated")
+    rows.append(_row(f"torque_learner_bucket_{i}", bucket_label(*bound), text))
   return rows
 
 

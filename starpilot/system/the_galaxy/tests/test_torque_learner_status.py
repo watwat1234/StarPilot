@@ -1,6 +1,3 @@
-import random
-
-import numpy as np
 import pytest
 
 from cereal import car, log
@@ -45,30 +42,53 @@ def _cp(fingerprint="HYUNDAI_IONIQ_6", lat_accel_factor=4.5):
                                    lateralTuning={"torque": {"friction": 0.09, "latAccelFactor": lat_accel_factor}}).to_bytes()
 
 
-def _params(tmp_path, cache, prev=None, current=None):
-  return FakeParams(tmp_path, {"LiveTorqueParameters": cache, "CarParamsPrevRoute": prev or _cp(),
-                               "CarParamsPersistent": current or _cp()})
+def _params(tmp_path, cache, prev=b"default", current=b"default"):
+  return FakeParams(tmp_path, {"LiveTorqueParameters": cache,
+                               "CarParamsPrevRoute": _cp() if prev == b"default" else prev,
+                               "CarParamsPersistent": _cp() if current == b"default" else current})
 
 
 @pytest.fixture
 def with_exemption(monkeypatch):
-  class ExemptEstimator(torqued.TorqueEstimator):
-    def __init__(self, CP, decimated=False, track_all_points=False, allow_empty_buckets=False):
-      pass
-  monkeypatch.setattr(torqued, "TorqueEstimator", ExemptEstimator)
+  # Test double of wat-ioniq's PointBuckets (helpers.py): the outer buckets are excusable when allowed.
+  class ExemptBuckets(torqued.TorqueBuckets):
+    def __init__(self, *args, allow_empty_buckets=False, **kwargs):
+      super().__init__(*args, **kwargs)
+      self.allow_empty_buckets = allow_empty_buckets
+
+    def _is_excusable(self, bound):
+      return self.allow_empty_buckets and bound in (self.x_bounds[0], self.x_bounds[-1])
+
+    def get_valid_percent(self):
+      total_perc = min(len(self) / self.min_points_total * 100, 100)
+      percs = [len(v) / self.buckets_min_points[b] * 100 for b, v in self.buckets.items() if not self._is_excusable(b)]
+      return int((total_perc + min(min(percs), 100)) / 2)
+  monkeypatch.setattr(torqued, "TorqueBuckets", ExemptBuckets)
 
 
 def test_ioniq_cache_shape_with_exemption(tmp_path, with_exemption):
   rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58)))
   summary = rows[0]["value"]
   assert summary.startswith("Learning 58% · points 3783 / 600 · next drive: decimated · last drive: decimated")
-  assert "factor 4.50 (raw 5.55) · offset +0.00 · friction 0.090 · 0 min ago" in summary
+  assert "factor 4.50 in use (learner 5.55) · offset +0.00 · friction 0.090 · 0 min ago" in summary
   values = {r["label"]: r["value"] for r in rows[1:]}
   assert values["Torque learner: Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
   assert values["Torque learner: Left curves, torque 0.2–0.3"] == "5 / 30 (normal 300) · short 25"
   assert values["Torque learner: Right curves, torque 0.2–0.3"] == "20 / 30 (normal 300) · short 10"
   assert values["Torque learner: Right curves, torque 0–0.1"] == "1500 · done"
   assert all(r["resettable"] is False for r in rows)
+
+
+def test_exemption_falls_back_to_prev_route_fingerprint(tmp_path, with_exemption):
+  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58), current=None))
+  assert "last drive: decimated" in rows[0]["value"]
+  assert rows[1]["value"] == "0 / 10 · optional on this car"
+
+
+def test_exemption_only_for_ioniq_6(tmp_path, with_exemption):
+  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), current=_cp("CHEVROLET_BOLT_EUV")))
+  assert "last drive: decimated" in rows[0]["value"]
+  assert rows[1]["value"] == "0 / 10 (normal 100) · short 10"
 
 
 def test_without_exemption_outer_buckets_count(tmp_path):
@@ -93,15 +113,21 @@ def test_last_drive_omitted_when_both_modes_match(tmp_path):
   assert all(r["value"].endswith("· done") for r in rows[1:])
 
 
-def test_stale_restore_key_shows_summary_only(tmp_path):
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58), prev=_cp(lat_accel_factor=3.0)))
-  assert len(rows) == 1
-  assert rows[0]["value"].endswith("torqued will start fresh")
+def test_bucket_counts_capped_like_torqued(tmp_path):
+  rows = tls.snapshot_items(_params(tmp_path, _cache([0, 0, 0, 2000, 0, 0, 0, 0], False, 0)))
+  assert rows[4]["value"] == "1500 · done"
+
+
+def test_changed_tune_is_not_stale(tmp_path):
+  # The next drive compares the cache's own CarParams (copied into PrevRoute at start) with its new ones.
+  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), prev=_cp(lat_accel_factor=3.0)))
+  assert len(rows) == 9
 
 
 def test_old_cache_version_is_stale(tmp_path):
   rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58, version=torqued.VERSION - 1)))
-  assert rows[0]["value"].endswith("torqued will start fresh")
+  assert len(rows) == 1
+  assert rows[0]["value"].endswith("cache is from an older torqued: it will start fresh")
 
 
 @pytest.mark.parametrize("cache", [None, b"", b"not a capnp message"])
@@ -116,28 +142,3 @@ def test_bucket_labels():
   assert labels[3] == "Torque learner: Left curves, torque 0–0.1"
   assert labels[4] == "Torque learner: Right curves, torque 0–0.1"
   assert labels[7] == "Torque learner: Right curves, torque 0.3–0.5"
-
-
-def test_exempt_buckets_detection(with_exemption):
-  assert tls.exempt_buckets(torqued.TorqueEstimator, "HYUNDAI_IONIQ_6", 8) == [True] + [False] * 6 + [True]
-  assert tls.exempt_buckets(torqued.TorqueEstimator, "CHEVROLET_BOLT_EUV", 8) == [False] * 8
-
-
-def test_exempt_buckets_absent_without_parameter():
-  assert tls.exempt_buckets(torqued.TorqueEstimator, "HYUNDAI_IONIQ_6", 8) == [False] * 8
-
-
-@pytest.mark.parametrize("decimated", [True, False])
-def test_valid_percent_matches_torqued(decimated):
-  rng = random.Random(0)
-  mins = torqued.MIN_BUCKET_POINTS / 10 if decimated else torqued.MIN_BUCKET_POINTS
-  total = torqued.MIN_POINTS_TOTAL_QLOG if decimated else torqued.MIN_POINTS_TOTAL
-  for _ in range(50):
-    points = [[rng.uniform(-0.6, 0.6), 0.0] for _ in range(rng.randint(1, 5000))]
-    buckets = torqued.TorqueBuckets(x_bounds=torqued.STEER_BUCKET_BOUNDS, min_points=mins, min_points_total=total,
-                                    points_per_bucket=torqued.POINTS_PER_BUCKET, rowsize=3)
-    buckets.load_points(points)
-    counts = [len(v) for v in buckets.buckets.values()]
-    assert counts == [min(c, torqued.POINTS_PER_BUCKET) for c in tls.bucket_counts(points, torqued.STEER_BUCKET_BOUNDS)]
-    assert tls.valid_percent(counts, mins, total, [False] * len(counts)) == buckets.get_valid_percent()
-    assert np.isclose(sum(counts), len(buckets))

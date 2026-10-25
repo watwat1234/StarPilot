@@ -175,6 +175,7 @@ from openpilot.starpilot.navigation.destination_store import normalize_destinati
 from openpilot.starpilot.system.the_galaxy.factory_reset import remove_path as _run_factory_reset_delete
 from openpilot.starpilot.system.the_galaxy import flm_workspace, sentry_timelapse, utilities
 from openpilot.starpilot.system.the_galaxy.update_recovery import inspect_interrupted_update, public_recovery_status, recover_interrupted_update
+from openpilot.starpilot.system.the_galaxy import torque_learner_status
 from openpilot.starpilot.system.bluetooth import BluetoothClient
 from openpilot.starpilot.system.wheel_controls import (
   CONTROLLER_ACTION_OPTIONS,
@@ -4786,6 +4787,7 @@ def _build_troubleshoot_payload():
       "value": _format_longitudinal_personality(longitudinal_personality_raw),
       "resettable": False,
     },
+    *torque_learner_status.snapshot_items(_params_live_raw),
   ]
 
   sections = [

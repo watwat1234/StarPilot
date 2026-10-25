@@ -64,7 +64,7 @@ function isNonDefaultItem(item) {
 function getVisibleSectionItems(section) {
   const items = Array.isArray(section?.items) ? section.items : []
   if (!state.showNonDefaultOnly) return items
-  return items.filter((item) => item?.readOnly || isNonDefaultItem(item))
+  return items.filter(isNonDefaultItem)
 }
 
 function getVisibleSections() {

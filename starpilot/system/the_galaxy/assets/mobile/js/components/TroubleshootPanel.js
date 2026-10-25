@@ -64,7 +64,7 @@ export const TroubleshootPanel = {
     itemsVisible(section) {
       const items = Array.isArray(section?.items) ? section.items : []
       const query = this.search.trim().toLowerCase()
-      return items.filter((i) => (!this.onlyNonDefault || i?.readOnly || this.isChanged(i)) &&
+      return items.filter((i) => (!this.onlyNonDefault || this.isChanged(i)) &&
         (!query || `${section.title} ${i.key} ${i.label} ${formatValue(i.value)}`.toLowerCase().includes(query)))
     },
     severity(sev) {

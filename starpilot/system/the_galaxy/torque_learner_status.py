@@ -12,11 +12,12 @@ from datetime import UTC, datetime
 from cereal import car, log
 
 
-SECTION_TITLE = "Lateral (Steering) › Torque Learner"  # sorts next to Advanced Lateral Tuning
+SECTION_TITLE = "Lateral (Steering) › Torque Learner"  # sorts into the Lateral group (last, by title)
 
 
 def _item(key, label, value):
-  # readOnly: status, not a setting; the frontends skip its default, Changed chip and non-default count.
+  # readOnly: status, not a setting; the frontends skip its default and Changed chip, and the non-default
+  # filter and count leave it out.
   return {"key": f"TorqueLearner{key}", "label": label, "value": value, "defaultValue": None, "learnedValue": None,
           "readOnly": True}
 

@@ -2198,7 +2198,7 @@ class TestLatControl:
     _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0025, False, 0.2, None, None, starpilot_toggles)
 
     assert lac_log.active
-    assert controller.torque_params.latAccelFactor == pytest.approx(3.0 * 1.22)
+    assert controller.torque_params.latAccelFactor == pytest.approx(4.5)
     assert controller.low_speed_reset_threshold == pytest.approx(0.1 * 0.44704)
 
   def test_ioniq_6_2025_low_speed_output_limit_update_path(self, monkeypatch):

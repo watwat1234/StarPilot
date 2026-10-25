@@ -4787,7 +4787,6 @@ def _build_troubleshoot_payload():
       "value": _format_longitudinal_personality(longitudinal_personality_raw),
       "resettable": False,
     },
-    *torque_learner_status.snapshot_items(_params_live_raw),
   ]
 
   sections = [
@@ -4832,6 +4831,7 @@ def _build_troubleshoot_payload():
       section['resettable'] = False
       sections.append(section)
       shown.update(keys)
+  sections.extend(torque_learner_status.sections(_params_live_raw))
   sections.sort(key=lambda section: section["title"])
 
   return _sanitize_json_value({

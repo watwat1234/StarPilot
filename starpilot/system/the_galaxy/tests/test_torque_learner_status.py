@@ -69,96 +69,108 @@ def with_exemption(monkeypatch):
   monkeypatch.setattr(torqued, "TorqueBuckets", ExemptBuckets)
 
 
+def _values(params):
+  (section,) = tls.sections(params)
+  return {item["label"]: item["value"] for item in section["items"]}
+
+
+def test_section_shape(tmp_path):
+  (section,) = tls.sections(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50)))
+  assert section["title"] == "Lateral (Steering) › Torque Learner"
+  assert section["resettable"] is False and section["hasLearnedColumn"] is False
+  assert all(item["readOnly"] and item["defaultValue"] is None and item["key"].startswith("TorqueLearner")
+             for item in section["items"])
+  assert len({item["key"] for item in section["items"]}) == len(section["items"])
+
+
 def test_ioniq_cache_shape_with_exemption(tmp_path, with_exemption):
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58)))
-  summary = rows[0]["value"]
-  assert summary.startswith("Learning 58% · points 3783 / 600 · next drive: decimated · last drive: decimated")
-  assert "factor 4.50 in use (learner 5.55) · offset +0.00 · friction 0.090 · 0 min ago" in summary
-  values = {r["label"]: r["value"] for r in rows[1:]}
-  assert values["Torque learner: Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
-  assert values["Torque learner: Left curves, torque 0.2–0.3"] == "5 / 30 (normal 300) · short 25"
-  assert values["Torque learner: Right curves, torque 0.2–0.3"] == "20 / 30 (normal 300) · short 10"
-  assert values["Torque learner: Right curves, torque 0–0.1"] == "1500 · done"
-  assert all(r["resettable"] is False for r in rows)
+  values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58)))
+  assert values["State"] == "Learning 58%"
+  assert values["Points"] == "3783 / 600"
+  assert values["Next drive"] == "decimated" and values["Last drive"] == "decimated"
+  assert values["Lat accel factor"] == "4.50 in use (learner 5.55)"
+  assert (values["Offset"], values["Friction"], values["Cache updated"]) == ("+0.00", "0.090", "0 min ago")
+  assert values["Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
+  assert values["Left curves, torque 0.2–0.3"] == "5 / 30 (normal 300) · short 25"
+  assert values["Right curves, torque 0.2–0.3"] == "20 / 30 (normal 300) · short 10"
+  assert values["Right curves, torque 0–0.1"] == "1500 · done"
 
 
 def test_exemption_falls_back_to_prev_route_fingerprint(tmp_path, with_exemption):
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58), current=None))
-  assert "last drive: decimated" in rows[0]["value"]
-  assert rows[1]["value"] == "0 / 10 · optional on this car"
+  values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58), current=None))
+  assert values["Last drive"] == "decimated"
+  assert values["Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
 
 
-def test_exemption_only_for_ioniq_6(tmp_path, with_exemption):
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), current=_cp("CHEVROLET_BOLT_EUV")))
-  assert "last drive: decimated" in rows[0]["value"]
-  assert rows[1]["value"] == "0 / 10 (normal 100) · short 10"
-
-
-def test_without_exemption_outer_buckets_count(tmp_path):
-  # No exemption (any car on Dom-wat, non-Ioniq 6 on wat-ioniq): the empty outer bucket caps calPerc at 50.
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), current=_cp("CHEVROLET_BOLT_EUV")))
-  assert "last drive: decimated" in rows[0]["value"]
-  assert rows[1]["value"] == "0 / 10 (normal 100) · short 10"
+@pytest.mark.parametrize("exempt", [True, False])
+def test_no_exemption_for_other_cars(tmp_path, request, exempt):
+  # Holds with wat-ioniq's rules (exempt) and Dom-wat's: the empty outer bucket caps calPerc at 50.
+  if exempt:
+    request.getfixturevalue("with_exemption")
+  values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), current=_cp("CHEVROLET_BOLT_EUV")))
+  assert values["Last drive"] == "decimated"
+  assert values["Left curves, torque 0.3–0.5"] == "0 / 10 (normal 100) · short 10"
 
 
 def test_valid_cache_next_drive_normal(tmp_path):
   # Valid after a decimated drive: the normal-mode minimums still apply next drive.
-  counts = [150, 120, 600, 1500, 1500, 700, 400, 150]
-  rows = tls.snapshot_items(_params(tmp_path, _cache(counts, True, 100)))
-  assert rows[0]["value"].startswith("Valid (100%) · points 5120 / 4000 · next drive: normal · last drive: decimated ·")
-  assert rows[2]["value"] == "120 / 300 · short 180"
+  values = _values(_params(tmp_path, _cache([150, 120, 600, 1500, 1500, 700, 400, 150], True, 100)))
+  assert (values["State"], values["Points"], values["Next drive"]) == ("Valid (100%)", "5120 / 4000", "normal")
+  assert values["Last drive"] == "decimated"
+  assert values["Left curves, torque 0.2–0.3"] == "120 / 300 · short 180"
 
 
 def test_last_drive_omitted_when_both_modes_match(tmp_path):
-  counts = [150, 320, 600, 1500, 1500, 700, 400, 150]
-  rows = tls.snapshot_items(_params(tmp_path, _cache(counts, True, 100)))
-  assert "last drive" not in rows[0]["value"]
-  assert all(r["value"].endswith("· done") for r in rows[1:])
+  values = _values(_params(tmp_path, _cache([150, 320, 600, 1500, 1500, 700, 400, 150], True, 100)))
+  assert "Last drive" not in values
+  assert all(v.endswith("· done") for k, v in values.items() if "curves" in k)
 
 
 def test_bucket_counts_capped_like_torqued(tmp_path):
-  rows = tls.snapshot_items(_params(tmp_path, _cache([0, 0, 0, 2000, 0, 0, 0, 0], False, 0)))
-  assert rows[4]["value"] == "1500 · done"
+  values = _values(_params(tmp_path, _cache([0, 0, 0, 2000, 0, 0, 0, 0], False, 0)))
+  assert values["Left curves, torque 0–0.1"] == "1500 · done"
 
 
 @pytest.mark.parametrize("bools, expected", [
-  ({}, "factor 4.50 not applied: auto-tune off (learner 5.55)"),
-  ({"ForceAutoTune": b"1"}, "factor 4.50 not applied: auto-tune off (learner 5.55)"),
-  ({"AdvancedLateralTune": b"1", "ForceAutoTune": b"1"}, "factor 4.50 in use (learner 5.55)"),
+  ({}, "4.50 not applied: auto-tune off (learner 5.55)"),
+  ({"ForceAutoTune": b"1"}, "4.50 not applied: auto-tune off (learner 5.55)"),
+  ({"AdvancedLateralTune": b"1", "ForceAutoTune": b"1"}, "4.50 in use (learner 5.55)"),
 ])
 def test_factor_applied_only_with_auto_tune(tmp_path, bools, expected):
   # e.g. GM is outside torqued.ALLOWED_CARS, so useParams is False unless ForceAutoTune is on.
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, use_params=False), **bools))
-  assert expected in rows[0]["value"]
+  values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, use_params=False), **bools))
+  assert values["Lat accel factor"] == expected
 
 
 @pytest.mark.parametrize("raw", [0.0, float("nan")])
 def test_missing_raw_factor_is_omitted(tmp_path, raw):
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, raw=raw)))
-  assert "factor 4.50 in use · offset" in rows[0]["value"]
+  assert _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, raw=raw)))["Lat accel factor"] == "4.50 in use"
 
 
 def test_changed_tune_is_not_stale(tmp_path):
   # The next drive compares the cache's own CarParams (copied into PrevRoute at start) with its new ones.
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), prev=_cp(lat_accel_factor=3.0)))
-  assert len(rows) == 9
+  values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), prev=_cp(lat_accel_factor=3.0)))
+  assert "Note" not in values and "Right curves, torque 0.3–0.5" in values
 
 
 def test_old_cache_version_is_stale(tmp_path):
-  rows = tls.snapshot_items(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58, version=torqued.VERSION - 1)))
-  assert len(rows) == 1
-  assert rows[0]["value"].endswith("cache is from an older torqued: it will start fresh")
+  values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58, version=torqued.VERSION - 1)))
+  assert values["Note"] == "Cache is from an older torqued: the next drive starts fresh"
+  assert not any("curves" in k for k in values)
 
 
-@pytest.mark.parametrize("cache", [None, b"", b"not a capnp message"])
-def test_missing_or_garbage_cache_is_unavailable(tmp_path, cache):
-  assert tls.snapshot_items(_params(tmp_path, cache)) == [
-    {"id": "torque_learner", "label": "Torque learner", "value": "Unavailable", "resettable": False}]
+@pytest.mark.parametrize("cache", [None, b""])
+def test_no_section_without_cache(tmp_path, cache):
+  assert tls.sections(_params(tmp_path, cache)) == []
+
+
+def test_garbage_cache_is_unavailable(tmp_path):
+  assert _values(_params(tmp_path, b"not a capnp message")) == {"State": "Unavailable"}
 
 
 def test_bucket_labels():
   labels = [tls.bucket_label(lo, hi) for lo, hi in torqued.STEER_BUCKET_BOUNDS]
-  assert labels[0] == "Torque learner: Left curves, torque 0.3–0.5"
-  assert labels[3] == "Torque learner: Left curves, torque 0–0.1"
-  assert labels[4] == "Torque learner: Right curves, torque 0–0.1"
-  assert labels[7] == "Torque learner: Right curves, torque 0.3–0.5"
+  assert labels[0] == "Left curves, torque 0.3–0.5"
+  assert labels[3] == "Left curves, torque 0–0.1"
+  assert labels[4] == "Right curves, torque 0–0.1"
+  assert labels[7] == "Right curves, torque 0.3–0.5"

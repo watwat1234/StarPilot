@@ -50,7 +50,7 @@ export const TroubleshootPanel = {
   },
   computed: {
     countNonDefault() {
-      return this.sections.reduce((count, s) => count + (Array.isArray(s.items) ? s.items.filter((i) => !valuesMatch(i?.value, i?.defaultValue)).length : 0), 0)
+      return this.sections.reduce((count, s) => count + (Array.isArray(s.items) ? s.items.filter((i) => this.isChanged(i)).length : 0), 0)
     },
     visibleSections() {
       return this.sections.filter((section) => this.itemsVisible(section).length > 0)
@@ -60,11 +60,11 @@ export const TroubleshootPanel = {
   methods: {
     formatValue,
     formatLearnedValue,
-    isChanged(item) { return !valuesMatch(item?.value, item?.defaultValue) },
+    isChanged(item) { return !item?.readOnly && !valuesMatch(item?.value, item?.defaultValue) },
     itemsVisible(section) {
       const items = Array.isArray(section?.items) ? section.items : []
       const query = this.search.trim().toLowerCase()
-      return items.filter((i) => (!this.onlyNonDefault || !valuesMatch(i?.value, i?.defaultValue)) &&
+      return items.filter((i) => (!this.onlyNonDefault || i?.readOnly || this.isChanged(i)) &&
         (!query || `${section.title} ${i.key} ${i.label} ${formatValue(i.value)}`.toLowerCase().includes(query)))
     },
     severity(sev) {
@@ -141,7 +141,7 @@ export const TroubleshootPanel = {
         lines.push(section.title)
         for (const item of this.itemsVisible(section)) {
           const learned = this.formatLearnedValue(item.learnedValue)
-          lines.push(`- ${item.label}: ${this.formatValue(item.value)} (default: ${this.formatValue(item.defaultValue)}${learned ? `, learned: ${learned}` : ""})`)
+          lines.push(item.readOnly ? `- ${item.label}: ${this.formatValue(item.value)}` : `- ${item.label}: ${this.formatValue(item.value)} (default: ${this.formatValue(item.defaultValue)}${learned ? `, learned: ${learned}` : ""})`)
         }
       }
       const text = lines.join("\n")
@@ -228,8 +228,8 @@ export const TroubleshootPanel = {
                 <span v-if="isChanged(item)" class="gx-chip" style="background:var(--warning);color:var(--black); flex:none;">Changed</span>
               </div>
               <div style="display:grid; gap:2px; font-size:var(--fs-sm);">
-                <span><span style="color:var(--text-muted);">current </span><b style="overflow-wrap:anywhere;">{{ formatValue(item.value) }}</b></span>
-                <span style="color:var(--text-muted); overflow-wrap:anywhere;">default {{ formatValue(item.defaultValue) }}</span>
+                <span><span v-if="!item.readOnly" style="color:var(--text-muted);">current </span><b style="overflow-wrap:anywhere;">{{ formatValue(item.value) }}</b></span>
+                <span v-if="!item.readOnly" style="color:var(--text-muted); overflow-wrap:anywhere;">default {{ formatValue(item.defaultValue) }}</span>
                 <span v-if="section.hasLearnedColumn && formatLearnedValue(item.learnedValue)" style="color:var(--text-muted); overflow-wrap:anywhere;">learned {{ formatLearnedValue(item.learnedValue) }}</span>
               </div>
             </div>

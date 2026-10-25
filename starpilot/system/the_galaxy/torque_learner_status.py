@@ -12,8 +12,13 @@ from datetime import UTC, datetime
 from cereal import car, log
 
 
-def _row(row_id, label, value):
-  return {"id": row_id, "label": label, "value": value, "resettable": False}
+SECTION_TITLE = "Lateral (Steering) › Torque Learner"  # sorts next to Advanced Lateral Tuning
+
+
+def _item(key, label, value):
+  # readOnly: status, not a setting; the frontends skip its default, Changed chip and non-default count.
+  return {"key": f"TorqueLearner{key}", "label": label, "value": value, "defaultValue": None, "learnedValue": None,
+          "readOnly": True}
 
 
 def allow_empty_buckets(buckets_cls, fingerprint):
@@ -48,7 +53,7 @@ def applied(params, use_params):
 def bucket_label(lo, hi):
   side = "Left curves" if hi <= 0 else "Right curves"
   a, b = sorted((abs(lo), abs(hi)))
-  return f"Torque learner: {side}, torque {a:g}–{b:g}"
+  return f"{side}, torque {a:g}–{b:g}"
 
 
 def bucket_text(count, need, normal_need, exempt, decimated):
@@ -82,12 +87,9 @@ def _fingerprint(params):
   return ""
 
 
-def _build(params):
+def _build(params, cache):
   from openpilot.selfdrive.locationd import torqued
 
-  cache = params.get("LiveTorqueParameters")
-  if not cache:
-    return [_row("torque_learner", "Torque learner", "Unavailable")]
   with log.Event.from_bytes(cache) as evt:
     ltp = evt.liveTorqueParameters
     points = [list(p) for p in ltp.points]
@@ -102,33 +104,43 @@ def _build(params):
   next_mode = "normal" if cached["liveValid"] else "decimated"
   buckets = modes[next_mode]
 
-  parts = [f"Valid ({cached['calPerc']}%)" if cached["liveValid"] else f"Learning {cached['calPerc']}%",
-           f"points {len(buckets)} / {buckets.min_points_total}", f"next drive: {next_mode}"]
-  if len(last) == 1:
-    parts.append(f"last drive: {last[0]}")
-  raw = f" (learner {cached['latAccelFactorRaw']:.2f})" if math.isfinite(cached["latAccelFactorRaw"]) and cached["latAccelFactorRaw"] else ""
+  raw = cached["latAccelFactorRaw"]
+  learner = f" (learner {raw:.2f})" if math.isfinite(raw) and raw else ""
   in_use = "in use" if applied(params, cached["useParams"]) else "not applied: auto-tune off"
-  parts += [f"factor {cached['latAccelFactorFiltered']:.2f} {in_use}{raw}",f"offset {cached['latAccelOffsetFiltered']:+.2f}",
-            f"friction {cached['frictionCoefficientFiltered']:.3f}"]
+  items = [
+    _item("State", "State", f"Valid ({cached['calPerc']}%)" if cached["liveValid"] else f"Learning {cached['calPerc']}%"),
+    _item("Points", "Points", f"{len(buckets)} / {buckets.min_points_total}"),
+    _item("NextDrive", "Next drive", next_mode),
+  ]
+  if len(last) == 1:
+    items.append(_item("LastDrive", "Last drive", last[0]))
+  items += [
+    _item("Factor", "Lat accel factor", f"{cached['latAccelFactorFiltered']:.2f} {in_use}{learner}"),
+    _item("Offset", "Offset", f"{cached['latAccelOffsetFiltered']:+.2f}"),
+    _item("Friction", "Friction", f"{cached['frictionCoefficientFiltered']:.3f}"),
+  ]
   age = _age_text(params)
   if age:
-    parts.append(age)
+    items.append(_item("Updated", "Cache updated", age))
   if stale:
-    parts.append("cache is from an older torqued: it will start fresh")
-  rows = [_row("torque_learner", "Torque learner", " · ".join(parts))]
-  if stale:
-    return rows
+    items.append(_item("Stale", "Note", "Cache is from an older torqued: the next drive starts fresh"))
+    return items
 
   excusable = getattr(buckets, "_is_excusable", lambda bound: False)
   for i, (bound, queue) in enumerate(buckets.buckets.items()):
     text = bucket_text(len(queue), buckets.buckets_min_points[bound], torqued.MIN_BUCKET_POINTS[i], excusable(bound),
                        next_mode == "decimated")
-    rows.append(_row(f"torque_learner_bucket_{i}", bucket_label(*bound), text))
-  return rows
+    items.append(_item(f"Bucket{i}", bucket_label(*bound), text))
+  return items
 
 
-def snapshot_items(params):
+def sections(params):
+  # No section without a cache (no torque learner on this car yet); an unreadable cache shows Unavailable.
   try:
-    return _build(params)
+    cache = params.get("LiveTorqueParameters")
+    if not cache:
+      return []
+    items = _build(params, cache)
   except Exception:
-    return [_row("torque_learner", "Torque learner", "Unavailable")]
+    items = [_item("State", "State", "Unavailable")]
+  return [{"id": "torque_learner", "title": SECTION_TITLE, "resettable": False, "hasLearnedColumn": False, "items": items}]

@@ -58,13 +58,13 @@ function valuesMatch(left, right) {
 }
 
 function isNonDefaultItem(item) {
-  return !valuesMatch(item?.value, item?.defaultValue)
+  return !item?.readOnly && !valuesMatch(item?.value, item?.defaultValue)
 }
 
 function getVisibleSectionItems(section) {
   const items = Array.isArray(section?.items) ? section.items : []
   if (!state.showNonDefaultOnly) return items
-  return items.filter(isNonDefaultItem)
+  return items.filter((item) => item?.readOnly || isNonDefaultItem(item))
 }
 
 function getVisibleSections() {
@@ -112,7 +112,9 @@ function buildReportText() {
       const learnedSuffix = formatLearnedValue(item.learnedValue)
         ? `, learned: ${formatLearnedValue(item.learnedValue)}`
         : ""
-      lines.push(`- ${item.label}: ${formatValue(item.value)} (default: ${formatValue(item.defaultValue)}${learnedSuffix})`)
+      lines.push(item.readOnly
+        ? `- ${item.label}: ${formatValue(item.value)}`
+        : `- ${item.label}: ${formatValue(item.value)} (default: ${formatValue(item.defaultValue)}${learnedSuffix})`)
     }
   }
 
@@ -220,7 +222,7 @@ function itemRows(section) {
         ${isNonDefaultItem(item) ? html`<span class="troubleshootChangedBadge">Changed</span>` : ""}
       </div>
       <div class="${`troubleshootItemValue ${isNonDefaultItem(item) ? "troubleshootItemValueChanged" : ""}`.trim()}">${formatValue(item.value)}</div>
-      <div class="troubleshootItemDefault">${formatValue(item.defaultValue)}</div>
+      <div class="troubleshootItemDefault">${item.readOnly ? "" : formatValue(item.defaultValue)}</div>
       ${section?.hasLearnedColumn ? html`<div class="troubleshootItemLearned">${formatLearnedValue(item.learnedValue)}</div>` : ""}
     </div>
   `)

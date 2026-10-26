@@ -107,8 +107,9 @@ class TorqueEstimator(ParameterEstimator):
         with car.CarParams.from_bytes(params_cache) as msg:
           cache_CP = msg
         if self.get_restore_key(cache_CP, cache_ltp.version) == self.get_restore_key(CP, VERSION):
-          # A normal-mode drive writes liveValid False until its stricter buckets fill, but its filters only move on
-          # valid fits (decay above the minimum shows they have), so the cached values are still learned ones.
+          # A normal-mode drive that started below normal's minimums (main used to pick the mode from the last
+          # liveValid) writes liveValid False, but its filters only move on valid fits (decay above the minimum
+          # shows they have), so the cached values are still learned ones.
           if cache_ltp.liveValid or cache_ltp.decay > MIN_FILTER_DECAY:
             initial_params = {
               'latAccelFactor': cache_ltp.latAccelFactorFiltered,

@@ -173,6 +173,12 @@ def test_old_cache_version_is_stale(tmp_path):
   assert not any("curves" in k for k in values)
 
 
+def test_old_cache_version_with_full_normal_buckets_next_drive_decimated(tmp_path):
+  values = _values(_params(tmp_path, _cache([150, 320, 600, 1500, 1500, 700, 400, 150], True, 100,
+                                            version=torqued.VERSION - 1)))
+  assert values["Next drive"] == "decimated"
+
+
 @pytest.mark.parametrize("cache", [None, b""])
 def test_no_section_without_cache(tmp_path, cache):
   assert tls.sections(_params(tmp_path, cache)) == []

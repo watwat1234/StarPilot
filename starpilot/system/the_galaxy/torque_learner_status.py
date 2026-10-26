@@ -102,8 +102,8 @@ def _build(params, cache):
   allow_empty = allow_empty_buckets(torqued.TorqueBuckets, _fingerprint(params))
   modes = load_buckets(torqued, points, allow_empty)
   last = [mode for mode, buckets in modes.items() if buckets.get_valid_percent() == cached["calPerc"]]
-  # torqued's main: decimated until the cached points meet normal mode's minimums.
-  next_mode = "normal" if modes["normal"].is_valid() else "decimated"
+  # torqued's main: decimated until the restored points meet normal mode's minimums (a stale cache restores none).
+  next_mode = "normal" if not stale and modes["normal"].is_valid() else "decimated"
   buckets = modes[next_mode]
 
   raw = cached["latAccelFactorRaw"]

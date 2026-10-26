@@ -90,21 +90,22 @@ def test_section_shape(tmp_path):
 def test_ioniq_cache_shape_with_exemption(tmp_path, with_exemption):
   values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58)))
   assert values["State"] == "Learning 58%"
-  assert values["Points"] == "3783 / 600"
+  assert values["Points"] == "3783 / 4000"
   assert values["Next drive"] == "decimated" and values["Last drive"] == "decimated"
+  assert values["Normal mode"] == "48% · decimated until 100%"  # (3783/4000 + 5/300) / 2, outer buckets excused
   assert values["Lat accel factor"] == "4.50 in use (learner 5.55)"
   assert (values["Offset"], values["Friction"], values["Cache updated"]) == ("+0.00", "0.090", "0 min ago")
   assert values["Filter decay"] == "179 / 250"
-  assert values["Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
-  assert values["Left curves, torque 0.2–0.3"] == "5 / 30 (normal 300) · short 25"
-  assert values["Right curves, torque 0.2–0.3"] == "20 / 30 (normal 300) · short 10"
+  assert values["Left curves, torque 0.3–0.5"] == "0 / 100 · optional on this car"
+  assert values["Left curves, torque 0.2–0.3"] == "5 / 300 (1%) · decimated short 25"
+  assert values["Right curves, torque 0.2–0.3"] == "20 / 300 (6%) · decimated short 10"
   assert values["Right curves, torque 0–0.1"] == "1500 · done"
 
 
 def test_exemption_falls_back_to_prev_route_fingerprint(tmp_path, with_exemption):
   values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 58), current=None))
   assert values["Last drive"] == "decimated"
-  assert values["Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
+  assert values["Left curves, torque 0.3–0.5"] == "0 / 100 · optional on this car"
 
 
 @pytest.mark.parametrize("exempt", [True, False])
@@ -114,15 +115,16 @@ def test_no_exemption_for_other_cars(tmp_path, request, exempt):
     request.getfixturevalue("with_exemption")
   values = _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50), current=_cp("CHEVROLET_BOLT_EUV")))
   assert values["Last drive"] == "decimated"
-  assert values["Left curves, torque 0.3–0.5"] == "0 / 10 (normal 100) · short 10"
+  assert values["Left curves, torque 0.3–0.5"] == "0 / 100 (0%) · decimated short 10"
 
 
 def test_valid_cache_stays_decimated_until_normal_buckets_fill(tmp_path):
   # Valid after a decimated drive, but normal mode's minimums aren't met yet: torqued stays decimated.
   values = _values(_params(tmp_path, _cache([150, 120, 600, 1500, 1500, 700, 400, 150], True, 100)))
-  assert (values["State"], values["Points"], values["Next drive"]) == ("Valid (100%)", "5120 / 600", "decimated")
+  assert (values["State"], values["Points"], values["Next drive"]) == ("Valid (100%)", "5120 / 4000", "decimated")
   assert values["Last drive"] == "decimated"
-  assert values["Left curves, torque 0.2–0.3"] == "120 · done"
+  assert values["Normal mode"] == "70% · decimated until 100%"
+  assert values["Left curves, torque 0.2–0.3"] == "120 / 300 (40%) · decimated done"
 
 
 @pytest.mark.parametrize("exempt", [True, False])
@@ -133,6 +135,7 @@ def test_full_normal_buckets_next_drive_normal(tmp_path, request, exempt):
   counts = [0 if exempt else 150, 320, 600, 1500, 1500, 700, 400, 0 if exempt else 150]
   values = _values(_params(tmp_path, _cache(counts, False, 90)))
   assert (values["Next drive"], values["Left curves, torque 0.2–0.3"]) == ("normal", "320 · done")
+  assert values["Normal mode"] == "100% · normal from next drive"
 
 
 def test_last_drive_omitted_when_both_modes_match(tmp_path):
@@ -182,7 +185,7 @@ def test_old_cache_version_is_stale(tmp_path):
 def test_old_cache_version_with_full_normal_buckets_next_drive_decimated(tmp_path):
   values = _values(_params(tmp_path, _cache([150, 320, 600, 1500, 1500, 700, 400, 150], True, 100,
                                             version=torqued.VERSION - 1)))
-  assert values["Next drive"] == "decimated"
+  assert values["Next drive"] == "decimated" and "Normal mode" not in values
 
 
 @pytest.mark.parametrize("cache", [None, b""])

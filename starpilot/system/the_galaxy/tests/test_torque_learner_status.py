@@ -32,11 +32,11 @@ def _points(counts):
   return points
 
 
-def _cache(counts, live_valid, cal_perc, version=torqued.VERSION, use_params=True, raw=5.55):
+def _cache(counts, live_valid, cal_perc, version=torqued.VERSION, use_params=True, raw=5.55, decay=179.35):
   return log.Event.new_message(liveTorqueParameters={
     "version": version, "liveValid": live_valid, "useParams": use_params, "calPerc": cal_perc, "points": _points(counts),
     "latAccelFactorFiltered": 4.5, "latAccelFactorRaw": raw, "latAccelOffsetFiltered": 0.0,
-    "frictionCoefficientFiltered": 0.09,
+    "frictionCoefficientFiltered": 0.09, "decay": decay,
   }).to_bytes()
 
 
@@ -94,6 +94,7 @@ def test_ioniq_cache_shape_with_exemption(tmp_path, with_exemption):
   assert values["Next drive"] == "decimated" and values["Last drive"] == "decimated"
   assert values["Lat accel factor"] == "4.50 in use (learner 5.55)"
   assert (values["Offset"], values["Friction"], values["Cache updated"]) == ("+0.00", "0.090", "0 min ago")
+  assert values["Filter decay"] == "179 / 250"
   assert values["Left curves, torque 0.3–0.5"] == "0 / 10 · optional on this car"
   assert values["Left curves, torque 0.2–0.3"] == "5 / 30 (normal 300) · short 25"
   assert values["Right curves, torque 0.2–0.3"] == "20 / 30 (normal 300) · short 10"
@@ -138,6 +139,11 @@ def test_last_drive_omitted_when_both_modes_match(tmp_path):
   values = _values(_params(tmp_path, _cache([150, 320, 600, 1500, 1500, 700, 400, 150], True, 100)))
   assert "Last drive" not in values
   assert all(v.endswith("· done") for k, v in values.items() if "curves" in k)
+
+
+@pytest.mark.parametrize("decay, expected", [(torqued.MIN_FILTER_DECAY, "50 / 250"), (250.0, "250 / 250")])
+def test_filter_decay_range(tmp_path, decay, expected):
+  assert _values(_params(tmp_path, _cache(IONIQ_COUNTS, False, 50, decay=decay)))["Filter decay"] == expected
 
 
 def test_bucket_counts_capped_like_torqued(tmp_path):

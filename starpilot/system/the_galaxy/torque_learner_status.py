@@ -94,7 +94,7 @@ def _build(params, cache):
   with log.Event.from_bytes(cache) as evt:
     ltp = evt.liveTorqueParameters
     points = [list(p) for p in ltp.points]
-    cached = {k: getattr(ltp, k) for k in ("liveValid", "useParams", "calPerc", "version", "latAccelFactorFiltered",
+    cached = {k: getattr(ltp, k) for k in ("liveValid", "useParams", "calPerc", "version", "decay", "latAccelFactorFiltered",
                                            "latAccelFactorRaw", "latAccelOffsetFiltered", "frictionCoefficientFiltered")}
 
   # The next drive compares this cache's CarParams with its own; only a torqued VERSION bump is knowable now.
@@ -120,6 +120,8 @@ def _build(params, cache):
     _item("Factor", "Lat accel factor", f"{cached['latAccelFactorFiltered']:.2f} {in_use}{learner}"),
     _item("Offset", "Offset", f"{cached['latAccelOffsetFiltered']:+.2f}"),
     _item("Friction", "Friction", f"{cached['frictionCoefficientFiltered']:.3f}"),
+    # Grows only with valid fits; at the max the filters have had their full run and move slowly.
+    _item("Decay", "Filter decay", f"{cached['decay']:.0f} / {torqued.MAX_FILTER_DECAY}"),
   ]
   age = _age_text(params)
   if age:

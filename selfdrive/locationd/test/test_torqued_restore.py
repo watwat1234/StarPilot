@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 import cereal.messaging as messaging
 from cereal import car
 from openpilot.common.params import Params
-from openpilot.selfdrive.locationd.torqued import TorqueEstimator, MIN_FILTER_DECAY, STEER_BUCKET_BOUNDS, VERSION
+from openpilot.selfdrive.locationd import torqued
+from openpilot.selfdrive.locationd.torqued import TorqueEstimator, MIN_FILTER_DECAY, MIN_POINTS_TOTAL_QLOG, STEER_BUCKET_BOUNDS, VERSION
 
 OFFLINE_FACTOR = 4.5
 OFFLINE_FRICTION = 0.09
@@ -32,7 +34,12 @@ def filtered(est):
   return {k: est.filtered_params[k].x for k in LEARNED}
 
 
-def write_cache(CP, live_valid, decay, values=LEARNED, n_points=40):
+def bucket_points(counts):
+  return [[low + (high - low) * (i + 0.5) / n, 0.0] for (low, high), n in zip(STEER_BUCKET_BOUNDS, counts, strict=True)
+          for i in range(n)]
+
+
+def write_cache(CP, live_valid, decay, values=LEARNED, n_points=40, points=None):
   msg = messaging.new_message('liveTorqueParameters')
   ltp = msg.liveTorqueParameters
   ltp.version = VERSION
@@ -41,7 +48,7 @@ def write_cache(CP, live_valid, decay, values=LEARNED, n_points=40):
   ltp.latAccelFactorFiltered = values['latAccelFactor']
   ltp.latAccelOffsetFiltered = values['latAccelOffset']
   ltp.frictionCoefficientFiltered = values['frictionCoefficient']
-  ltp.points = [[0.15, 0.75]] * n_points
+  ltp.points = [[0.15, 0.75]] * n_points if points is None else points
   params = Params()
   params.put("CarParamsPrevRoute", CP.to_bytes())
   params.put("LiveTorqueParameters", msg.to_bytes())
@@ -122,3 +129,64 @@ def test_decimated_normal_decimated_keeps_learned_values():
   # drive 3, decimated: starts at the held values, not the offline ones
   est = make_estimator(CP, decimated=True)
   assert_values(est, learned)
+
+
+class StopLoop(Exception):
+  pass
+
+
+class FakeSubMaster:
+  def __init__(self, *args, **kwargs):
+    pass
+
+  def extend(self, services):
+    return self
+
+  def update(self):
+    raise StopLoop
+
+
+def run_main_mode(monkeypatch, live_valid_toggle):
+  # main up to its first sm.update(), on the cache's CarParams; returns the mode of the estimator it learns with
+  built = []
+
+  class RecordingEstimator(TorqueEstimator):
+    def __init__(self, *args, **kwargs):
+      super().__init__(*args, **kwargs)
+      built.append(self)
+
+  Params().put("CarParams", Params().get("CarParamsPrevRoute"))
+  monkeypatch.setattr(torqued, "TorqueEstimator", RecordingEstimator)
+  monkeypatch.setattr(torqued, "config_realtime_process", lambda *args: None)
+  monkeypatch.setattr(torqued, "get_starpilot_toggles", lambda *args: SimpleNamespace(
+    liveValid=live_valid_toggle, use_custom_latAccelFactor=False, use_custom_friction=False))
+  monkeypatch.setattr(messaging, "PubMaster", lambda *args, **kwargs: None)
+  monkeypatch.setattr(messaging, "SubMaster", FakeSubMaster)
+  with pytest.raises(StopLoop):
+    torqued.main()
+  return "decimated" if built[-1].min_points_total == MIN_POINTS_TOTAL_QLOG else "normal"
+
+
+# Normal-mode minimums are [100, 300, 500, 500, 500, 500, 300, 100]; decimated ones are a tenth.
+SHORT_NORMAL = [100, 40, 1500, 1500, 1500, 1500, 300, 100]  # Ioniq-like: left 0.2-0.3 short
+FULL_NORMAL = [100, 300, 1500, 1500, 1500, 1500, 300, 100]
+
+
+def test_main_valid_cache_with_short_normal_buckets_stays_decimated(monkeypatch):
+  # The last drive's liveValid (a valid decimated drive) no longer switches the next drive to normal.
+  CP = make_cp()
+  write_cache(CP, live_valid=True, decay=250.0, points=bucket_points(SHORT_NORMAL))
+  assert run_main_mode(monkeypatch, live_valid_toggle=True) == "decimated"
+
+
+def test_main_full_normal_buckets_runs_normal(monkeypatch):
+  CP = make_cp()
+  write_cache(CP, live_valid=False, decay=250.0, points=bucket_points(FULL_NORMAL))
+  assert run_main_mode(monkeypatch, live_valid_toggle=False) == "normal"
+
+
+def test_main_without_cache_runs_decimated(monkeypatch):
+  CP = make_cp()
+  Params().put("CarParamsPrevRoute", CP.to_bytes())
+  Params().remove("LiveTorqueParameters")
+  assert run_main_mode(monkeypatch, live_valid_toggle=False) == "decimated"

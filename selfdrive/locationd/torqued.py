@@ -259,7 +259,9 @@ def main(demo=False):
 
   starpilot_toggles = get_starpilot_toggles()
 
-  if not starpilot_toggles.liveValid:
+  # Stay decimated until the cached points meet normal mode's minimums: the last drive's liveValid would alternate
+  # the modes while the buckets fill unevenly, and a normal drive only holds its values until they're full.
+  if not estimator.filtered_points.is_valid():
     estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams), decimated=True)
 
   estimator.starpilot_toggles = starpilot_toggles

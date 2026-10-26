@@ -62,6 +62,10 @@ def with_exemption(monkeypatch):
     def _is_excusable(self, bound):
       return self.allow_empty_buckets and bound in (self.x_bounds[0], self.x_bounds[-1])
 
+    def is_valid(self):
+      return (all(self._is_excusable(b) or len(v) >= self.buckets_min_points[b] for b, v in self.buckets.items())
+              and len(self) >= self.min_points_total)
+
     def get_valid_percent(self):
       total_perc = min(len(self) / self.min_points_total * 100, 100)
       percs = [len(v) / self.buckets_min_points[b] * 100 for b, v in self.buckets.items() if not self._is_excusable(b)]
@@ -112,12 +116,22 @@ def test_no_exemption_for_other_cars(tmp_path, request, exempt):
   assert values["Left curves, torque 0.3–0.5"] == "0 / 10 (normal 100) · short 10"
 
 
-def test_valid_cache_next_drive_normal(tmp_path):
-  # Valid after a decimated drive: the normal-mode minimums still apply next drive.
+def test_valid_cache_stays_decimated_until_normal_buckets_fill(tmp_path):
+  # Valid after a decimated drive, but normal mode's minimums aren't met yet: torqued stays decimated.
   values = _values(_params(tmp_path, _cache([150, 120, 600, 1500, 1500, 700, 400, 150], True, 100)))
-  assert (values["State"], values["Points"], values["Next drive"]) == ("Valid (100%)", "5120 / 4000", "normal")
+  assert (values["State"], values["Points"], values["Next drive"]) == ("Valid (100%)", "5120 / 600", "decimated")
   assert values["Last drive"] == "decimated"
-  assert values["Left curves, torque 0.2–0.3"] == "120 / 300 · short 180"
+  assert values["Left curves, torque 0.2–0.3"] == "120 · done"
+
+
+@pytest.mark.parametrize("exempt", [True, False])
+def test_full_normal_buckets_next_drive_normal(tmp_path, request, exempt):
+  # Normal mode's minimums met (the exempt outer buckets empty on the Ioniq): normal next, whatever liveValid says.
+  if exempt:
+    request.getfixturevalue("with_exemption")
+  counts = [0 if exempt else 150, 320, 600, 1500, 1500, 700, 400, 0 if exempt else 150]
+  values = _values(_params(tmp_path, _cache(counts, False, 90)))
+  assert (values["Next drive"], values["Left curves, torque 0.2–0.3"]) == ("normal", "320 · done")
 
 
 def test_last_drive_omitted_when_both_modes_match(tmp_path):

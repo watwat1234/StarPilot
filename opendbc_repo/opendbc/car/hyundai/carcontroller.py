@@ -1039,13 +1039,12 @@ class CarController(CarControllerBase):
       else:
         # The stock Ioniq 6 lane-change animation stops when the ADAS ECU is disabled,
         # so replay the captured ECAN cluster frames ourselves while OP long is active.
+        # Only 0x3C1: a live ECU still sends 0x31A/0x3B5 under OP long, so the fixed replay of those collides with
+        # it (and carries no blind-spot state; the icon comes from 0x1BA). The blind-spot replay is dropped too.
         lane_change_msgs = hyundaicanfd.create_ioniq_6_cluster_lane_change_messages(self.CAN,
                                                                                     self._ioniq_6_lane_change_ui_frames,
                                                                                     lane_change_ui_side)
-        if hud:
-          # The fixed 0x31A/0x3B5 frames collide with a live ECU, as in the blind-spot replay below.
-          lane_change_msgs = [msg for msg in lane_change_msgs if msg[0] not in (0x31A, 0x3B5)]
-        can_sends.extend(lane_change_msgs)
+        can_sends.extend(msg for msg in lane_change_msgs if msg[0] not in (0x31A, 0x3B5))
         self._ioniq_6_lane_change_ui_frames += 1
 
     if self.long_active_ecu:
@@ -1125,13 +1124,6 @@ class CarController(CarControllerBase):
                                                                            CS.right_blindspot_from_radar,
                                                                            CC.leftBlinker,
                                                                            CC.rightBlinker))
-      # The HUD drops this fixed replay: a live ECU still sends 0x31A/0x3B5 under OP long.
-      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and lane_change_ui_side is None and not hud:
-        can_sends.extend(hyundaicanfd.create_ioniq_6_cluster_blindspot_messages(self.CAN, self.frame,
-                                                                                 CS.left_blindspot_from_radar,
-                                                                                 CS.right_blindspot_from_radar,
-                                                                                 CC.leftBlinker,
-                                                                                 CC.rightBlinker))
       if self.frame % 2 == 0:
         lead_visible, lead_distance, lead_rel_speed = self._get_canfd_scc_lead_state(CC, CS, now_nanos)
         if hud:

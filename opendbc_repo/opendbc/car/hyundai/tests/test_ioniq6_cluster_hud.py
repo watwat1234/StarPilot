@@ -368,11 +368,11 @@ class TestControllerWiring:
     off = _by_address(_controller_msgs(_toggles(**ALL_OFF)))
     on = _by_address(_controller_msgs(_toggles(**HUD_ON)))
 
-    assert all(address in off for address in HUD_ADDRESSES + REPLAY_ADDRESSES)
-    assert not any(address in on for address in REPLAY_ADDRESSES)
+    assert all(address in off for address in HUD_ADDRESSES)
     for address in HUD_ADDRESSES:
       assert on[address] != off[address]
-    unchanged = set(off) - set(HUD_ADDRESSES) - set(REPLAY_ADDRESSES)
+    unchanged = set(off) - set(HUD_ADDRESSES)
+    assert set(on) == set(off)
     assert {address: on[address] for address in unchanged} == {address: off[address] for address in unchanged}
 
   def test_scc_control_with_lead(self):
@@ -418,15 +418,14 @@ class TestControllerWiring:
     assert _by_address(_controller_msgs(toggles, rear_corners=warning))[0x1BA] == \
            _by_address(_controller_msgs(toggles))[0x1BA]
 
-  def test_hud_drops_lane_change_replay_collisions(self):
-    def addresses(toggles):
-      # the lane-change replay sends 0x3B5 every 20 frames and 0x31A every 100
-      return {address for address, _, _ in _controller_msgs(toggles, left_blinker=True, frames=200)}
-
-    off, on = addresses(_toggles(**ALL_OFF)), addresses(_toggles(**HUD_ON))
-    assert {0x3C1, 0x31A, 0x3B5} <= off
-    assert 0x3C1 in on
-    assert not {0x31A, 0x3B5} & on
+  @pytest.mark.parametrize("switches", [ALL_OFF, HUD_ON, ALL_ON], ids=["off", "hud", "all"])
+  @pytest.mark.parametrize("left_blinker", [False, True])
+  def test_no_0x31a_0x3b5_replay(self, switches, left_blinker):
+    # the replay sent 0x3B5 every 20 frames and 0x31A every 100; the lane-change animation keeps 0x3C1
+    addresses = {address for address, _, _ in _controller_msgs(_toggles(**switches), left_blinker=left_blinker,
+                                                                frames=200)}
+    assert not set(REPLAY_ADDRESSES) & addresses
+    assert (0x3C1 in addresses) == left_blinker
 
   def test_other_cars_ignore_the_switches(self):
     assert _controller_msgs(_toggles(**ALL_ON), car=CAR.KIA_EV6) == _controller_msgs(_toggles(), car=CAR.KIA_EV6)

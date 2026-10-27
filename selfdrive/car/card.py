@@ -297,6 +297,8 @@ class Car:
 
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
+    if RD is not None and self.CP.brand == "hyundai":
+      self.CI.CS.adjacent_radar_points = RD.points  # Ioniq 6 cluster HUD: adjacent cars
 
     self.sm.update(0)
 
@@ -494,9 +496,14 @@ class Car:
     longitudinal_adjustment_active = lead_visible
     lead_distance = 0.0
     lead_rel_speed = 0.0
+    t_follow = 0.0
+    follow_distance = 0.0
+    lead_camera_prob = 1.0  # without a radarState lead, any lead shown comes from the plan or the car's camera
 
     if self.sm.seen['starpilotPlan'] and self.sm.valid['starpilotPlan']:
       longitudinal_adjustment_active = bool(self.sm['starpilotPlan'].trackingLead)
+      t_follow = float(self.sm['starpilotPlan'].tFollow)
+      follow_distance = float(self.sm['starpilotPlan'].desiredFollowDistance)
 
     if self.sm.seen['longitudinalPlan'] and self.sm.valid['longitudinalPlan']:
       longitudinal_plan = self.sm['longitudinalPlan']
@@ -510,6 +517,7 @@ class Car:
         lead_visible = True
         lead_distance = max(float(lead.dRel), 0.0)
         lead_rel_speed = float(lead.vRel)
+        lead_camera_prob = float(lead.modelProb)
 
     if lead_distance <= OPENPILOT_LEAD_MIN_DISTANCE:
       lead_distance = 0.0
@@ -518,7 +526,16 @@ class Car:
     self.CI.CS.openpilot_lead_visible = lead_visible
     self.CI.CS.openpilot_lead_distance = lead_distance
     self.CI.CS.openpilot_lead_rel_speed = lead_rel_speed
+    # Ioniq 6 cluster HUD: personality gap and lead filter
+    self.CI.CS.openpilot_t_follow = t_follow
+    self.CI.CS.openpilot_follow_distance = follow_distance
+    self.CI.CS.openpilot_lead_camera_prob = lead_camera_prob
     self.CI.CS.openpilot_longitudinal_adjustment_active = longitudinal_adjustment_active
+    # Ioniq 6 adjacent cars: a lane width of 0 means no lane on that side. None (no gate) without a current plan.
+    lane_widths = None
+    if self.sm.seen['starpilotPlan'] and self.sm.valid['starpilotPlan'] and self.sm.alive['starpilotPlan']:
+      lane_widths = (float(self.sm['starpilotPlan'].laneWidthLeft), float(self.sm['starpilotPlan'].laneWidthRight))
+    self.CI.CS.openpilot_lane_widths = lane_widths
 
   def _update_redneck_cruise(self, CS: car.CarState, CC: car.CarControl) -> None:
     if self.redneck_cruise is None:

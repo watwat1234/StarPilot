@@ -564,6 +564,7 @@ def test_ioniq6_cluster_hud_switches_are_default_on_hyundai_offroad_toggles():
   assert adjacent["parent_key"] == "Ioniq6ClusterHud"
   for setting in (hud, adjacent):
     assert setting["vehicle_makes"] == ["Hyundai"]
+    assert (setting["visible_when_key"], setting["visible_when_values"]) == ("CarModel", ["HYUNDAI_IONIQ_6"])
     assert setting["requires_offroad"] is True
     assert setting["galaxy_only"] is True
     assert setting["ui_type"] == "toggle"

@@ -5282,6 +5282,8 @@
         "ui_type": "toggle",
         "is_parent_toggle": true,
         "vehicle_makes": ["Hyundai"],
+        "visible_when_key": "CarModel",
+        "visible_when_values": ["HYUNDAI_IONIQ_6"],
         "galaxy_only": true,
         "requires_offroad": true,
         "settings_tier": "advanced"
@@ -5294,6 +5296,8 @@
         "ui_type": "toggle",
         "parent_key": "Ioniq6ClusterHud",
         "vehicle_makes": ["Hyundai"],
+        "visible_when_key": "CarModel",
+        "visible_when_values": ["HYUNDAI_IONIQ_6"],
         "galaxy_only": true,
         "requires_offroad": true,
         "settings_tier": "advanced"

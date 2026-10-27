@@ -1022,6 +1022,8 @@ class CarController(CarControllerBase):
     hud_adjacent_cars = hud and getattr(starpilot_toggles, "ioniq6_cluster_adjacent_cars", False)
     if not hud:
       self._ioniq6_lead_filter.reset()
+    if not hud_adjacent_cars:
+      self._ioniq6_adjacent_cars.reset()  # no stale car or coast when the switch comes back on
 
     lane_change_ui_side = None
     if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:

@@ -302,7 +302,8 @@ ALL_OFF = dict.fromkeys(ALL_ON, False)
 def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enabled=True, left_blinker=False, frames=1,
                      rear_corners=None, override=False, t_follow=1.5, lead_frames=None, toggle_frames=None,
                      distance_bars=3, follow_distance=0.0, gear=structs.CarState.GearShifter.drive, v_ego=25.0,
-                     camera_prob=1.0, gear_frames=None, points=None, lane_widths=None, distance_frames=None):
+                     camera_prob=1.0, gear_frames=None, points=None, lane_widths=None, distance_frames=None,
+                     long_active_ecu=True):
   # lead_frames / toggle_frames / gear_frames / distance_frames: one value per frame, in place of lead_visible /
   # toggles / gear / the lead distance (card.py sends 0.0 when only the HUD flag says there is a lead)
   # points: radar points, stored as a new list each frame (as card.py does on each radar frame)
@@ -313,7 +314,7 @@ def _controller_msgs(toggles, car=CAR.HYUNDAI_IONIQ_6, lead_visible=True, enable
   CP.openpilotLongitudinalControl = True
   controller = CarController(DBC[CP.carFingerprint], CP)
   controller.frame = 100  # SCC, 0x1EA, 0x1BA and the 0x3B5/0x31A replay are all due
-  controller.long_active_ecu = True
+  controller.long_active_ecu = long_active_ecu
   packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
 
   cc = SimpleNamespace(
@@ -429,6 +430,11 @@ class TestControllerWiring:
 
   def test_other_cars_ignore_the_switches(self):
     assert _controller_msgs(_toggles(**ALL_ON), car=CAR.KIA_EV6) == _controller_msgs(_toggles(), car=CAR.KIA_EV6)
+
+  def test_stock_longitudinal_ignores_the_switches(self):
+    # the ADAS ECU is not disabled (stock long, or the disable failed): it sends these messages itself
+    kwargs = {"frames": 60, "points": LEFT_CAR, "long_active_ecu": False}
+    assert _controller_msgs(_toggles(**ALL_ON), **kwargs) == _controller_msgs(_toggles(**ALL_OFF), **kwargs)
 
 
 GAP_BYTES = (11, 24, 25)  # DISTANCE_SETTING, NEW_SIGNAL_15
@@ -975,6 +981,14 @@ class TestAdjacentCarsWiring:
     frames = _0x1ea_frames(_controller_msgs(_toggles(**ALL_ON), frames=60, points=[]))
     assert len(frames) == 12
     assert all(dat[4] & 1 and dat[5:15] == bytes(10) and dat[16:28] == bytes(12) for dat in frames)
+
+  def test_switching_back_on_starts_clean(self):
+    # a car shown before the switch went off has to be seen for 0.4 s again, not drawn at once
+    on, off = _toggles(**ALL_ON), _toggles(**HUD_ON)
+    toggle_frames = [on] * 60 + [off] * 10 + [on] * 20
+    frames = _0x1ea_frames(_controller_msgs(on, frames=90, points=LEFT_CAR, toggle_frames=toggle_frames))
+    assert frames[11][8] == 0x1E
+    assert [dat[8] for dat in frames[14:]] == [0] * 4
 
   def test_other_cars_ignore_the_switch(self):
     kwargs = {"car": CAR.KIA_EV6, "frames": 60, "points": LEFT_CAR}

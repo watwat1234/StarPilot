@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 
 # Provenance: portions of HKG angle control are adapted from sunnypilot/opendbc's
 # hkg-angle-steering-2025 branch at cc4b08625. See CREDITS.md and THIRD_PARTY_NOTICES.md.
@@ -8,7 +9,7 @@ from opendbc.car import Bus, DT_CTRL, create_gas_interceptor_command, make_teste
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance, get_max_angle_delta_vm, get_max_angle_vm
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.hyundai import hyundaicanfd, hyundaican
+from opendbc.car.hyundai import hyundaicanfd, hyundaican, ioniq6_cluster_hud
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.lead_data import CanLeadDataState
 from opendbc.car.hyundai.values import HyundaiFlags, HyundaiSafetyFlags, HyundaiStarPilotFlags, Buttons, CarControllerParams, CAR, CANFD_ANGLE_LONGITUDINAL_CAR, \
@@ -480,6 +481,8 @@ class CarController(CarControllerBase):
     self.CAN = CanBus(CP)
     self.params = CarControllerParams(CP)
     self.packer = CANPacker(dbc_names[Bus.pt])
+    self._ioniq6_lead_filter = ioniq6_cluster_hud.LeadDisplayFilter()
+    self._ioniq6_adjacent_cars = ioniq6_cluster_hud.AdjacentCarTracker()
     self.angle_limit_counter = 0
     self.VM = VehicleModel(CP)
     self.BASELINE_VM = VehicleModel(get_baseline_safety_cp()) if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING else self.VM
@@ -1012,6 +1015,16 @@ class CarController(CarControllerBase):
     if lka_steering and self.CP.flags & HyundaiFlags.ENABLE_BLINKERS:
       can_sends.extend(hyundaicanfd.create_spas_messages(self.packer, self.CAN, CC.leftBlinker, CC.rightBlinker))
 
+    # Ioniq 6 cluster HUD under openpilot long: stock-like SCC/ADRV status, rear corners, personality gap and lead
+    # filter (main switch), and radar-drawn adjacent cars (child switch). See ioniq6_cluster_hud.py.
+    ioniq_6_long = self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and self.long_active_ecu
+    hud = ioniq_6_long and getattr(starpilot_toggles, "ioniq6_cluster_hud", False)
+    hud_adjacent_cars = hud and getattr(starpilot_toggles, "ioniq6_cluster_adjacent_cars", False)
+    if not hud:
+      self._ioniq6_lead_filter.reset()
+    if not hud_adjacent_cars:
+      self._ioniq6_adjacent_cars.reset()  # no stale car or coast when the switch comes back on
+
     lane_change_ui_side = None
     if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
       if CC.leftBlinker and not CC.rightBlinker:
@@ -1028,9 +1041,12 @@ class CarController(CarControllerBase):
       else:
         # The stock Ioniq 6 lane-change animation stops when the ADAS ECU is disabled,
         # so replay the captured ECAN cluster frames ourselves while OP long is active.
-        can_sends.extend(hyundaicanfd.create_ioniq_6_cluster_lane_change_messages(self.CAN,
-                                                                                   self._ioniq_6_lane_change_ui_frames,
-                                                                                   lane_change_ui_side))
+        # Only 0x3C1: a live ECU still sends 0x31A/0x3B5 under OP long, so the fixed replay of those collides with
+        # it (and carries no blind-spot state; the icon comes from 0x1BA). The blind-spot replay is dropped too.
+        lane_change_msgs = hyundaicanfd.create_ioniq_6_cluster_lane_change_messages(self.CAN,
+                                                                                    self._ioniq_6_lane_change_ui_frames,
+                                                                                    lane_change_ui_side)
+        can_sends.extend(msg for msg in lane_change_msgs if msg[0] not in (0x31A, 0x3B5))
         self._ioniq_6_lane_change_ui_frames += 1
 
     if self.long_active_ecu:
@@ -1063,10 +1079,26 @@ class CarController(CarControllerBase):
         else:
           host_speed = getattr(CS.out, "vEgoRaw", None) \
             if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN else None
+          adrv_0x1ea_extra = ioniq6_cluster_hud.adrv_0x1ea_values(CC.enabled) if hud else None
+          adrv_0x1ea_patch = None
+          if hud_adjacent_cars and self.frame % 5 == 0:  # with each 0x1EA frame; the switch changes only offroad
+            # Drawn in drive, engaged or not (stock draws them with cruise ready but not set, too). The active bit
+            # follows, overriding the HUD's engaged-only bit.
+            # A side the plan reports no lane on (beyond the road edge) is ignored, see ADJACENT_NO_LANE_SPEED_MARGIN.
+            no_lane = ioniq6_cluster_hud.no_lane_sides(
+              getattr(CS, "openpilot_lane_widths", None), float(CS.out.vEgo),
+              getattr(starpilot_toggles, "minimum_lane_change_speed", None))
+            adjacent_cars = self._ioniq6_adjacent_cars.update(
+              drive_gear, getattr(CS, "adjacent_radar_points", None), float(CS.out.vEgo),
+              CS.left_blindspot_from_radar, CS.right_blindspot_from_radar, no_lane)
+            adrv_0x1ea_patch = partial(ioniq6_cluster_hud.patch_adrv_0x1ea, active=drive_gear,
+                                       cars=adjacent_cars)
           adrv_messages = hyundaicanfd.create_adrv_messages(self.packer, self.CAN, self.frame,
                                                              car_fingerprint=self.CP.carFingerprint,
                                                              drive_gear=drive_gear,
-                                                             v_ego=host_speed)
+                                                             v_ego=host_speed,
+                                                             adrv_0x1ea_extra=adrv_0x1ea_extra,
+                                                             adrv_0x1ea_patch=adrv_0x1ea_patch)
         can_sends.extend(adrv_messages)
         # The front radar treats ADAS_DRV's 0x100 broadcast as its host heartbeat
         # and stops publishing object tracks when it disappears.
@@ -1081,21 +1113,30 @@ class CarController(CarControllerBase):
         rear_stale = now_nanos - CS.blindspots_rear_corners_ts > CANFD_BLINDSPOT_STATUS_STALE_NS
         front_stale = now_nanos - CS.blindspots_front_corner_1_ts > CANFD_BLINDSPOT_STATUS_STALE_NS
         if CS.blindspots_rear_corners_ts > 0 and CS.blindspots_front_corner_1_ts > 0 and rear_stale and front_stale:
-          can_sends.extend(hyundaicanfd.create_blindspot_status_messages(self.packer, self.CAN,
-                                                                         CS.blindspots_rear_corners,
-                                                                         CS.blindspots_front_corner_1,
-                                                                         CS.left_blindspot_from_radar,
-                                                                         CS.right_blindspot_from_radar,
-                                                                         CC.leftBlinker,
-                                                                         CC.rightBlinker))
-      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and lane_change_ui_side is None:
-        can_sends.extend(hyundaicanfd.create_ioniq_6_cluster_blindspot_messages(self.CAN, self.frame,
-                                                                                 CS.left_blindspot_from_radar,
-                                                                                 CS.right_blindspot_from_radar,
-                                                                                 CC.leftBlinker,
-                                                                                 CC.rightBlinker))
+          if hud:
+            can_sends.extend(ioniq6_cluster_hud.create_stock_like_blindspot_messages(
+              self.packer, self.CAN, CS.blindspots_front_corner_1, CS.left_blindspot_from_radar,
+              CS.right_blindspot_from_radar, CC.leftBlinker, CC.rightBlinker, drive_gear,
+            ))
+          else:
+            can_sends.extend(hyundaicanfd.create_blindspot_status_messages(self.packer, self.CAN,
+                                                                           CS.blindspots_rear_corners,
+                                                                           CS.blindspots_front_corner_1,
+                                                                           CS.left_blindspot_from_radar,
+                                                                           CS.right_blindspot_from_radar,
+                                                                           CC.leftBlinker,
+                                                                           CC.rightBlinker))
       if self.frame % 2 == 0:
         lead_visible, lead_distance, lead_rel_speed = self._get_canfd_scc_lead_state(CC, CS, now_nanos)
+        if hud:
+          lead_visible = lead_visible and ioniq6_cluster_hud.lead_display_allowed(
+            drive_gear, float(CS.out.vEgo), getattr(CS, "openpilot_lead_camera_prob", 0.0))
+          if not drive_gear:
+            self._ioniq6_lead_filter.reset()  # a held lead clears at once
+          # The fixed fallback means a lead with no range; a measured range never lands on exactly this pair.
+          range_known = (lead_distance, lead_rel_speed) != (CANFD_FALLBACK_LEAD_DISTANCE, 0.0)
+          lead_visible, lead_distance, lead_rel_speed = self._ioniq6_lead_filter.update(lead_visible, lead_distance,
+                                                                                         lead_rel_speed, range_known)
         if self.CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN:
           scc_jerk_limits = get_hyundai_canfd_scc_jerk_limits(self.CP, stopping, accel)
           raw_accel = accel
@@ -1142,9 +1183,15 @@ class CarController(CarControllerBase):
             jerk_upper=acc_kwargs["jerk_upper"],
           ))
         else:
+          scc_extra = ioniq6_cluster_hud.scc_status_values(
+            CC.enabled, lead_visible, float(CS.out.vEgo), CC.cruiseControl.override,
+            distance_bars=hud_control.leadDistanceBars, t_follow=getattr(CS, "openpilot_t_follow", 0.0),
+            follow_distance=getattr(CS, "openpilot_follow_distance", 0.0),
+          ) if hud else None
           can_sends.append(hyundaicanfd.create_acc_control(
             self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping, CC.cruiseControl.override,
             set_speed_in_units, hud_control, cruise_info=CS.cruise_info if ccnc_non_hda2 else None, **acc_kwargs,
+            extra_values=scc_extra,
           ))
         self.accel_last = accel
     else:

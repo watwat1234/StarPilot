@@ -236,10 +236,12 @@ class TestRedneckCruise(unittest.TestCase):
     sm = MagicMock()
     sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": True}
     sm.valid = sm.seen.copy()
+    sm.alive = sm.seen.copy()
     sm.__getitem__.side_effect = {
-      "starpilotPlan": SimpleNamespace(trackingLead=False),
+      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=1.45, desiredFollowDistance=41, laneWidthLeft=0.0,
+                                       laneWidthRight=3.5),
       "longitudinalPlan": SimpleNamespace(shouldStop=False, longitudinalPlanSource="cruise"),
-      "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=85.0, vRel=-0.5)),
+      "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=85.0, vRel=-0.5, modelProb=0.8)),
     }.__getitem__
     car_state = SimpleNamespace()
     card = SimpleNamespace(sm=sm, CI=SimpleNamespace(CS=car_state))
@@ -248,13 +250,19 @@ class TestRedneckCruise(unittest.TestCase):
 
     self.assertTrue(car_state.openpilot_lead_visible)
     self.assertFalse(car_state.openpilot_longitudinal_adjustment_active)
+    self.assertEqual(1.45, car_state.openpilot_t_follow)
+    self.assertEqual(41.0, car_state.openpilot_follow_distance)
+    self.assertEqual(0.8, car_state.openpilot_lead_camera_prob)
+    self.assertEqual((0.0, 3.5), car_state.openpilot_lane_widths)
 
   def test_card_marks_stop_plan_as_longitudinal_adjustment_without_lead(self):
     sm = MagicMock()
     sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
     sm.valid = sm.seen.copy()
+    sm.alive = sm.seen.copy()
     sm.__getitem__.side_effect = {
-      "starpilotPlan": SimpleNamespace(trackingLead=False),
+      "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=0.0, desiredFollowDistance=0, laneWidthLeft=3.5,
+                                       laneWidthRight=3.5),
       "longitudinalPlan": SimpleNamespace(shouldStop=True, longitudinalPlanSource="e2e"),
     }.__getitem__
     car_state = SimpleNamespace()
@@ -263,6 +271,25 @@ class TestRedneckCruise(unittest.TestCase):
     Car._update_openpilot_lead_state(card, SimpleNamespace(hudControl=SimpleNamespace(leadVisible=False)))
 
     self.assertTrue(car_state.openpilot_longitudinal_adjustment_active)
+    self.assertEqual(1.0, car_state.openpilot_lead_camera_prob)  # no radar lead to judge
+
+  def test_card_lane_widths_need_a_valid_live_plan(self):
+    # Ioniq 6 cluster HUD: no lane widths (no adjacent-car gate) from a plan that isn't valid or has gone stale
+    for valid, alive in ((False, True), (True, False)):
+      sm = MagicMock()
+      sm.seen = {"starpilotPlan": True, "longitudinalPlan": False, "radarState": False}
+      sm.valid = {**sm.seen, "starpilotPlan": valid}
+      sm.alive = {**sm.seen, "starpilotPlan": alive}
+      sm.__getitem__.side_effect = {
+        "starpilotPlan": SimpleNamespace(trackingLead=False, tFollow=1.45, desiredFollowDistance=41, laneWidthLeft=0.0,
+                                         laneWidthRight=0.0),
+      }.__getitem__
+      car_state = SimpleNamespace()
+      card = SimpleNamespace(sm=sm, CI=SimpleNamespace(CS=car_state))
+
+      Car._update_openpilot_lead_state(card, SimpleNamespace(hudControl=SimpleNamespace(leadVisible=False)))
+
+      self.assertIsNone(car_state.openpilot_lane_widths)
 
   def test_card_target_speed_uses_slc_target_with_longitudinal_control(self):
     slc_target = 80.0 * CV.KPH_TO_MS

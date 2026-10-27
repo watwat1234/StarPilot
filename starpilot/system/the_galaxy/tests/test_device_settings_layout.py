@@ -552,3 +552,19 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/appearance.py",
   )
   assert all("PIPPreview" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_ioniq6_cluster_hud_switches_are_default_on_hyundai_offroad_toggles():
+  developer = _params_by_section(_layout())["Developer"]
+  hud, adjacent = developer["Ioniq6ClusterHud"], developer["Ioniq6ClusterAdjacentCars"]
+
+  assert _declared_default("Ioniq6ClusterHud") == "1"
+  assert _declared_default("Ioniq6ClusterAdjacentCars") == "1"
+  assert hud["is_parent_toggle"] is True
+  assert adjacent["parent_key"] == "Ioniq6ClusterHud"
+  for setting in (hud, adjacent):
+    assert setting["vehicle_makes"] == ["Hyundai"]
+    assert (setting["visible_when_key"], setting["visible_when_values"]) == ("CarModel", ["HYUNDAI_IONIQ_6"])
+    assert setting["requires_offroad"] is True
+    assert setting["galaxy_only"] is True
+    assert setting["ui_type"] == "toggle"

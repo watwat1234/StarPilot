@@ -57,13 +57,14 @@ def bucket_label(lo, hi):
   return f"{side}, torque {a:g}–{b:g}"
 
 
-def bucket_text(count, need, normal_need, exempt, decimated):
-  if count >= need:
+def bucket_text(count, normal_need, decimated_need, exempt):
+  # Graded against normal mode's minimum (what the learner waits on); decimated's state as a suffix.
+  if count >= normal_need:
     return f"{count} · done"
   if exempt:
-    return f"{count} / {need:g} · optional on this car"
-  normal = f" (normal {normal_need:g})" if decimated else ""
-  return f"{count} / {need:g}{normal} · short {need - count:g}"
+    return f"{count} / {normal_need:g} · optional on this car"
+  decimated = "decimated done" if count >= decimated_need else f"decimated short {decimated_need - count:g}"
+  return f"{count} / {normal_need:g} ({int(count / normal_need * 100)}%) · {decimated}"
 
 
 def _age_text(params):
@@ -94,7 +95,7 @@ def _build(params, cache):
   with log.Event.from_bytes(cache) as evt:
     ltp = evt.liveTorqueParameters
     points = [list(p) for p in ltp.points]
-    cached = {k: getattr(ltp, k) for k in ("liveValid", "useParams", "calPerc", "version", "latAccelFactorFiltered",
+    cached = {k: getattr(ltp, k) for k in ("liveValid", "useParams", "calPerc", "version", "decay", "latAccelFactorFiltered",
                                            "latAccelFactorRaw", "latAccelOffsetFiltered", "frictionCoefficientFiltered")}
 
   # The next drive compares this cache's CarParams with its own; only a torqued VERSION bump is knowable now.
@@ -102,23 +103,29 @@ def _build(params, cache):
   allow_empty = allow_empty_buckets(torqued.TorqueBuckets, _fingerprint(params))
   modes = load_buckets(torqued, points, allow_empty)
   last = [mode for mode, buckets in modes.items() if buckets.get_valid_percent() == cached["calPerc"]]
-  next_mode = "normal" if cached["liveValid"] else "decimated"
-  buckets = modes[next_mode]
+  # torqued's main: decimated until the restored points meet normal mode's minimums (a stale cache restores none).
+  next_mode = "normal" if not stale and modes["normal"].is_valid() else "decimated"
+  normal = modes["normal"]
 
   raw = cached["latAccelFactorRaw"]
   learner = f" (learner {raw:.2f})" if math.isfinite(raw) and raw else ""
   in_use = "in use" if applied(params, cached["useParams"]) else "not applied: auto-tune off"
   items = [
     _item("State", "State", f"Valid ({cached['calPerc']}%)" if cached["liveValid"] else f"Learning {cached['calPerc']}%"),
-    _item("Points", "Points", f"{len(buckets)} / {buckets.min_points_total}"),
+    _item("Points", "Points", f"{len(normal)} / {normal.min_points_total}"),
     _item("NextDrive", "Next drive", next_mode),
   ]
+  if not stale:
+    normal_text = "normal from next drive" if next_mode == "normal" else "decimated until 100%"
+    items.append(_item("NormalMode", "Normal mode", f"{normal.get_valid_percent()}% · {normal_text}"))
   if len(last) == 1:
     items.append(_item("LastDrive", "Last drive", last[0]))
   items += [
     _item("Factor", "Lat accel factor", f"{cached['latAccelFactorFiltered']:.2f} {in_use}{learner}"),
     _item("Offset", "Offset", f"{cached['latAccelOffsetFiltered']:+.2f}"),
     _item("Friction", "Friction", f"{cached['frictionCoefficientFiltered']:.3f}"),
+    # Grows only with valid fits; at the max the filters have had their full run and move slowly.
+    _item("Decay", "Filter decay", f"{cached['decay']:.0f} / {torqued.MAX_FILTER_DECAY}"),
   ]
   age = _age_text(params)
   if age:
@@ -127,10 +134,10 @@ def _build(params, cache):
     items.append(_item("Stale", "Note", "Cache is from an older torqued: the next drive starts fresh"))
     return items
 
-  excusable = getattr(buckets, "_is_excusable", lambda bound: False)
-  for i, (bound, queue) in enumerate(buckets.buckets.items()):
-    text = bucket_text(len(queue), buckets.buckets_min_points[bound], torqued.MIN_BUCKET_POINTS[i], excusable(bound),
-                       next_mode == "decimated")
+  excusable = getattr(normal, "_is_excusable", lambda bound: False)
+  for i, (bound, queue) in enumerate(normal.buckets.items()):
+    text = bucket_text(len(queue), normal.buckets_min_points[bound], modes["decimated"].buckets_min_points[bound],
+                       excusable(bound))
     items.append(_item(f"Bucket{i}", bucket_label(*bound), text))
   return items
 

@@ -26,12 +26,12 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.loggerd.config import get_available_bytes, get_used_bytes
-from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE
 from openpilot.system.loggerd.uploader import listdir_by_creation
 from openpilot.tools.lib.route import SegmentName
 
 from openpilot.starpilot.assets.model_manager import canonical_model_key
 from openpilot.starpilot.common.starpilot_variables import THEME_SAVE_PATH, VIDEO_CACHE_PATH
+from openpilot.starpilot.system.preserved_routes import is_route_preserved_dir
 from openpilot.starpilot.assets.theme_manager import HOLIDAY_THEME_PATH
 
 LOG_CANDIDATES = [
@@ -3348,12 +3348,6 @@ def get_video_duration(input_path):
   except (ValueError, subprocess.CalledProcessError):
     return 60
 
-def has_preserve_attr(path: str):
-  try:
-    return PRESERVE_ATTR_NAME in os.listxattr(path) and os.getxattr(path, PRESERVE_ATTR_NAME) == PRESERVE_ATTR_VALUE
-  except (AttributeError, OSError):
-    return False
-
 def list_file(path):
   return sorted(os.listdir(path), reverse=True)
 
@@ -3405,6 +3399,9 @@ def process_route(footage_path, route_name, segment_count=0, first_segment_num=0
     # A gap past the walk limit: list the footage directory for this route instead.
     segment_nums = None
   route_timestamp_dt = get_route_start_time_for_route(route_name, footage_path, segment_nums)
+  # Galaxy flags every segment, but the oldest ones may already be gone: any flagged segment counts.
+  segment_names = [f"{route_name}--{num}" for num in segment_nums] if segment_nums is not None else get_segments_in_route(route_name, footage_path)
+  is_preserved = any(is_route_preserved_dir(os.path.join(footage_path, name)) for name in segment_names)
   route_timestamp_str = custom_name or (route_timestamp_dt.isoformat() if route_timestamp_dt else None)
 
   return {
@@ -3413,7 +3410,7 @@ def process_route(footage_path, route_name, segment_count=0, first_segment_num=0
     "timestamp": route_timestamp_str,
     "startedAt": _utc_rfc3339(route_timestamp_dt),
     "isCustomName": custom_name is not None,
-    "is_preserved": has_preserve_attr(segment_path),
+    "is_preserved": is_preserved,
     "segmentCount": max(0, int(segment_count)),
     "firstSegmentNum": max(0, int(first_segment_num)),
     "approxDurationSeconds": max(0, int(segment_count)) * 60,

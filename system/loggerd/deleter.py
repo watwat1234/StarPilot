@@ -7,6 +7,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.loggerd.config import get_available_bytes, get_available_percent
 from openpilot.system.loggerd.uploader import listdir_by_creation
 from openpilot.system.loggerd.xattr_cache import getxattr
+from openpilot.starpilot.system.preserved_routes import get_preserved_route_segments
 
 MIN_BYTES = 5 * 1024 * 1024 * 1024
 MIN_PERCENT = 10
@@ -52,7 +53,7 @@ def deleter_thread(exit_event: threading.Event):
 
     if out_of_percent or out_of_bytes:
       dirs = listdir_by_creation(Paths.log_root())
-      preserved_dirs = get_preserved_segments(dirs)
+      preserved_dirs = get_preserved_segments(dirs) | get_preserved_route_segments(Paths.log_root(), dirs)
 
       # remove the earliest directory we can
       for delete_dir in sorted(dirs, key=lambda d: (d in DELETE_LAST, d in preserved_dirs)):

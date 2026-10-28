@@ -8016,7 +8016,7 @@ def setup(app):
       return jsonify({"error": "Invalid route name."}), 400
     try:
       found = sum(preserved_routes.set_route_preserved(str(footage_path), name, preserved) for footage_path in FOOTAGE_PATHS)
-    except OSError as exception:
+    except (AttributeError, OSError) as exception:
       return jsonify({"error": f"Failed to update preserved state: {exception}"}), 500
     if not found:
       return jsonify({"error": "Route not found"}), 404

@@ -32,7 +32,7 @@ def is_route_preserved_dir(path: str) -> bool:
   # Read directly: xattr_cache never sees a flag set after its first read of the path.
   try:
     return os.getxattr(path, ROUTE_PRESERVE_ATTR_NAME) == ROUTE_PRESERVE_ATTR_VALUE
-  except OSError:
+  except (AttributeError, OSError):  # AttributeError: no os.getxattr (macOS PC)
     return False
 
 
@@ -65,10 +65,13 @@ def set_route_preserved(footage_path: str, route_name: str, preserved: bool) -> 
   segments = [name for name, route in _route_segment_dirs(footage_path) if route == route_name]
   for name in segments:
     path = os.path.join(footage_path, name)
-    if preserved:
-      os.setxattr(path, ROUTE_PRESERVE_ATTR_NAME, ROUTE_PRESERVE_ATTR_VALUE)
-    elif is_route_preserved_dir(path):
-      os.removexattr(path, ROUTE_PRESERVE_ATTR_NAME)
+    try:
+      if preserved:
+        os.setxattr(path, ROUTE_PRESERVE_ATTR_NAME, ROUTE_PRESERVE_ATTR_VALUE)
+      elif is_route_preserved_dir(path):
+        os.removexattr(path, ROUTE_PRESERVE_ATTR_NAME)
+    except FileNotFoundError:
+      continue  # the deleter removed it since the listing; don't leave the rest half done
   return len(segments)
 
 

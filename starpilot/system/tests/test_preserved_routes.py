@@ -37,6 +37,21 @@ def test_set_route_preserved_flags_and_clears_every_segment(tmp_path):
   assert preserved_routes.set_route_preserved(str(tmp_path / "missing"), PRESERVED, True) == 0
 
 
+def test_set_route_preserved_skips_a_segment_deleted_meanwhile(monkeypatch, tmp_path):
+  segments = _make_segments(tmp_path, PRESERVED, (0, 1, 2))
+  real_setxattr = os.setxattr
+
+  def setxattr(path, name, value):
+    if str(path).endswith("--0"):
+      raise FileNotFoundError(path)
+    real_setxattr(path, name, value)
+
+  monkeypatch.setattr(preserved_routes.os, "setxattr", setxattr)
+
+  assert preserved_routes.set_route_preserved(str(tmp_path), PRESERVED, True) == 3
+  assert [_has_flag(path) for path in segments] == [False, True, True]
+
+
 def test_route_segments_protected_when_any_segment_is_flagged(tmp_path):
   _make_segments(tmp_path, PRESERVED, (0, 1, 2))
   _make_segments(tmp_path, OTHER, (0, 1))

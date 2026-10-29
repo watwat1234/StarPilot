@@ -27,6 +27,7 @@ def _load_server_module():
 the_galaxy = _load_server_module()
 utilities = the_galaxy.utilities
 ROUTE_NAME = "0000006a--9f0a7bdf9c"
+ROUTE_PRESERVE_ATTR_NAME = the_galaxy.preserved_routes.ROUTE_PRESERVE_ATTR_NAME
 
 
 def _make_segment(root, route_name=ROUTE_NAME, segment_num=0):
@@ -54,7 +55,7 @@ def test_process_route_is_metadata_only_and_retains_fields(monkeypatch, tmp_path
   (segment / "Morning school run").touch()
   started_at = datetime(2026, 8, 26, 15, 30, tzinfo=timezone.utc)
   monkeypatch.setattr(utilities, "get_route_start_time_for_route", lambda *args: started_at)
-  monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: True)
+  monkeypatch.setattr(utilities, "is_route_preserved_dir", lambda path: True)
   monkeypatch.setattr(utilities, "video_to_png", lambda *args: (_ for _ in ()).throw(AssertionError("preview generation must stay lazy")))
 
   result = utilities.process_route(str(tmp_path), ROUTE_NAME, segment_count=4, first_segment_num=3)
@@ -342,56 +343,78 @@ def test_rename_and_reset_keep_logs_and_use_both_reset_urls(monkeypatch, tmp_pat
   assert client.post("/api/routes/clear_name", json={"name": ROUTE_NAME}).status_code == 200
 
 
+def _set_route_flag(path):
+  os.setxattr(path, ROUTE_PRESERVE_ATTR_NAME, b"1")
+
+
+def _has_route_flag(path):
+  return utilities.is_route_preserved_dir(str(path))
+
+
 def test_preserve_unpreserve_and_delete_route_endpoints(monkeypatch, tmp_path):
   segment = _make_segment(tmp_path)
   client = _make_client(monkeypatch, tmp_path)
-  attributes = set()
   deleted = []
-  monkeypatch.setattr(the_galaxy, "PRESERVE_COUNT", 10)
-  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: list(attributes), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "getxattr", lambda path, name: the_galaxy.PRESERVE_ATTR_VALUE, raising=False)
-  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: attributes.add(name), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "removexattr", lambda path, name: attributes.discard(name), raising=False)
   monkeypatch.setattr(the_galaxy, "delete_file", deleted.append)
 
   assert client.post(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert the_galaxy.PRESERVE_ATTR_NAME in attributes
+  assert _has_route_flag(segment)
   assert client.delete(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert the_galaxy.PRESERVE_ATTR_NAME not in attributes
+  assert not _has_route_flag(segment)
   assert client.delete(f"/api/routes/{ROUTE_NAME}").status_code == 200
   assert deleted == [str(segment)]
 
 
-def test_preserve_follows_the_first_surviving_segment(monkeypatch, tmp_path):
-  segment = _make_segment(tmp_path, segment_num=3)  # --0 and --1 already aged out
+def test_preserve_flags_and_clears_every_segment(monkeypatch, tmp_path):
+  segments = [_make_segment(tmp_path, segment_num=num) for num in (3, 4, 5)]  # --0 to --2 already aged out
   client = _make_client(monkeypatch, tmp_path)
-  attributes = {}
-  monkeypatch.setattr(the_galaxy, "PRESERVE_COUNT", 10)
-  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: list(attributes.get(str(path), ())), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "getxattr", lambda path, name: the_galaxy.PRESERVE_ATTR_VALUE, raising=False)
-  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: attributes.setdefault(str(path), set()).add(name), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "removexattr", lambda path, name: attributes[str(path)].discard(name), raising=False)
 
   assert client.post(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert attributes == {str(segment): {the_galaxy.PRESERVE_ATTR_NAME}}
-  assert utilities.process_route(str(tmp_path) + "/", ROUTE_NAME, 1, 3)["is_preserved"] is True
+  assert all(_has_route_flag(segment) for segment in segments)
 
   assert client.delete(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert attributes[str(segment)] == set()
+  assert not any(_has_route_flag(segment) for segment in segments)
+  assert client.post("/api/routes/00000099--9f0a7bdf9c/preserve").status_code == 404
 
 
-def test_preserve_limit_counts_routes_not_segments(monkeypatch, tmp_path):
-  for segment_num in (5, 6, 7):
-    _make_segment(tmp_path, segment_num=segment_num)
+def test_preserve_has_no_route_cap(monkeypatch, tmp_path):
+  routes = [f"000000{num:02x}--9f0a7bdf9c" for num in range(0x70, 0x77)]
+  for route in routes:
+    _make_segment(tmp_path, route)
   client = _make_client(monkeypatch, tmp_path)
-  monkeypatch.setattr(the_galaxy, "PRESERVE_COUNT", 1)
-  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: [the_galaxy.PRESERVE_ATTR_NAME], raising=False)
-  monkeypatch.setattr(the_galaxy.os, "getxattr", lambda path, name: the_galaxy.PRESERVE_ATTR_VALUE, raising=False)
-  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: None, raising=False)
 
-  # Three preserved segments belong to one route, so the cap of 1 is not already spent on it.
-  assert client.post(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert client.post("/api/routes/00000099--9f0a7bdf9c/preserve").status_code == 400
+  assert all(client.post(f"/api/routes/{route}/preserve").status_code == 200 for route in routes)
+
+
+def test_is_preserved_from_any_route_flagged_segment_but_not_bookmarks(tmp_path):
+  segments = [_make_segment(tmp_path, segment_num=num) for num in (3, 4, 5)]
+  bookmarked = _make_segment(tmp_path, "0000006b--9f0a7bdf9d", 2)
+  os.setxattr(bookmarked, "user.preserve", b"1")  # stock bookmark flag
+  _set_route_flag(segments[2])
+
+  assert utilities.process_route(str(tmp_path) + "/", ROUTE_NAME, 3, 3)["is_preserved"] is True
+  assert utilities.process_route(str(tmp_path) + "/", "0000006b--9f0a7bdf9d", 1, 2)["is_preserved"] is False
+
+
+def test_preserved_summary_sums_route_flagged_segments(monkeypatch, tmp_path):
+  standard = tmp_path / "standard"
+  high_resolution = tmp_path / "high_resolution"
+  flagged = _make_segment(standard, segment_num=0)
+  unflagged_same_route = _make_segment(high_resolution, segment_num=1)
+  bookmarked = _make_segment(standard, "0000006b--9f0a7bdf9d", 0)
+  (flagged / "rlog.zst").write_bytes(b"x" * 300)
+  (unflagged_same_route / "fcamera.hevc").write_bytes(b"x" * 100)
+  (bookmarked / "rlog.zst").write_bytes(b"x" * 5000)
+  _set_route_flag(flagged)
+  os.setxattr(bookmarked, "user.preserve", b"1")
+  client = _make_client(monkeypatch, standard)
+  monkeypatch.setattr(the_galaxy, "FOOTAGE_PATHS", [str(standard) + "/", str(high_resolution), str(standard)])
+  monkeypatch.setattr(utilities, "get_available_bytes", lambda default=0: 600)
+  monkeypatch.setattr(utilities, "get_used_bytes", lambda default=0: 400)
+
+  summary = client.get("/api/routes/preserved_summary").get_json()
+
+  assert summary == {"routes": 1, "bytes": 400, "diskTotalBytes": 1000, "percent": 40.0, "warnPercent": 40}
 
 
 def test_delete_all_non_preserved_keeps_entire_preserved_route_across_roots(monkeypatch, tmp_path):
@@ -408,7 +431,7 @@ def test_delete_all_non_preserved_keeps_entire_preserved_route_across_roots(monk
 
   client = _make_client(monkeypatch, standard)
   monkeypatch.setattr(the_galaxy, "FOOTAGE_PATHS", [str(standard), str(high_resolution)])
-  monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: path == str(preserved_marker))
+  _set_route_flag(preserved_marker)
   monkeypatch.setattr(utilities, "stop_dashboard_background_analysis", lambda: None)
   monkeypatch.setattr(the_galaxy, "delete_file", lambda path: Path(path).rmdir())
   history_calls = []

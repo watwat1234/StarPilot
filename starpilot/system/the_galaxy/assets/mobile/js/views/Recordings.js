@@ -60,6 +60,8 @@ export const Recordings = {
       searchQuery: "",
       sortOrder: "newest",
       showPreservedOnly: false,
+      // { routes, bytes, diskTotalBytes, percent, warnPercent } from the server; null until loaded.
+      preservedSummary: null,
       playerRoute: null,
       playerLoading: false,
       playerError: "",
@@ -93,6 +95,10 @@ export const Recordings = {
     },
     usingRoutePlayer() {
       return this.wholeRoute
+    },
+    preservedOverWarn() {
+      const s = this.preservedSummary
+      return !!s && s.percent >= s.warnPercent
     },
     visibleRoutes() {
       const list = this.routes.filter((r) => (!this.showPreservedOnly || r.is_preserved) && routeMatchesSearch(r, this.searchQuery))
@@ -178,13 +184,21 @@ export const Recordings = {
     setPreservedFilter(key) {
       this.showPreservedOnly = key === "preserved"
     },
+    async loadPreservedSummary() {
+      try {
+        this.preservedSummary = await api.getPreservedSummary()
+      } catch (e) {
+        this.preservedSummary = null
+      }
+    },
     async togglePreserved(route) {
       try {
         await api.setRoutePreserved(route.name, !route.is_preserved)
         route.is_preserved = !route.is_preserved
       } catch (e) {
-        showSnackbar("Failed to update preserved state.", "error")
+        showSnackbar(e?.message || "Failed to update preserved state.", "error")
       }
+      this.loadPreservedSummary()
     },
     async renameRoute(route) {
       const newName = prompt("Rename route:", route.displayName)
@@ -208,6 +222,7 @@ export const Recordings = {
       } catch (e) {
         showSnackbar(e?.message || "Failed to delete routes.", "error")
       }
+      this.loadPreservedSummary()
     },
     async openPlayer(route) {
       this.playerRoute = route
@@ -366,6 +381,7 @@ export const Recordings = {
       } catch (e) {}
       return
     }
+    this.loadPreservedSummary()
     await this.loadRoutes()
   },
   beforeUnmount() {
@@ -397,8 +413,15 @@ export const Recordings = {
         </div>
         <div style="padding: 0 var(--sp-3) var(--sp-3);">
           <GalaxyTabs :items="{ all: 'All', preserved: 'Preserved' }" :active="showPreservedOnly ? 'preserved' : 'all'" @select="setPreservedFilter" />
+          <div v-if="showPreservedOnly && preservedSummary" class="gx-preserved-summary" style="padding-top: var(--sp-2); color: var(--on-surface-variant);">
+            Preserved: {{ preservedSummary.routes }} {{ preservedSummary.routes === 1 ? 'route' : 'routes' }} · {{ formatBytes(preservedSummary.bytes) }}<template v-if="preservedSummary.diskTotalBytes"> · {{ Math.round(preservedSummary.percent) }}% of storage</template>
+          </div>
         </div>
       </section>
+
+      <GxNotice v-if="preservedOverWarn" tone="warn" title="Preserved routes use a lot of storage">
+        Preserved routes use {{ Math.round(preservedSummary.percent) }}% of storage. New drives may be deleted sooner. Unpreserve routes you've copied off.
+      </GxNotice>
 
       <div v-if="loading" class="gx-loading">Finding local routes... ({{ Math.round(progress) }}%)</div>
       <div v-if="error" class="gx-empty" style="color: var(--error);">{{ error }}</div>

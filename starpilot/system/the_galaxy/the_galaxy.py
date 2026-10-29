@@ -50,7 +50,6 @@ from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.pandad.panda_firmware import firmware_flags_conflict, supports_tesla_can_wake, validate_tesla_can_wake_firmware
 from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.hardware.hw import Paths
-from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE, PRESERVE_COUNT
 from openpilot.system.version import get_build_metadata
 from openpilot.tools.longitudinal_maneuvers.capabilities import get_longitudinal_maneuver_support
 from panda import Panda
@@ -81,6 +80,7 @@ from openpilot.starpilot.common import param_profiles
 from openpilot.starpilot.common.screen_recorder import migrate_legacy_recordings
 from openpilot.starpilot.common.car_params_capability import capability_car_params_bytes
 from openpilot.starpilot.system.the_galaxy import version_history, version_install
+from openpilot.starpilot.system import preserved_routes
 from openpilot.starpilot.common.accel_profile import (
   A_CRUISE_MAX_BP_CUSTOM,
   CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS,
@@ -1541,15 +1541,6 @@ def _route_metadata_events(entries, connect_dongle_id="", process_route=None):
     for future in futures:
       future.cancel()
     executor.shutdown(wait=False, cancel_futures=True)
-
-
-def _route_first_segment_path(name, footage_path):
-  """Oldest surviving segment of a route. loggerd ages out --0 first, so it is not always --0."""
-  try:
-    segments = utilities.get_segments_in_route(name, footage_path)
-  except OSError:
-    return None
-  return os.path.join(footage_path, segments[0]) if segments else None
 
 
 def _resolve_route_thumbnail(file_path, footage_paths=None):
@@ -7979,14 +7970,9 @@ def setup(app):
         for route_path in route_paths:
           _run_factory_reset_delete(route_path)
       else:
-        # The preserve xattr lives on one segment, but preservation applies to the
-        # whole route in every footage root.
+        # Preservation applies to the whole route in every footage root.
         for route_path in route_paths:
-          if not os.path.isdir(route_path):
-            continue
-          for segment in os.listdir(route_path):
-            if utilities.SEGMENT_RE.fullmatch(segment) and utilities.has_preserve_attr(os.path.join(route_path, segment)):
-              preserved_route_names.add(segment.rsplit("--", 1)[0])
+          preserved_route_names |= preserved_routes.preserved_route_names(route_path)
 
         for route_path in route_paths:
           if not os.path.isdir(route_path):
@@ -8025,41 +8011,40 @@ def setup(app):
     finally:
       _ROUTE_DELETE_LOCK.release()
 
-  @app.route("/api/routes/<name>/preserve", methods=["POST"])
-  def preserve_route(name):
+  def _update_route_preserved(name, preserved):
+    # Galaxy's own route flag on every segment (not the stock bookmark flag), so the deleter keeps the whole
+    # route; no count cap, the Recordings page shows the preserved size instead.
     if not _valid_route_name(name):
       return jsonify({"error": "Invalid route name."}), 400
+    try:
+      found = sum(preserved_routes.set_route_preserved(str(footage_path), name, preserved) for footage_path in FOOTAGE_PATHS)
+    except (AttributeError, OSError) as exception:
+      return jsonify({"error": f"Failed to update preserved state: {exception}"}), 500
+    if not found:
+      return jsonify({"error": "Route not found"}), 404
+    return jsonify({"message": "Route preserved!!" if preserved else "Route unpreserved!"}), 200
 
-    preserved_routes = set()
-    for footage_path in FOOTAGE_PATHS:
-      if not os.path.isdir(footage_path):
-        continue
-      for segment in os.listdir(footage_path):
-        if utilities.SEGMENT_RE.fullmatch(segment) and utilities.has_preserve_attr(os.path.join(footage_path, segment)):
-          preserved_routes.add(segment.rsplit("--", 1)[0])
-
-    if name not in preserved_routes and len(preserved_routes) >= PRESERVE_COUNT:
-      return {"error": f"Maximum of {PRESERVE_COUNT} preserved routes reached..."}, 400
-
-    for footage_path in FOOTAGE_PATHS:
-      segment_path = _route_first_segment_path(name, footage_path)
-      if segment_path is not None:
-        os.setxattr(segment_path, PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE)
-        return {"message": "Route preserved!!"}, 200
-
-    return {"error": "Route not found"}, 404
+  @app.route("/api/routes/<name>/preserve", methods=["POST"])
+  def preserve_route(name):
+    return _update_route_preserved(name, True)
 
   @app.route("/api/routes/<name>/preserve", methods=["DELETE"])
   def un_preserve_route(name):
-    if not _valid_route_name(name):
-      return jsonify({"error": "Invalid route name."}), 400
+    return _update_route_preserved(name, False)
 
-    for footage_path in FOOTAGE_PATHS:
-      segment_path = _route_first_segment_path(name, footage_path)
-      if segment_path is not None and utilities.has_preserve_attr(segment_path):
-        os.removexattr(segment_path, PRESERVE_ATTR_NAME)
-        return {"message": "Route unpreserved!"}, 200
-    return {"error": "Route not found"}, 404
+  @app.route("/api/routes/preserved_summary", methods=["GET"])
+  def preserved_routes_summary():
+    roots = [path for path in dict.fromkeys(str(footage_path).rstrip("/") for footage_path in FOOTAGE_PATHS) if path]
+    names = set().union(*(preserved_routes.preserved_route_names(root) for root in roots))
+    total_bytes = sum(preserved_routes.preserved_routes_bytes(root, names) for root in roots)
+    disk_total = utilities.get_available_bytes(default=0) + utilities.get_used_bytes(default=0)
+    return jsonify({
+      "routes": len(names),
+      "bytes": total_bytes,
+      "diskTotalBytes": disk_total,
+      "percent": round(total_bytes * 100 / disk_total, 1) if disk_total > 0 else 0,
+      "warnPercent": preserved_routes.PRESERVED_WARN_PERCENT,
+    }), 200
 
   @app.route("/video/<name>/combined", methods=["GET"])
   def get_combined_route_video(name):

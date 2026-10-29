@@ -222,13 +222,26 @@ def test_lead_departing_baseline_resets_when_camera_drops():
   toggles = make_toggles()
 
   events.update(True, 0.0, make_sm(standstill=True), toggles)
-  assert events.tracked_lead_distance == 5.0
 
   planner.lead_one.modelProb = 0.3
   assert not pull_away(events, planner, toggles, [5.5])
-  assert events.tracked_lead_distance == 0
 
-  # Camera back: the baseline restarts from the current distance, so the earlier 5 m doesn't count.
+  # Camera back: the baseline restarts from the current distance, so the earlier 5 m doesn't count
+  # (6.5 m would be 1.5 m past it), and the lead has to move another 1 m before it chimes.
   planner.lead_one.modelProb = 1.0
   assert not pull_away(events, planner, toggles, [6.0, 6.5])
-  assert events.tracked_lead_distance == 6.0
+  assert pull_away(events, planner, toggles, [7.0])
+
+
+def test_lead_departing_fires_after_a_lead_dropout_while_stopped():
+  planner = make_planner(lead_status=True, lead_dRel=5.0, lead_vLead=0.0, standstill=True)
+  events = make_events(planner)
+  toggles = make_toggles()
+
+  events.update(True, 0.0, make_sm(standstill=True), toggles)
+  planner.lead_one.status = False
+  assert not pull_away(events, planner, toggles, [5.0], v_lead=0.0)
+
+  planner.lead_one.status = True
+  assert not pull_away(events, planner, toggles, [5.0], v_lead=0.0)
+  assert pull_away(events, planner, toggles, [5.5, 6.0, 6.5])

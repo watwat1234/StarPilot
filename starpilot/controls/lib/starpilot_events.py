@@ -96,9 +96,10 @@ class StarPilotEvents:
     lead = self.starpilot_planner.lead_one
     stopped_in_drive = sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS
 
-    # Only a lead the camera agrees with (cross traffic on radar has ~0 camera support), and one that
-    # moves smoothly: a jump in distance is a different object, like a gate opening onto the road beyond.
-    lead_confirmed = stopped_in_drive and lead.status and lead.modelProb > LEAD_DEPARTING_MIN_CAMERA_PROB
+    # Only a lead the camera agrees with (cross traffic on radar has ~0 camera support), and not on a jump
+    # in distance, which is a different object (a gate opening onto the road beyond). The jump frame resets
+    # the baseline; the stop-distance cap below keeps the farther object from becoming the new one.
+    lead_confirmed = stopped_in_drive and lead.status and float(getattr(lead, "modelProb", 0.0)) > LEAD_DEPARTING_MIN_CAMERA_PROB
     if lead_confirmed and self.previous_lead_distance and lead.dRel - self.previous_lead_distance > LEAD_DEPARTING_MAX_STEP:
       lead_confirmed = False
     self.previous_lead_distance = lead.dRel if lead.status else 0

@@ -114,6 +114,7 @@ export const api = {
   renameRoute(oldName, newName) { return request("/api/routes/rename", { method: "POST", data: { old: oldName, new: newName } }) },
   resetRouteName(name) { return request("/api/routes/reset_name", { method: "POST", data: { name } }) },
   setRoutePreserved(name, preserved) { return request(`/api/routes/${encodeURIComponent(name)}/preserve`, { method: preserved ? "POST" : "DELETE" }) },
+  getPreservedSummary() { return request("/api/routes/preserved_summary") },
   deleteAllRoutes(includePreserved) { return request(`/api/routes/delete_all?include_preserved=${includePreserved}`, { method: "DELETE" }) },
   getRouteLogs(name) { return request(`/api/routes/${encodeURIComponent(name)}/logs`) },
 

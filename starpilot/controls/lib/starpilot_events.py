@@ -9,6 +9,12 @@ from openpilot.selfdrive.selfdrived.events import ET, EVENT_NAME, STARPILOT_EVEN
 from openpilot.starpilot.common.starpilot_variables import CRUISING_SPEED, NON_DRIVING_GEARS
 
 DEJA_VU_G_FORCE = 0.75
+
+# Lead Departed gates, from replaying both cars' logs (wat-dev-notes _issues/lead-departing-false-positives):
+LEAD_DEPARTING_MIN_CAMERA_PROB = 0.5  # real leads >= 0.95; cross traffic on radar ~0.00
+LEAD_DEPARTING_MAX_STOP_DISTANCE = 12.0  # meters; real stops 2.3-8.9 m behind the lead
+LEAD_DEPARTING_MAX_STEP = 1.5  # meters per update; the driveway gate opening jumps 5 m to 13-28 m
+
 RANDOM_EVENTS_CHANCE = 0.01 * DT_MDL
 RANDOM_EVENTS_LENGTH = 5
 
@@ -31,6 +37,7 @@ class StarPilotEvents:
     self.stopped_for_light = False
 
     self.max_acceleration = 0
+    self.previous_lead_distance = 0
     self.random_event_timer = 0
     self.tracked_lead_distance = 0
 
@@ -86,12 +93,24 @@ class StarPilotEvents:
     # recomputes it while moving) — it's usually already False by the time the car stops, since
     # the model's predicted path length shrinks on approach to a stop. Use lead_one.status
     # instead: it's set unconditionally from radarState every frame, standstill or not.
-    if self.starpilot_planner.lead_one.status and sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS:
-      if self.tracked_lead_distance == 0:
-        self.tracked_lead_distance = self.starpilot_planner.lead_one.dRel
+    lead = self.starpilot_planner.lead_one
+    stopped_in_drive = sm["carState"].standstill and sm["carState"].gearShifter not in NON_DRIVING_GEARS
 
-      lead_departing = self.starpilot_planner.lead_one.dRel - self.tracked_lead_distance >= 1
-      lead_departing &= self.starpilot_planner.lead_one.vLead >= 1
+    # Only a lead the camera agrees with (cross traffic on radar has ~0 camera support), and not on a jump
+    # in distance, which is a different object (a gate opening onto the road beyond). The jump frame resets
+    # the baseline; the stop-distance cap below keeps the farther object from becoming the new one.
+    lead_confirmed = stopped_in_drive and lead.status and float(getattr(lead, "modelProb", 0.0)) > LEAD_DEPARTING_MIN_CAMERA_PROB
+    if lead_confirmed and self.previous_lead_distance and lead.dRel - self.previous_lead_distance > LEAD_DEPARTING_MAX_STEP:
+      lead_confirmed = False
+    self.previous_lead_distance = lead.dRel if lead.status else 0
+
+    if lead_confirmed:
+      # Closest distance this stop, so a one-frame stray far reading can't become the reference.
+      if lead.dRel < LEAD_DEPARTING_MAX_STOP_DISTANCE:
+        self.tracked_lead_distance = min(self.tracked_lead_distance, lead.dRel) if self.tracked_lead_distance else lead.dRel
+
+      lead_departing = self.tracked_lead_distance and lead.dRel - self.tracked_lead_distance >= 1
+      lead_departing = lead_departing and lead.vLead >= 1
 
       # Same gas-pedal gate as greenLight above.
       if lead_departing and starpilot_toggles.lead_departing_alert and not sm["carState"].gasPressed:

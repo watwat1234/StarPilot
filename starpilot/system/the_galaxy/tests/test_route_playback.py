@@ -614,8 +614,8 @@ def _aol(enabled):
   return SimpleNamespace(alwaysOnLateralEnabled=enabled)
 
 
-def _car(steering_pressed):
-  return SimpleNamespace(steeringPressed=steering_pressed)
+def _car(steering_pressed, standstill=False):
+  return SimpleNamespace(steeringPressed=steering_pressed, standstill=standstill)
 
 
 def _events(start_ns, *timed):
@@ -640,12 +640,12 @@ def test_summarize_starts_at_the_sentinel_and_splits_spans_on_state_and_alert_ch
   ))
 
   assert timeline == {"thumbnailAt": 4.8, "spans": [
-    [0.0, 10.0, "disengaged", 0],
-    [10.0, 30.0, "engaged", 0],
-    [30.0, 40.0, "overriding", 0],
-    [40.0, 45.0, "engaged", 1],
-    [45.0, 50.0, "engaged", 2],
-    [50.0, 59.9, "engaged", 0],
+    [0.0, 10.0, "disengaged", 0, False],
+    [10.0, 30.0, "engaged", 0, False],
+    [30.0, 40.0, "overriding", 0, False],
+    [40.0, 45.0, "engaged", 1, False],
+    [45.0, 50.0, "engaged", 2, False],
+    [50.0, 59.9, "engaged", 0, False],
   ]}
   assert thumbnail == b"\xff\xd8first"
   # The next minute's, written just before the rotation.
@@ -675,13 +675,13 @@ def test_summarize_draws_aol_only_steered_aol_and_preenabled():
   ))[0]
 
   assert timeline["spans"] == [
-    [0.0, 1.0, "disengaged", 0],
-    [1.0, 2.0, "aol", 0],
-    [2.0, 3.0, "overriding", 0],
-    [3.0, 5.0, "aol", 0],
-    [5.0, 7.5, "engaged", 0],
-    [7.5, 8.0, "overriding", 0],
-    [8.0, 9.0, "disengaged", 0],
+    [0.0, 1.0, "disengaged", 0, False],
+    [1.0, 2.0, "aol", 0, False],
+    [2.0, 3.0, "overriding", 0, False],
+    [3.0, 5.0, "aol", 0, False],
+    [5.0, 7.5, "engaged", 0, False],
+    [7.5, 8.0, "overriding", 0, False],
+    [8.0, 9.0, "disengaged", 0, False],
   ]
 
 
@@ -695,13 +695,35 @@ def test_summarize_classifies_states_logged_before_the_minutes_first_aol_message
     (0.1, "selfdriveState", _state(False, False)),
     (1.0, "selfdriveState", _state(False, False)),
   ))[0]
-  assert timeline["spans"] == [[0.0, 1.0, "aol", 0]]
+  assert timeline["spans"] == [[0.0, 1.0, "aol", 0, False]]
 
 
 def test_summarize_without_aol_messages_ignores_steering_while_disengaged():
   timeline = route_timeline.summarize(_events(
     5, (0.0, "carState", _car(True)), (0.0, "selfdriveState", _state(False, False)), (1.0, "selfdriveState", _state(False, False))))[0]
-  assert timeline["spans"] == [[0.0, 1.0, "disengaged", 0]]
+  assert timeline["spans"] == [[0.0, 1.0, "disengaged", 0, False]]
+
+
+def test_summarize_splits_spans_on_standstill_and_keeps_the_state():
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "starpilotCarState", _aol(False)),
+    (0.0, "selfdriveState", _state(True, True)),
+    (1.0, "carState", _car(False, standstill=True)),
+    (1.0, "selfdriveState", _state(True, True)),
+    (2.0, "selfdriveState", _state(True, True, "userPrompt")),  # an alert at a stop is its own span, still stopped
+    (3.0, "selfdriveState", _state(False, False)),
+    (4.0, "carState", _car(False)),
+    (4.0, "selfdriveState", _state(False, False)),
+    (5.0, "selfdriveState", _state(False, False)),
+  ))[0]
+  assert timeline["spans"] == [
+    [0.0, 1.0, "engaged", 0, False],
+    [1.0, 2.0, "engaged", 0, True],
+    [2.0, 3.0, "engaged", 1, True],
+    [3.0, 4.0, "disengaged", 0, True],
+    [4.0, 5.0, "disengaged", 0, False],
+  ]
 
 
 @pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", _car(True)))])
@@ -783,7 +805,7 @@ def test_the_timeline_cache_key_carries_the_parser_version_and_the_video_key_doe
   old_key = hashlib.md5(f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()
   assert route_playback._cache_dir_for(tmp_path, source).name == old_key
   assert route_playback._timeline_dir_for(tmp_path, source).name not in (old_key, "")
-  assert route_timeline.CACHE_VERSION == 3
+  assert route_timeline.CACHE_VERSION == 4
 
 
 def _fake_parser(monkeypatch, thumbnail=b"\xff\xd8jpeg", failure=None, write=True, then_fail=None):
@@ -1192,6 +1214,7 @@ for tenth in range(600):
   messages.append(message)
   message, car = event(2400.0 + tenth / 10, "carState")
   car.steeringPressed = 40 <= tenth < 50 or 300 <= tenth < 350
+  car.standstill = 120 <= tenth < 250
   messages.append(message)
   message, state = event(2400.0 + tenth / 10, "selfdriveState")
   state.enabled = state.active = tenth >= 100
@@ -1235,16 +1258,18 @@ def test_real_parser_subprocess_on_a_synthetic_qlog(tmp_path, monkeypatch, offro
   assert _get(client, _segment_url(41)).get_json() == response.get_json()
   assert len(runs) == 1
   assert response.get_json() == {"thumbnailAt": 5.0, "spans": [
-    [0.0, 2.0, "disengaged", 0],
-    [2.0, 4.0, "aol", 0],
-    [4.0, 5.0, "overriding", 0],
-    [5.0, 8.0, "aol", 0],
-    [8.0, 10.0, "disengaged", 0],
-    [10.0, 30.0, "engaged", 0],
-    [30.0, 35.0, "overriding", 0],
-    [35.0, 50.0, "engaged", 0],
-    [50.0, 52.0, "engaged", 2],
-    [52.0, last_end, "engaged", 0],
+    [0.0, 2.0, "disengaged", 0, False],
+    [2.0, 4.0, "aol", 0, False],
+    [4.0, 5.0, "overriding", 0, False],
+    [5.0, 8.0, "aol", 0, False],
+    [8.0, 10.0, "disengaged", 0, False],
+    [10.0, 12.0, "engaged", 0, False],
+    [12.0, 25.0, "engaged", 0, True],
+    [25.0, 30.0, "engaged", 0, False],
+    [30.0, 35.0, "overriding", 0, False],
+    [35.0, 50.0, "engaged", 0, False],
+    [50.0, 52.0, "engaged", 2, False],
+    [52.0, last_end, "engaged", 0, False],
   ]}
   with _get(client, _segment_url(40, "thumbnail.jpg")) as thumbnail:
     assert thumbnail.data == b"\xff\xd8synthetic50"
@@ -1343,6 +1368,20 @@ def test_route_clock_shows_the_time_of_day_and_segment_number():
   # A drive across midnight wraps to 00:.
   late = datetime(2026, 10, 2, 6, 59, 30, tzinfo=UTC).timestamp()
   assert _timeline_js(f"routeClock(45, {segments}, {late})") == "00:00:15 – 0"
+
+
+def test_route_timeline_draws_stops_of_10_s_or_more_as_not_engaged():
+  green, aol, dark, orange = "#178644", "#173349", "#211b3a", "#da6f25"
+  segments = json.dumps([{"segment": "r--0", "start": 0, "duration": 60}, {"segment": "r--1", "start": 60, "duration": 60}])
+  info = json.dumps({
+    # A 9 s stop (kept green), then a stop from 54 s that runs on 6 s into the next minute (12 s, dark, alert kept).
+    "r--0": {"spans": [[0, 10, "engaged", 0, False], [10, 19, "engaged", 0, True], [19, 50, "aol", 0, False],
+                       [50, 54, "aol", 0, False], [54, 56, "aol", 0, True], [56, 59.9, "engaged", 1, True]]},
+    # Spans from before the stopped flag, and a state this page doesn't know.
+    "r--1": {"spans": [[0, 6, "engaged", 0, True], [6, 30, "engaged", 0], [30, 59.9, "newState", 0, False]]},
+  })
+  bars = f"RouteTimeline.computed.bars.call({{ segments: {segments}, info: {info}, total: 120, place: RouteTimeline.methods.place }})"
+  assert _timeline_js(f"{bars}.map((b) => b.color)") == [green, green, aol, aol, dark, orange, dark, green, dark]
 
 
 def test_route_timeline_label_shows_the_minute_thumbnail():

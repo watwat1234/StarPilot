@@ -13,7 +13,7 @@ QLOG_FILENAMES = ("qlog.zst", "qlog.bz2", "qlog")
 TIMELINE_FILENAME = "timeline.json"
 THUMBNAIL_FILENAME = "thumbnail.jpg"
 # Part of the timeline cache key: bump it when the parsed output changes, so cached minutes are parsed again.
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 # The camera writes one thumbnail per minute, a few seconds in; one this far in is the next minute's, written just
 # before the rotation.
 LATE_THUMBNAIL_SECONDS = 30
@@ -37,6 +37,9 @@ def summarize(events):
   """events: (logMonoTime ns, which, message) in log order -> (timeline dict, thumbnail bytes or None, late thumbnail
   (seconds, bytes) or None).
 
+  Each span is [from, to, state, alert level, stopped]; stopped (carState.standstill) is kept beside the state so the
+  page can tell long stops from short ones.
+
   Every segment's qlog starts with a copy of initData stamped at the *route* start; the next message (the logger's
   sentinel) is the segment's t=0. A few messages logged before it are clamped to 0.
   """
@@ -45,10 +48,10 @@ def summarize(events):
   thumbnail, thumbnail_at, late = None, None, None
   # Latest values, applied at each selfdriveState. Until the minute's first starpilotCarState, selfdriveStates wait
   # (a qlog with none, from before StarPilot, flushes them at the end).
-  aol, steering_pressed, waiting = None, False, []
+  aol, steering_pressed, standstill, waiting = None, False, False, []
 
   def add(seconds, state, enabled, alert):
-    key = [_state(state, enabled, aol, steering_pressed), alert]
+    key = [_state(state, enabled, aol, steering_pressed), alert, standstill]
     if spans and spans[-1][2:] == key:
       spans[-1][1] = seconds
     else:
@@ -64,6 +67,7 @@ def summarize(events):
     seconds = round(max(0.0, (mono_time - start) / 1e9), 2)
     if which == "carState":
       steering_pressed = message.steeringPressed
+      standstill = message.standstill
     elif which == "starpilotCarState":
       aol = message.alwaysOnLateralEnabled
       for waited in waiting:

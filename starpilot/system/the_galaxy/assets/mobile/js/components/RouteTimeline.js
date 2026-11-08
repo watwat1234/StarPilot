@@ -9,6 +9,10 @@ const KEY_STEP_SECONDS = 10
 const SEGMENT_SECONDS = 60
 const STATE_COLORS = { engaged: "#178644", aol: "#173349", overriding: "#919b95", disengaged: "#211b3a" }
 const ALERT_COLORS = [null, "#da6f25", "#c92231"]
+const STOPPED_COLOR = STATE_COLORS.disengaged
+const STOP_SECONDS = 10
+// A minute's last span ends at its last selfdriveState, a little before the next minute starts.
+const STOP_JOIN_SECONDS = 1
 
 function installStyle() {
   if (document.getElementById("gx-route-timeline-style")) return
@@ -82,9 +86,26 @@ export const RouteTimeline = {
     bars() {
       const bars = []
       for (const { segment, start, duration } of this.segments) {
-        for (const [from, to, state, alert] of this.info[segment]?.spans || []) {
-          bars.push({ key: `${segment}/${from}`, color: ALERT_COLORS[alert] || STATE_COLORS[state], style: this.place(start + from, Math.min(to, duration) - from) })
+        for (const [from, to, state, alert, stopped] of this.info[segment]?.spans || []) {
+          const begin = start + from, end = start + Math.min(to, duration)
+          bars.push({ key: `${segment}/${from}`, begin, end, state, alert, stopped, style: this.place(begin, end - begin) })
         }
+      }
+      // A stop of STOP_SECONDS or more (joined across minutes) is drawn as not engaged, so it stands out to skip.
+      let stop = []
+      const endStop = () => {
+        const long = stop.length > 0 && stop.at(-1).end - stop[0].begin >= STOP_SECONDS
+        for (const bar of stop) bar.longStop = long
+        stop = []
+      }
+      for (const bar of bars) {
+        if (!bar.stopped || (stop.length && bar.begin - stop.at(-1).end > STOP_JOIN_SECONDS)) endStop()
+        if (bar.stopped) stop.push(bar)
+      }
+      endStop()
+      for (const bar of bars) {
+        // An unknown state (newer spans than this page's code) is drawn as not engaged rather than not at all.
+        bar.color = ALERT_COLORS[bar.alert] || (bar.longStop ? STOPPED_COLOR : STATE_COLORS[bar.state] || STATE_COLORS.disengaged)
       }
       return bars
     },

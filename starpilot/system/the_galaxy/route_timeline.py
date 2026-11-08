@@ -46,18 +46,24 @@ def summarize(events):
   start = None
   spans = []
   thumbnail, thumbnail_at, late = None, None, None
-  # Latest values, applied at each selfdriveState. Until the minute's first starpilotCarState, selfdriveStates wait
-  # (a qlog with none, from before StarPilot, flushes them at the end).
-  aol, steering_pressed, standstill, waiting = None, False, False, []
+  # Latest values, kept with each selfdriveState as it is logged. A minute's first starpilotCarState and carState
+  # stand for the states logged before them, so until both arrive selfdriveStates wait (a qlog without them, from
+  # before StarPilot, flushes them at the end).
+  aol, steering_pressed, standstill, waiting = None, False, None, []
 
-  def add(seconds, state, enabled, alert):
-    key = [_state(state, enabled, aol, steering_pressed), alert, standstill]
+  def add(seconds, state, enabled, alert, aol, steering_pressed, stopped):
+    key = [_state(state, enabled, aol, steering_pressed), alert, bool(stopped)]
     if spans and spans[-1][2:] == key:
       spans[-1][1] = seconds
     else:
       if spans:
         spans[-1][1] = seconds
       spans.append([seconds, seconds, *key])
+
+  def fill_waiting(index, value):
+    for waited in waiting:
+      if waited[index] is None:
+        waited[index] = value
 
   for mono_time, which, message in events:
     if start is None:
@@ -66,21 +72,22 @@ def summarize(events):
       continue
     seconds = round(max(0.0, (mono_time - start) / 1e9), 2)
     if which == "carState":
-      steering_pressed = message.steeringPressed
-      standstill = message.standstill
+      steering_pressed, standstill = message.steeringPressed, message.standstill
+      fill_waiting(6, standstill)
     elif which == "starpilotCarState":
       aol = message.alwaysOnLateralEnabled
-      for waited in waiting:
-        add(*waited)
-      waiting = []
+      fill_waiting(4, aol)
     elif which == "selfdriveState":
-      waiting.append((seconds, str(message.state), message.enabled, ALERT_LEVELS.get(str(message.alertStatus), 0)))
-      if aol is not None:
-        add(*waiting.pop())
+      alert = ALERT_LEVELS.get(str(message.alertStatus), 0)
+      waiting.append([seconds, str(message.state), message.enabled, alert, aol, steering_pressed, standstill])
     elif which == "thumbnail" and seconds >= LATE_THUMBNAIL_SECONDS:
       late = seconds, bytes(message.thumbnail)
     elif which == "thumbnail" and thumbnail is None:
       thumbnail, thumbnail_at = bytes(message.thumbnail), seconds
+    if waiting and aol is not None and standstill is not None:
+      for waited in waiting:
+        add(*waited)
+      waiting = []
   for waited in waiting:
     add(*waited)
   return {"spans": spans, "thumbnailAt": thumbnail_at}, thumbnail, late

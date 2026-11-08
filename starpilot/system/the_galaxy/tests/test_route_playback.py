@@ -708,6 +708,7 @@ def test_summarize_splits_spans_on_standstill_and_keeps_the_state():
   timeline = route_timeline.summarize(_events(
     5,
     (0.0, "starpilotCarState", _aol(False)),
+    (0.0, "carState", _car(False)),
     (0.0, "selfdriveState", _state(True, True)),
     (1.0, "carState", _car(False, standstill=True)),
     (1.0, "selfdriveState", _state(True, True)),
@@ -724,6 +725,35 @@ def test_summarize_splits_spans_on_standstill_and_keeps_the_state():
     [3.0, 4.0, "disengaged", 0, True],
     [4.0, 5.0, "disengaged", 0, False],
   ]
+
+
+def test_summarize_gives_states_before_the_minutes_first_car_state_its_standstill_and_keeps_each_states_own():
+  # Stopped across the minute boundary: a state logged before the minute's first carState must not read as moving
+  # (it would split the stop in two on the page). States waiting for starpilotCarState keep their own standstill.
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "selfdriveState", _state(True, True)),
+    (0.03, "carState", _car(False, standstill=True)),
+    (0.05, "selfdriveState", _state(True, True)),
+    (0.1, "carState", _car(False)),
+    (0.15, "selfdriveState", _state(True, True)),
+    (0.5, "starpilotCarState", _aol(False)),
+    (1.0, "selfdriveState", _state(True, True)),
+  ))[0]
+  assert timeline["spans"] == [[0.0, 0.15, "engaged", 0, True], [0.15, 1.0, "engaged", 0, False]]
+
+
+def test_summarize_without_aol_messages_keeps_each_states_own_standstill():
+  # From before StarPilot: everything waits to the end, but a stop that ended mid-minute stays where it was.
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "carState", _car(False)),
+    (0.0, "selfdriveState", _state(True, True)),
+    (10.0, "carState", _car(False, standstill=True)),
+    (10.0, "selfdriveState", _state(True, True)),
+    (20.0, "selfdriveState", _state(True, True)),
+  ))[0]
+  assert timeline["spans"] == [[0.0, 10.0, "engaged", 0, False], [10.0, 20.0, "engaged", 0, True]]
 
 
 @pytest.mark.parametrize("events", [[], [(1, "initData", None)], _events(5, (1.0, "carState", _car(True)))])
@@ -1382,6 +1412,18 @@ def test_route_timeline_draws_stops_of_10_s_or_more_as_not_engaged():
   })
   bars = f"RouteTimeline.computed.bars.call({{ segments: {segments}, info: {info}, total: 120, place: RouteTimeline.methods.place }})"
   assert _timeline_js(f"{bars}.map((b) => b.color)") == [green, green, aol, aol, dark, orange, dark, green, dark]
+
+  # Minutes 2-4 aged out: the stops at the end of 1 and the start of 5 sit back to back but are 6 s each, not 12 s.
+  # A video minute longer than its qlog (61 s) still joins the stop that runs on into minute 2.
+  segments = json.dumps([{"segment": "r--1", "start": 0, "duration": 60}, {"segment": "r--5", "start": 60, "duration": 61},
+                         {"segment": "r--6", "start": 121, "duration": 60}])
+  info = json.dumps({
+    "r--1": {"spans": [[0, 54, "engaged", 0, False], [54, 59.9, "engaged", 0, True]]},
+    "r--5": {"spans": [[0, 6, "engaged", 0, True], [6, 55, "engaged", 0, False], [55, 59.0, "engaged", 0, True]]},
+    "r--6": {"spans": [[0, 6, "engaged", 0, True], [6, 59.9, "engaged", 0, False]]},
+  })
+  bars = f"RouteTimeline.computed.bars.call({{ segments: {segments}, info: {info}, total: 181, place: RouteTimeline.methods.place }})"
+  assert _timeline_js(f"{bars}.map((b) => b.color)") == [green, green, green, green, dark, dark, green]
 
 
 def test_route_timeline_label_shows_the_minute_thumbnail():

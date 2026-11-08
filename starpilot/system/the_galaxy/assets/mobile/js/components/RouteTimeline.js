@@ -11,8 +11,6 @@ const STATE_COLORS = { engaged: "#178644", aol: "#173349", overriding: "#919b95"
 const ALERT_COLORS = [null, "#da6f25", "#c92231"]
 const STOPPED_COLOR = STATE_COLORS.disengaged
 const STOP_SECONDS = 10
-// A minute's last span ends at its last selfdriveState, a little before the next minute starts.
-const STOP_JOIN_SECONDS = 1
 
 function installStyle() {
   if (document.getElementById("gx-route-timeline-style")) return
@@ -86,12 +84,17 @@ export const RouteTimeline = {
     bars() {
       const bars = []
       for (const { segment, start, duration } of this.segments) {
-        for (const [from, to, state, alert, stopped] of this.info[segment]?.spans || []) {
+        const number = Number(segment.split("--").pop())
+        const spans = this.info[segment]?.spans || []
+        spans.forEach(([from, to, state, alert, stopped], index) => {
           const begin = start + from, end = start + Math.min(to, duration)
-          bars.push({ key: `${segment}/${from}`, begin, end, state, alert, stopped, style: this.place(begin, end - begin) })
-        }
+          const first = index === 0, last = index === spans.length - 1
+          bars.push({ key: `${segment}/${from}`, begin, end, state, alert, stopped, number, first, last, style: this.place(begin, end - begin) })
+        })
       }
-      // A stop of STOP_SECONDS or more (joined across minutes) is drawn as not engaged, so it stands out to skip.
+      // A stop of STOP_SECONDS or more is drawn as not engaged, so it stands out to skip. It carries on from one
+      // minute's last span into the next minute's first (not across aged-out minutes, which sit back to back here).
+      const continues = (bar, previous) => bar.number === previous.number || (previous.last && bar.first && bar.number === previous.number + 1)
       let stop = []
       const endStop = () => {
         const long = stop.length > 0 && stop.at(-1).end - stop[0].begin >= STOP_SECONDS
@@ -99,7 +102,7 @@ export const RouteTimeline = {
         stop = []
       }
       for (const bar of bars) {
-        if (!bar.stopped || (stop.length && bar.begin - stop.at(-1).end > STOP_JOIN_SECONDS)) endStop()
+        if (!bar.stopped || (stop.length && !continues(bar, stop.at(-1)))) endStop()
         if (bar.stopped) stop.push(bar)
       }
       endStop()

@@ -49,7 +49,7 @@ def summarize(events):
   # Latest values, kept with each selfdriveState as it is logged. A minute's first starpilotCarState and carState
   # stand for the states logged before them, so until both arrive selfdriveStates wait (a qlog without them, from
   # before StarPilot, flushes them at the end).
-  aol, steering_pressed, standstill, waiting = None, False, None, []
+  aol, steering_pressed, standstill, waiting = None, None, None, []
 
   def add(seconds, state, enabled, alert, aol, steering_pressed, stopped):
     key = [_state(state, enabled, aol, steering_pressed), alert, bool(stopped)]
@@ -72,11 +72,14 @@ def summarize(events):
       continue
     seconds = round(max(0.0, (mono_time - start) / 1e9), 2)
     if which == "carState":
+      if standstill is None:
+        fill_waiting(5, message.steeringPressed)
+        fill_waiting(6, message.standstill)
       steering_pressed, standstill = message.steeringPressed, message.standstill
-      fill_waiting(6, standstill)
     elif which == "starpilotCarState":
+      if aol is None:
+        fill_waiting(4, message.alwaysOnLateralEnabled)
       aol = message.alwaysOnLateralEnabled
-      fill_waiting(4, aol)
     elif which == "selfdriveState":
       alert = ALERT_LEVELS.get(str(message.alertStatus), 0)
       waiting.append([seconds, str(message.state), message.enabled, alert, aol, steering_pressed, standstill])

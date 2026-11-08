@@ -656,6 +656,7 @@ def test_summarize_draws_aol_only_steered_aol_and_preenabled():
   timeline = route_timeline.summarize(_events(
     5,
     (0.0, "starpilotCarState", _aol(False)),
+    (0.0, "carState", _car(False)),
     (0.0, "selfdriveState", _state(False, False)),
     (1.0, "starpilotCarState", _aol(True)),
     (1.0, "selfdriveState", _state(False, False)),
@@ -741,6 +742,19 @@ def test_summarize_gives_states_before_the_minutes_first_car_state_its_standstil
     (1.0, "selfdriveState", _state(True, True)),
   ))[0]
   assert timeline["spans"] == [[0.0, 0.15, "engaged", 0, True], [0.15, 1.0, "engaged", 0, False]]
+
+
+def test_summarize_gives_states_before_the_minutes_first_car_state_its_steering():
+  # AOL on and the driver steering from the minute's start: no teal sliver before the first carState.
+  timeline = route_timeline.summarize(_events(
+    5,
+    (0.0, "selfdriveState", _state(False, False)),
+    (0.03, "carState", _car(True)),
+    (0.05, "selfdriveState", _state(False, False)),
+    (0.5, "starpilotCarState", _aol(True)),
+    (1.0, "selfdriveState", _state(False, False)),
+  ))[0]
+  assert timeline["spans"] == [[0.0, 1.0, "overriding", 0, False]]
 
 
 def test_summarize_without_aol_messages_keeps_each_states_own_standstill():

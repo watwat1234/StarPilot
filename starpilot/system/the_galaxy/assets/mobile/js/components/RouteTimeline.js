@@ -42,13 +42,15 @@ export function clock(seconds) {
   return s >= 3600 ? `${Math.floor(s / 3600)}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`
 }
 
+const segmentNumber = (segment) => Number(segment.split("--").pop())
+
 // "16:59:34 – 12": time of day (24 h) and segment number at `seconds` into the playlist. Segment numbers count
 // minutes from the route start, so gaps (aged-out segments) still give the right time. Without a start time the
 // time is since the route start.
 export function routeClock(seconds, segments, startedAt) {
   const segment = segments.findLast((s) => s.start <= seconds) || segments[0]
   if (!segment) return clock(seconds)
-  const number = Number(segment.segment.split("--").pop())
+  const number = segmentNumber(segment.segment)
   const sinceStart = number * SEGMENT_SECONDS + Math.max(0, seconds - segment.start)
   const time = startedAt == null ? clock(sinceStart)
     : new Date((startedAt + sinceStart) * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
@@ -84,17 +86,17 @@ export const RouteTimeline = {
     bars() {
       const bars = []
       for (const { segment, start, duration } of this.segments) {
-        const number = Number(segment.split("--").pop())
+        const number = segmentNumber(segment)
         const spans = this.info[segment]?.spans || []
         spans.forEach(([from, to, state, alert, stopped], index) => {
           const begin = start + from, end = start + Math.min(to, duration)
           const first = index === 0, last = index === spans.length - 1
-          bars.push({ key: `${segment}/${from}`, begin, end, state, alert, stopped, number, first, last, style: this.place(begin, end - begin) })
+          bars.push({ key: `${segment}/${from}`, begin, end, state, alert, stopped, segment, number, first, last, style: this.place(begin, end - begin) })
         })
       }
       // A stop of STOP_SECONDS or more is drawn as not engaged, so it stands out to skip. It carries on from one
       // minute's last span into the next minute's first (not across aged-out minutes, which sit back to back here).
-      const continues = (bar, previous) => bar.number === previous.number || (previous.last && bar.first && bar.number === previous.number + 1)
+      const continues = (bar, previous) => bar.segment === previous.segment || (previous.last && bar.first && bar.number === previous.number + 1)
       let stop = []
       const endStop = () => {
         const long = stop.length > 0 && stop.at(-1).end - stop[0].begin >= STOP_SECONDS

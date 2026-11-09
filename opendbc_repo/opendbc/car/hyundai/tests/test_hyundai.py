@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from cereal import custom
+
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, ButtonType, gen_empty_fingerprint, structs
 from opendbc.car.structs import CarControl, CarParams
@@ -276,6 +278,30 @@ class TestHyundaiFingerprint:
     assert torque.latAccelFactor == pytest.approx(4.5)
     assert CP.maxLateralAccel == pytest.approx(3.0)
     assert torque.friction == pytest.approx(0.09)
+
+  def test_ioniq_6_holds_torque_through_steer_request_cut(self):
+    # Past MAX_ANGLE the request bit drops for 2 frames; zeroing torque there was felt as a notch on sharp turns
+    CP = CarInterface.get_params(CAR.HYUNDAI_IONIQ_6, gen_empty_fingerprint(), [], True, False, False, None)
+    CI = CarInterface(CP, custom.StarPilotCarParams.new_message())
+    can_bus = CanBus(CP).ECAN
+    parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [("LFA", 0)], can_bus)
+    CC = CarControl.new_message()
+    CC.enabled = True
+    CC.latActive = True
+    CC.actuators.torque = 0.5
+    CI.CS.out.steeringAngleDeg = 120.0
+    CI.CS.out.vEgo = 3.0
+
+    steer_req, torque = [], []
+    for frame in range(95):
+      now_nanos = (frame + 1) * 10_000_000
+      _, msgs = CI.apply(CC.as_reader(), now_nanos, get_test_toggles())
+      parser.update([(now_nanos, [msg for msg in msgs if msg[0] == 0x12A and msg[2] == can_bus])])
+      steer_req.append(parser.vl["LFA"]["STEER_REQ"])
+      torque.append(parser.vl["LFA"]["TORQUE_REQUEST"])
+
+    assert steer_req[88:92] == [1, 0, 0, 1]
+    assert torque[88:92] == [204, 204, 204, 204]
 
   def test_carnival_hev_low_speed_torque_rate_limits(self):
     CP = CarInterface.get_params(CAR.KIA_CARNIVAL_HEV_4TH_GEN, gen_empty_fingerprint(), [],

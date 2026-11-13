@@ -128,3 +128,63 @@ def test_exit_hold_toggle_read_matches_source():
   source = (_ROOT / "starpilot/common/starpilot_variables.py").read_text(encoding="utf-8")
   assert re.search(r'toggle\.bolt_turn_exit_hold = self\.get_value\(\s*"BoltTurnExitHold", cast=int, ' +
                    r'condition=toggle\.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=100,', source)
+
+
+YIELD_SETTINGS = [("BoltTurnPushYield", "bolt_turn_push_yield"), ("BoltTurnHoldBackYield", "bolt_turn_hold_back_yield")]
+
+
+@pytest.mark.parametrize("key, _", YIELD_SETTINGS)
+def test_yield_layout_entries_are_percent_sliders(key, _):
+  layout = json.loads(_LAYOUT_PATH.read_text(encoding="utf-8"))
+  found = [(section["name"], param) for section in layout for param in section["params"] if param["key"] == key]
+  assert len(found) == 1
+  section, setting = found[0]
+  assert section == "Lateral (Steering)"
+  assert (setting["data_type"], setting["ui_type"], setting["control"]) == ("int", "numeric", "slider")
+  assert (setting["min"], setting["max"], setting["step"], setting["unit"]) == (0, 100, 10, "%")
+  assert setting["vehicle_makes"] == ["Chevrolet"]
+  assert setting["settings_tier"] == "advanced"
+  assert "parent_key" not in setting
+  assert not setting.get("galaxy_only")
+
+
+def test_yield_entries_follow_turn_exit_hold():
+  layout = json.loads(_LAYOUT_PATH.read_text(encoding="utf-8"))
+  keys = [param["key"] for section in layout for param in section["params"]]
+  start = keys.index("BoltTurnExitHold")
+  assert keys[start:start + 3] == ["BoltTurnExitHold", "BoltTurnPushYield", "BoltTurnHoldBackYield"]
+
+
+@pytest.mark.parametrize("key, _", YIELD_SETTINGS)
+def test_yield_keys_default_off_and_are_managed(key, _):
+  keys = (_ROOT / "common/params_keys.h").read_text(encoding="utf-8")
+  assert f'{{"{key}", {{PERSISTENT, INT, "0", "0", 2}}}},' in keys
+  assert key in SAFE_MODE_MANAGED_KEYS
+  galaxy = (_ROOT / "starpilot/system/the_galaxy/the_galaxy.py").read_text(encoding="utf-8")
+  lateral_keys = re.search(r"_TROUBLESHOOT_ADVANCED_LATERAL_KEYS = \[(.*?)\]", galaxy, re.S)
+  assert lateral_keys is not None and f'"{key}"' in lateral_keys[1]
+
+
+@pytest.mark.parametrize("key, _", YIELD_SETTINGS)
+@pytest.mark.parametrize("stored, is_bolt, expected", [
+  (None, True, 0),   # default off
+  (60, True, 60),
+  (60, False, 0),    # other cars always read 0
+  (150, True, 100),  # clamped
+  (-10, True, 0),
+])
+def test_yield_toggle_read(key, _, stored, is_bolt, expected):
+  variables = object.__new__(spv.StarPilotVariables)
+  variables.params = _FakeParams({} if stored is None else {key: stored})
+  variables.default_values = {key: "0"}
+  assert variables.get_value(key, cast=int, condition=is_bolt, default=0, min=0, max=100) == expected
+
+
+@pytest.mark.parametrize("key, toggle", YIELD_SETTINGS)
+def test_yield_toggle_read_matches_source(key, toggle):
+  # the controller reads these toggle names
+  source = (_ROOT / "starpilot/common/starpilot_variables.py").read_text(encoding="utf-8")
+  assert re.search(rf'toggle\.{toggle} = self\.get_value\(\s*"{key}", cast=int, ' +
+                   r'condition=toggle\.car_model in BOLT_TURN_DAMPING_CARS, default=0, min=0, max=100,', source)
+  controller = (_ROOT / "selfdrive/controls/lib/latcontrol_torque.py").read_text(encoding="utf-8")
+  assert f'getattr(starpilot_toggles, "{toggle}", 0)' in controller

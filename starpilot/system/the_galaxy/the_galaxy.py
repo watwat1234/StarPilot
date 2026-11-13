@@ -2023,6 +2023,8 @@ _TROUBLESHOOT_ADVANCED_LATERAL_KEYS = [
   "LaneCenterOffset",
   "BoltTurnDamping",
   "BoltTurnExitHold",
+  "BoltTurnPushYield",
+  "BoltTurnHoldBackYield",
 ]
 
 _TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS = [

@@ -58,6 +58,8 @@ SAFE_MODE_MANAGED_KEYS = (
   "LaneCenteringSmoothing",
   "BoltTurnDamping",
   "BoltTurnExitHold",
+  "BoltTurnPushYield",
+  "BoltTurnHoldBackYield",
   "LaneCenterOffset",
   "LaneChanges",
   "LaneChangeTime",

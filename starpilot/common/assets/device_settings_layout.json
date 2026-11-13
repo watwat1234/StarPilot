@@ -422,6 +422,36 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "BoltTurnPushYield",
+        "label": "Turn Push Yield",
+        "description": "Chevy Bolt 2022/23 only. In slow turns (below about 30 mph), lets the wheel move smoothly when you steer tighter than the car, instead of holding it still until it suddenly gives way. Starts with a light hand on the wheel and is full by the time you're clearly steering; doesn't act with your hands off. Higher gives way more. 0% (default) turns it off; has no effect on other cars.",
+        "picker_description": "Lets the wheel give way smoothly when you steer tighter in slow turns (Bolt 2022/23).",
+        "data_type": "int",
+        "ui_type": "numeric",
+        "control": "slider",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "step": 10,
+        "vehicle_makes": ["Chevrolet"],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "BoltTurnHoldBackYield",
+        "label": "Turn Hold-Back Yield",
+        "description": "Chevy Bolt 2022/23 only. In slow turns (below about 30 mph), eases off the car's steering while you hold the wheel back from turning in, so letting go doesn't whip the wheel into the turn. Starts with a light hand on the wheel and is full by the time you're clearly steering; doesn't act with your hands off. Higher eases off more. 0% (default) turns it off; has no effect on other cars.",
+        "picker_description": "Stops the wheel whipping in after you hold it back in slow turns (Bolt 2022/23).",
+        "data_type": "int",
+        "ui_type": "numeric",
+        "control": "slider",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "step": 10,
+        "vehicle_makes": ["Chevrolet"],
+        "settings_tier": "advanced"
+      },
+      {
         "key": "FordHumanTurnDetection",
         "label": "Manual Turn Release",
         "description": "Yield during an intentional manual turn while keeping the Ford steering session ready.",

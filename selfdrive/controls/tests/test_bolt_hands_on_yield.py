@@ -90,14 +90,35 @@ class TestBoltHandsOnYieldWeights:
       yielder.update(100, 100, SLOW, 2.0, 2.0, -0.5)
     assert yielder.push == pytest.approx(steady, abs=1e-3)
 
-  def test_release_fades_over_the_filter(self):
-    yielder = settled(steering_torque=-1.0)
-    pushes = []
+  @pytest.mark.parametrize("steering_torque, mode", [(-1.0, "push"), (1.0, "hold_back")])
+  def test_release_fades_over_a_quarter_second(self, steering_torque, mode):
+    yielder = settled(steering_torque=steering_torque)
+    weights = []
     for _ in range(40):
       yielder.update(100, 100, SLOW, 2.0, 2.0, 0.0)
+      weights.append(getattr(yielder, mode))
+    assert np.abs(np.diff([1.0] + weights)).max() <= DT_CTRL / 0.25 + 1e-9
+    assert weights[19] > 0.15
+    assert weights[-1] == 0.0
+
+  @pytest.mark.parametrize("first, then", [(-1.0, 1.0), (1.0, -1.0)])
+  def test_steering_the_other_way_ends_the_other_mode_at_once(self, first, then):
+    yielder = settled(steering_torque=first)
+    for _ in range(20):  # through the torque filter
+      yielder.update(100, 100, SLOW, 2.0, 2.0, then)
+    assert min(yielder.push, yielder.hold_back) == 0.0
+    assert max(yielder.push, yielder.hold_back) > 0.5
+
+  @pytest.mark.parametrize("side", SIDES)
+  def test_turn_direction_follows_the_wheel_when_the_plan_is_near_zero(self, side):
+    # driver turning in ahead of a plan still wobbling around center: push throughout, no flip to hold-back
+    yielder = BoltHandsOnYield(DT_CTRL)
+    pushes = []
+    for frame in range(200):
+      yielder.update(100, 0, SLOW, side * 0.05 * (-1) ** frame, side * 1.5, -side * 0.8)
       pushes.append(yielder.push)
-    assert 0.5 < pushes[1] < 1.0
-    assert pushes[-1] == 0.0
+    assert min(pushes[100:]) == pytest.approx(max(pushes[100:]))
+    assert pushes[-1] > 0.8
 
   def test_setting_change_ramps(self):
     yielder = settled(push_percent=0, frames=50)  # driver torque settled first
@@ -177,13 +198,15 @@ def build(car_name, v_ego, push_percent, hold_back_percent):
 
 
 def run_turn(car_name, push_percent, hold_back_percent, driver_nm, v_ego=SLOW, plan=2.0, offset=0.5, side=1.0,
-             logs=None):
+             logs=None, controllers=None):
   """A steady turn planned at `plan` m/s^2 with the wheel `offset` past it (negative: short of it) and the driver's
   torque per frame from `driver_nm` (+ = into the turn). side=-1 mirrors it into a left turn.
 
   Returns the torque in the turn's direction per frame (the controller returns it negated). `logs`, if given, gets
-  (error, f) per frame from torqueState, also in the turn's direction."""
+  (error, f) per frame from torqueState, also in the turn's direction; `controllers` gets the controller."""
   controller, VM, CS, params, toggles = build(car_name, v_ego, push_percent, hold_back_percent)
+  if controllers is not None:
+    controllers.append(controller)
   per_degree = -VM.calc_curvature(math.radians(1.0), v_ego, 0.0) * v_ego ** 2
   controller.curvature_request_buffer = deque([side * plan / v_ego ** 2] * controller.request_buffer_len,
                                               maxlen=controller.request_buffer_len)
@@ -296,6 +319,26 @@ class TestBoltHandsOnYieldInController:
     off = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 0, PUSH_RAMP, side=side)
     hold_only = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 100, PUSH_RAMP, side=side)
     assert hold_only == off
+
+  @pytest.mark.parametrize("side", [1.0, -1.0])
+  def test_hold_back_stops_the_integrator_winding(self, side):
+    # a gentle turn, unsaturated, wheel short of the plan: without the freeze I would keep growing into the turn
+    held = []
+    for hold_back_percent in (0, 100):
+      controllers = []
+      run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, hold_back_percent, [0.0] * 150 + [-0.7] * 200, plan=1.0,
+               offset=-0.05, side=side, controllers=controllers)
+      held.append(side * controllers[0].pid.i)
+    off_i, on_i = held
+    assert 0 < on_i < 0.5 * off_i  # on_i: what I reached before the hold-back began
+
+  @pytest.mark.parametrize("side", [1.0, -1.0])
+  def test_push_release_is_spread_out(self, side):
+    # letting go with the wheel ahead of the plan: P comes back over the release ramp, not in a few frames
+    driver = PUSH_RAMP + [0.0] * 60
+    on = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 100, 0, driver, side=side)
+    release = np.abs(np.diff(on[len(PUSH_RAMP) - 1:]))
+    assert (release > 1e-6).sum() >= 20
 
   def test_disengage_resets_yield_state(self):
     controller, VM, CS, params, toggles = build(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, 100, 100)

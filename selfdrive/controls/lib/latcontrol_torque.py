@@ -620,6 +620,8 @@ class LatControlTorque(LatControl):
         bolt_kd, error_rate = self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping", 0), CS.vEgo,
                                                             setpoint, measurement, CS.steeringPressed)
         self.pid._k_d = [[0.0], [self.bolt_hands_on_yield.yield_kd(bolt_kd)]]
+        # hold-back cuts the output, so I mustn't keep winding into the turn behind it (same as while pressed)
+        freeze_integrator = freeze_integrator or self.bolt_hands_on_yield.hold_back > 0
         bolt_pid_i = self.pid.i
       output_lataccel = self.pid.update(pid_error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)

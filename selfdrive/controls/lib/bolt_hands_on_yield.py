@@ -13,11 +13,13 @@ BOLT_HANDS_ON_YIELD_GRIP_BP = [0.3, 0.9]  # Nm of driver torque: none below a re
 BOLT_HANDS_ON_YIELD_GRIP_V = [0.0, 1.0]
 BOLT_HANDS_ON_YIELD_RAMP_TIME = 1.0  # s, from 0 to 100% when a setting changes
 BOLT_HANDS_ON_YIELD_TORQUE_RC = 0.05  # s, smooths the driver torque's occasional ~0.3 Nm frame jumps
+BOLT_HANDS_ON_YIELD_RELEASE_TIME = 0.25  # s, from full yield to none after the driver lets go
 
 
 class BoltHandsOnYield:
   def __init__(self, dt):
     self.share_step = dt / BOLT_HANDS_ON_YIELD_RAMP_TIME
+    self.release_step = dt / BOLT_HANDS_ON_YIELD_RELEASE_TIME
     self.driver_filter = FirstOrderFilter(0.0, BOLT_HANDS_ON_YIELD_TORQUE_RC, dt)
     self.reset()
 
@@ -33,7 +35,8 @@ class BoltHandsOnYield:
   def update(self, push_percent, hold_back_percent, v_ego, setpoint, measurement, steering_torque):
     """Set this frame's yield weights. steering_torque is the car's driver torque (left +); the controller is right +.
 
-    Push acts only while the driver steers into the planned turn, hold-back only while they steer against it."""
+    Push acts only while the driver steers into the turn, hold-back only while they steer against it. The turn is the
+    larger of the plan and the wheel, so a near-zero plan wobbling around center can't flip between the two."""
     self.push_share = rate_limit(float(np.clip(push_percent, 0, 100)) / 100, self.push_share,
                                  -self.share_step, self.share_step)
     self.hold_back_share = rate_limit(float(np.clip(hold_back_percent, 0, 100)) / 100, self.hold_back_share,
@@ -41,9 +44,12 @@ class BoltHandsOnYield:
     self.driver = self.driver_filter.update(-float(steering_torque))
     weight = np.interp(abs(self.driver), BOLT_HANDS_ON_YIELD_GRIP_BP, BOLT_HANDS_ON_YIELD_GRIP_V) * \
       bolt_slow_turn_weight(v_ego, setpoint, measurement)
-    into_turn = self.driver * setpoint
-    self.push = float(self.push_share * weight) if into_turn > 0 else 0.0
-    self.hold_back = float(self.hold_back_share * weight) if into_turn < 0 else 0.0
+    into_turn = self.driver * (setpoint if abs(setpoint) >= abs(measurement) else measurement)
+    push = float(self.push_share * weight) if into_turn > 0 else 0.0
+    hold_back = float(self.hold_back_share * weight) if into_turn < 0 else 0.0
+    # fade out over the release time, but steering the other way ends the other mode at once
+    self.push = push if hold_back > 0 else max(push, self.push - self.release_step)
+    self.hold_back = hold_back if push > 0 else max(hold_back, self.hold_back - self.release_step)
 
   def yield_error(self, error):
     """Push: scale down a tracking error (P, I, friction) that would pull against the driver."""

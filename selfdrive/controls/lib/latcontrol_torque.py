@@ -10,6 +10,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.pid import PIDController
+from openpilot.selfdrive.controls.lib.bolt_hands_on_yield import BoltHandsOnYield
 from openpilot.selfdrive.controls.lib.bolt_turn_damping import BoltTurnDamping
 from openpilot.selfdrive.controls.lib.bolt_turn_exit_hold import BoltTurnExitHold
 from openpilot.selfdrive.controls.lib.drive_helpers import MIN_SPEED
@@ -112,6 +113,7 @@ class LatControlTorque(LatControl):
     self.is_bolt_2022_2023 = CP.carFingerprint in BOLT_2022_2023_CARS
     self.bolt_turn_damping = BoltTurnDamping(self.dt)
     self.bolt_turn_exit_hold = BoltTurnExitHold(self.dt)
+    self.bolt_hands_on_yield = BoltHandsOnYield(self.dt)
     self.is_bolt_2018_2021 = CP.carFingerprint in BOLT_2018_2021_CARS
     self.is_bolt_2017 = CP.carFingerprint in BOLT_2017_CARS
     self.is_volt_standard = CP.carFingerprint in VOLT_STANDARD_CARS
@@ -268,6 +270,7 @@ class LatControlTorque(LatControl):
       self.ioniq_6_directional_taper_filter.x = 1.0
       self.bolt_turn_damping.reset()
       self.bolt_turn_exit_hold.reset()
+      self.bolt_hands_on_yield.reset()
     else:
       if self.prev_steering_pressed and not CS.steeringPressed:
         self.pid.i *= self.steer_release_i_decay
@@ -608,7 +611,11 @@ class LatControlTorque(LatControl):
       if self.is_bolt_2022_2023:
         bolt_kd, error_rate = self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping", 0), CS.vEgo,
                                                             setpoint, measurement, CS.steeringPressed)
-        self.pid._k_d = [[0.0], [bolt_kd]]
+        self.bolt_hands_on_yield.update(getattr(starpilot_toggles, "bolt_turn_push_yield", 0),
+                                        getattr(starpilot_toggles, "bolt_turn_hold_back_yield", 0), CS.vEgo,
+                                        setpoint, measurement, CS.steeringTorque)
+        pid_log.error = self.bolt_hands_on_yield.yield_error(pid_log.error)
+        self.pid._k_d = [[0.0], [self.bolt_hands_on_yield.yield_kd(bolt_kd)]]
         bolt_pid_i = self.pid.i
       output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)
@@ -622,6 +629,8 @@ class LatControlTorque(LatControl):
           self.pid.i = float(np.clip(bolt_pid_i, self.pid.neg_limit, self.pid.pos_limit))
         output_lataccel = held_lataccel
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+      if self.is_bolt_2022_2023:
+        output_torque = self.bolt_hands_on_yield.yield_output(output_torque)
       if bolt_2022_2023_tuned_path_active:
         output_torque *= get_bolt_2022_2023_center_output_scale(setpoint, CS.vEgo)
         low_speed_center_output_limit = get_bolt_2022_2023_low_speed_center_output_limit(setpoint, CS.vEgo)

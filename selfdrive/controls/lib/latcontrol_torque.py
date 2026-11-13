@@ -319,6 +319,14 @@ class LatControlTorque(LatControl):
         if self.is_kia_carnival_hev and not CS.steeringPressed and not self.prev_steering_pressed else 0.0
       )
       pid_log.error = float(error_with_lsf * (1.0 - KIA_CARNIVAL_HEV_CENTER_ERROR_REDUCTION * carnival_hev_center_weight))
+      pid_error = pid_log.error
+      if self.is_bolt_2022_2023:
+        self.bolt_hands_on_yield.update(getattr(starpilot_toggles, "bolt_turn_push_yield", 0),
+                                        getattr(starpilot_toggles, "bolt_turn_hold_back_yield", 0), CS.vEgo,
+                                        setpoint, measurement, CS.steeringTorque)
+        # P, I and the friction term below; the log keeps the real error
+        pid_error = self.bolt_hands_on_yield.yield_error(pid_error)
+        error_with_lsf = self.bolt_hands_on_yield.yield_error(error_with_lsf)
       ff = gravity_adjusted_future_lateral_accel
       # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
       ff -= self.torque_params.latAccelOffset * roll_offset_fade
@@ -611,13 +619,9 @@ class LatControlTorque(LatControl):
       if self.is_bolt_2022_2023:
         bolt_kd, error_rate = self.bolt_turn_damping.update(getattr(starpilot_toggles, "bolt_turn_damping", 0), CS.vEgo,
                                                             setpoint, measurement, CS.steeringPressed)
-        self.bolt_hands_on_yield.update(getattr(starpilot_toggles, "bolt_turn_push_yield", 0),
-                                        getattr(starpilot_toggles, "bolt_turn_hold_back_yield", 0), CS.vEgo,
-                                        setpoint, measurement, CS.steeringTorque)
-        pid_log.error = self.bolt_hands_on_yield.yield_error(pid_log.error)
         self.pid._k_d = [[0.0], [self.bolt_hands_on_yield.yield_kd(bolt_kd)]]
         bolt_pid_i = self.pid.i
-      output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
+      output_lataccel = self.pid.update(pid_error, error_rate=error_rate, speed=CS.vEgo, feedforward=ff,
                                        freeze_integrator=freeze_integrator)
       if self.is_bolt_2022_2023:
         held_lataccel = self.bolt_turn_exit_hold.update(

@@ -1,22 +1,24 @@
 import numpy as np
 
 from opendbc.car import rate_limit
+from openpilot.common.filter_simple import FirstOrderFilter
 # same slow turns as the damping and the exit hold
-from openpilot.selfdrive.controls.lib.bolt_turn_damping import (BOLT_TURN_DAMPING_LAT_ACCEL_BP, BOLT_TURN_DAMPING_LAT_ACCEL_V,
-                                                                BOLT_TURN_DAMPING_SPEED_BP, BOLT_TURN_DAMPING_SPEED_V)
+from openpilot.selfdrive.controls.lib.bolt_turn_damping import bolt_slow_turn_weight
 
 # Bolt 2022/23 slow turns with hands on the wheel (routes 0000019a-000001af): the controller treats anything under
 # the 1.0 Nm press threshold as hands-off. Pushing tighter than the plan, the low-speed P cancels the push until the
 # car's torque runs out at ~1.8 Nm, then the wheel breaks loose (push); holding the wheel back keeps full torque
 # against the driver, so letting go whips it in (hold-back). Both yield in proportion to the driver's torque.
-BOLT_HANDS_ON_YIELD_GRIP_BP = [0.3, 1.0]  # Nm of driver torque: none below a resting grip, full at the press
+BOLT_HANDS_ON_YIELD_GRIP_BP = [0.3, 0.9]  # Nm of driver torque: none below a resting grip, full before the press
 BOLT_HANDS_ON_YIELD_GRIP_V = [0.0, 1.0]
 BOLT_HANDS_ON_YIELD_RAMP_TIME = 1.0  # s, from 0 to 100% when a setting changes
+BOLT_HANDS_ON_YIELD_TORQUE_RC = 0.05  # s, smooths the driver torque's occasional ~0.3 Nm frame jumps
 
 
 class BoltHandsOnYield:
   def __init__(self, dt):
     self.share_step = dt / BOLT_HANDS_ON_YIELD_RAMP_TIME
+    self.driver_filter = FirstOrderFilter(0.0, BOLT_HANDS_ON_YIELD_TORQUE_RC, dt)
     self.reset()
 
   def reset(self):
@@ -26,22 +28,25 @@ class BoltHandsOnYield:
     self.push = 0.0
     self.hold_back = 0.0
     self.driver = 0.0
+    self.driver_filter.x = 0.0
 
   def update(self, push_percent, hold_back_percent, v_ego, setpoint, measurement, steering_torque):
-    """Set this frame's yield weights. steering_torque is the car's driver torque (left +); the controller is right +."""
+    """Set this frame's yield weights. steering_torque is the car's driver torque (left +); the controller is right +.
+
+    Push acts only while the driver steers into the planned turn, hold-back only while they steer against it."""
     self.push_share = rate_limit(float(np.clip(push_percent, 0, 100)) / 100, self.push_share,
                                  -self.share_step, self.share_step)
     self.hold_back_share = rate_limit(float(np.clip(hold_back_percent, 0, 100)) / 100, self.hold_back_share,
                                       -self.share_step, self.share_step)
-    self.driver = -float(steering_torque)
-    grip = np.interp(abs(self.driver), BOLT_HANDS_ON_YIELD_GRIP_BP, BOLT_HANDS_ON_YIELD_GRIP_V)
-    gate = (np.interp(v_ego, BOLT_TURN_DAMPING_SPEED_BP, BOLT_TURN_DAMPING_SPEED_V) *
-            np.interp(max(abs(setpoint), abs(measurement)), BOLT_TURN_DAMPING_LAT_ACCEL_BP, BOLT_TURN_DAMPING_LAT_ACCEL_V))
-    self.push = float(self.push_share * grip * gate)
-    self.hold_back = float(self.hold_back_share * grip * gate)
+    self.driver = self.driver_filter.update(-float(steering_torque))
+    weight = np.interp(abs(self.driver), BOLT_HANDS_ON_YIELD_GRIP_BP, BOLT_HANDS_ON_YIELD_GRIP_V) * \
+      bolt_slow_turn_weight(v_ego, setpoint, measurement)
+    into_turn = self.driver * setpoint
+    self.push = float(self.push_share * weight) if into_turn > 0 else 0.0
+    self.hold_back = float(self.hold_back_share * weight) if into_turn < 0 else 0.0
 
   def yield_error(self, error):
-    """Push: scale down a tracking error (P and I) that would pull against the driver."""
+    """Push: scale down a tracking error (P, I, friction) that would pull against the driver."""
     return error * (1 - self.push) if error * self.driver < 0 else error
 
   def yield_kd(self, kd):

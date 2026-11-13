@@ -20,6 +20,14 @@ BOLT_TURN_DAMPING_RATE_FRAMES = 5  # the model runs at 20 Hz, so the setpoint st
 BOLT_TURN_DAMPING_RATE_RC = 1 / (2 * np.pi * 2.0)  # s, passes the ~0.5 Hz swing
 
 
+def bolt_slow_turn_weight(v_ego, setpoint, measurement):
+  """1 in slow, real turns; fades out from 20 to 30 mph and toward straight. Shared with the hands-on yield."""
+  speed_weight = np.interp(v_ego, BOLT_TURN_DAMPING_SPEED_BP, BOLT_TURN_DAMPING_SPEED_V)
+  turn_weight = np.interp(max(abs(setpoint), abs(measurement)), BOLT_TURN_DAMPING_LAT_ACCEL_BP,
+                          BOLT_TURN_DAMPING_LAT_ACCEL_V)
+  return float(speed_weight * turn_weight)
+
+
 class BoltTurnDamping:
   def __init__(self, dt):
     self.rate_span = BOLT_TURN_DAMPING_RATE_FRAMES * dt
@@ -56,7 +64,4 @@ class BoltTurnDamping:
       return 0.0, error_rate
     target = BOLT_TURN_DAMPING_MAX_KD * float(np.clip(percent, 0, 100)) / 100
     self.kd = rate_limit(target, self.kd, -self.ramp_step, self.ramp_step)
-    speed_weight = np.interp(v_ego, BOLT_TURN_DAMPING_SPEED_BP, BOLT_TURN_DAMPING_SPEED_V)
-    turn_weight = np.interp(max(abs(setpoint), abs(measurement)), BOLT_TURN_DAMPING_LAT_ACCEL_BP,
-                            BOLT_TURN_DAMPING_LAT_ACCEL_V)
-    return float(self.kd * speed_weight * turn_weight), error_rate
+    return float(self.kd * bolt_slow_turn_weight(v_ego, setpoint, measurement)), error_rate

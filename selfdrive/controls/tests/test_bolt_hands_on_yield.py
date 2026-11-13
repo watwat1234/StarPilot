@@ -19,53 +19,88 @@ SLOW = 12 * CV.MPH_TO_MS
 FAST = 40 * CV.MPH_TO_MS
 
 
+# setpoint 2.0 is a right turn (controller right +); the car's driver torque is left +, so steering_torque -1.0 is the
+# driver steering into that turn (push) and +1.0 against it (hold-back). side=-1 mirrors both into a left turn.
 def settled(push_percent=100, hold_back_percent=100, v_ego=SLOW, setpoint=2.0, measurement=2.0, steering_torque=-1.0,
-            frames=200):
+            frames=200, side=1.0):
   yielder = BoltHandsOnYield(DT_CTRL)
   for _ in range(frames):
-    yielder.update(push_percent, hold_back_percent, v_ego, setpoint, measurement, steering_torque)
+    yielder.update(push_percent, hold_back_percent, v_ego, side * setpoint, side * measurement, side * steering_torque)
   return yielder
 
 
+SIDES = [1.0, -1.0]
+
+
 class TestBoltHandsOnYieldWeights:
+  @pytest.mark.parametrize("side", SIDES)
   @pytest.mark.parametrize("steering_torque", [0.0, 0.2, -0.3, 0.3])
-  def test_none_at_resting_grip(self, steering_torque):
-    yielder = settled(steering_torque=steering_torque)
+  def test_none_at_resting_grip(self, steering_torque, side):
+    yielder = settled(steering_torque=steering_torque, side=side)
     assert yielder.push == 0.0
     assert yielder.hold_back == 0.0
 
-  @pytest.mark.parametrize("steering_torque", [1.0, -1.0, 2.5, -2.5])
-  def test_full_from_the_press(self, steering_torque):
-    yielder = settled(steering_torque=steering_torque)
+  @pytest.mark.parametrize("side", SIDES)
+  @pytest.mark.parametrize("nm", [0.9, 1.0, 2.5])
+  def test_push_only_into_the_turn(self, nm, side):
+    yielder = settled(steering_torque=-nm, side=side)
     assert yielder.push == pytest.approx(1.0)
+    assert yielder.hold_back == 0.0
+
+  @pytest.mark.parametrize("side", SIDES)
+  @pytest.mark.parametrize("nm", [0.9, 1.0, 2.5])
+  def test_hold_back_only_against_the_turn(self, nm, side):
+    yielder = settled(steering_torque=nm, side=side)
+    assert yielder.push == 0.0
     assert yielder.hold_back == pytest.approx(1.0)
 
   def test_monotone_in_driver_torque(self):
     pushes = [settled(steering_torque=-nm).push for nm in np.linspace(0.0, 1.5, 31)]
-    assert all(a <= b for a, b in zip(pushes, pushes[1:], strict=False))
-    assert pushes[13] == pytest.approx(0.5, abs=0.05)  # 0.65 Nm, halfway
+    holds = [settled(steering_torque=nm).hold_back for nm in np.linspace(0.0, 1.5, 31)]
+    for weights in (pushes, holds):
+      assert all(a <= b for a, b in zip(weights, weights[1:], strict=False))
+      assert weights[12] == pytest.approx(0.5)  # 0.6 Nm, halfway
 
   def test_settings_scale_each_half(self):
-    yielder = settled(push_percent=40, hold_back_percent=70)
-    assert yielder.push == pytest.approx(0.4)
-    assert yielder.hold_back == pytest.approx(0.7)
+    assert settled(push_percent=40, hold_back_percent=70).push == pytest.approx(0.4)
+    assert settled(push_percent=40, hold_back_percent=70, steering_torque=1.0).hold_back == pytest.approx(0.7)
 
   def test_off_by_default(self):
-    yielder = settled(push_percent=0, hold_back_percent=0)
-    assert yielder.push == 0.0
-    assert yielder.hold_back == 0.0
+    for steering_torque in (-1.0, 1.0):
+      yielder = settled(push_percent=0, hold_back_percent=0, steering_torque=steering_torque)
+      assert yielder.push == 0.0
+      assert yielder.hold_back == 0.0
 
   def test_off_above_30_mph(self):
     assert settled(v_ego=30 * CV.MPH_TO_MS).push == 0.0
-    assert settled(v_ego=FAST).hold_back == 0.0
+    assert settled(v_ego=FAST, steering_torque=1.0).hold_back == 0.0
     assert settled(v_ego=25 * CV.MPH_TO_MS).push == pytest.approx(0.5)
 
   def test_off_near_straight(self):
     assert settled(setpoint=0.2, measurement=-0.2).push == 0.0
     assert settled(setpoint=0.2, measurement=0.9).push == pytest.approx(1.0)  # either one in a real turn
 
+  def test_driver_torque_is_smoothed(self):
+    # a one-frame ~0.3 Nm jump on a 0.5 Nm push moves the weight a little, not by half
+    yielder = settled(steering_torque=-0.5)
+    steady = yielder.push
+    yielder.update(100, 100, SLOW, 2.0, 2.0, -0.8)
+    assert 0 < yielder.push - steady < 0.1
+    for _ in range(30):
+      yielder.update(100, 100, SLOW, 2.0, 2.0, -0.5)
+    assert yielder.push == pytest.approx(steady, abs=1e-3)
+
+  def test_release_fades_over_the_filter(self):
+    yielder = settled(steering_torque=-1.0)
+    pushes = []
+    for _ in range(40):
+      yielder.update(100, 100, SLOW, 2.0, 2.0, 0.0)
+      pushes.append(yielder.push)
+    assert 0.5 < pushes[1] < 1.0
+    assert pushes[-1] == 0.0
+
   def test_setting_change_ramps(self):
-    yielder = BoltHandsOnYield(DT_CTRL)
+    yielder = settled(push_percent=0, frames=50)  # driver torque settled first
     pushes = []
     for percent in [100] * 150 + [40] * 150:
       yielder.update(percent, 0, SLOW, 2.0, 2.0, -1.0)
@@ -75,40 +110,52 @@ class TestBoltHandsOnYieldWeights:
     assert pushes[-1] == pytest.approx(0.4)
 
   def test_setting_out_of_range_is_clamped(self):
-    yielder = settled(push_percent=150, hold_back_percent=-20)
-    assert yielder.push == pytest.approx(1.0)
-    assert yielder.hold_back == 0.0
+    assert settled(push_percent=150).push == pytest.approx(1.0)
+    assert settled(hold_back_percent=-20, steering_torque=1.0).hold_back == 0.0
 
   def test_reset_fades_back_in(self):
     yielder = settled()
     yielder.reset()
+    assert yielder.driver_filter.x == 0.0
     yielder.update(100, 100, SLOW, 2.0, 2.0, -1.0)
-    assert yielder.push == pytest.approx(DT_CTRL)
+    assert yielder.push_share == pytest.approx(DT_CTRL)
+    assert yielder.push < 0.01
 
 
 class TestBoltHandsOnYieldScaling:
-  # the car's driver torque is left +, the controller right +: steering_torque -1.0 is the driver pushing right
-  @pytest.mark.parametrize("steering_torque, error", [(-1.0, -0.5), (1.0, 0.5)])
-  def test_push_scales_error_against_the_driver(self, steering_torque, error):
-    yielder = settled(push_percent=60, steering_torque=steering_torque)
-    assert yielder.yield_error(error) == pytest.approx(0.4 * error)
+  @pytest.mark.parametrize("side", SIDES)
+  def test_push_scales_error_against_the_driver(self, side):
+    # wheel ahead of the plan: the error points out of the turn, against the push
+    yielder = settled(push_percent=60, side=side)
+    assert yielder.yield_error(-side * 0.5) == pytest.approx(-side * 0.2)
 
-  @pytest.mark.parametrize("steering_torque, error", [(-1.0, 0.5), (1.0, -0.5)])
-  def test_push_keeps_error_with_the_driver(self, steering_torque, error):
-    assert settled(steering_torque=steering_torque).yield_error(error) == error
+  @pytest.mark.parametrize("side", SIDES)
+  def test_push_keeps_error_with_the_driver(self, side):
+    assert settled(side=side).yield_error(side * 0.5) == side * 0.5
+
+  @pytest.mark.parametrize("side", SIDES)
+  def test_hold_back_leaves_error_alone(self, side):
+    # holding back with the wheel short of the plan: the error is against the driver, but push is off here
+    assert settled(steering_torque=1.0, side=side).yield_error(side * 0.5) == side * 0.5
 
   def test_push_scales_damping(self):
     assert settled(push_percent=60).yield_kd(1.0) == pytest.approx(0.4)
     assert settled(push_percent=60, steering_torque=0.0).yield_kd(1.0) == 1.0
+    assert settled(push_percent=60, steering_torque=1.0).yield_kd(1.0) == 1.0  # not while holding back
 
-  @pytest.mark.parametrize("steering_torque, output", [(-1.0, -0.8), (1.0, 0.8)])
-  def test_hold_back_scales_output_against_the_driver(self, steering_torque, output):
-    yielder = settled(hold_back_percent=60, steering_torque=steering_torque)
-    assert yielder.yield_output(output) == pytest.approx(0.4 * output)
+  @pytest.mark.parametrize("side", SIDES)
+  def test_hold_back_scales_output_against_the_driver(self, side):
+    yielder = settled(hold_back_percent=60, steering_torque=1.0, side=side)
+    assert yielder.yield_output(side * 0.8) == pytest.approx(side * 0.32)
 
-  @pytest.mark.parametrize("steering_torque, output", [(-1.0, 0.8), (1.0, -0.8)])
-  def test_hold_back_keeps_output_with_the_driver(self, steering_torque, output):
-    assert settled(steering_torque=steering_torque).yield_output(output) == output
+  @pytest.mark.parametrize("side", SIDES)
+  def test_hold_back_keeps_output_with_the_driver(self, side):
+    assert settled(steering_torque=1.0, side=side).yield_output(-side * 0.8) == -side * 0.8
+
+  @pytest.mark.parametrize("side", SIDES)
+  def test_push_leaves_output_alone(self, side):
+    # pushing into the turn while the car's output opposes it: that's push's job (P), not hold-back's
+    assert settled(side=side).yield_output(-side * 0.8) == -side * 0.8
 
 
 def build(car_name, v_ego, push_percent, hold_back_percent):
@@ -129,11 +176,13 @@ def build(car_name, v_ego, push_percent, hold_back_percent):
   return controller, VM, CS, params, toggles
 
 
-def run_turn(car_name, push_percent, hold_back_percent, driver_nm, v_ego=SLOW, plan=2.0, offset=0.5, side=1.0):
+def run_turn(car_name, push_percent, hold_back_percent, driver_nm, v_ego=SLOW, plan=2.0, offset=0.5, side=1.0,
+             logs=None):
   """A steady turn planned at `plan` m/s^2 with the wheel `offset` past it (negative: short of it) and the driver's
   torque per frame from `driver_nm` (+ = into the turn). side=-1 mirrors it into a left turn.
 
-  Returns the torque in the turn's direction per frame (the controller returns it negated)."""
+  Returns the torque in the turn's direction per frame (the controller returns it negated). `logs`, if given, gets
+  (error, f) per frame from torqueState, also in the turn's direction."""
   controller, VM, CS, params, toggles = build(car_name, v_ego, push_percent, hold_back_percent)
   per_degree = -VM.calc_curvature(math.radians(1.0), v_ego, 0.0) * v_ego ** 2
   controller.curvature_request_buffer = deque([side * plan / v_ego ** 2] * controller.request_buffer_len,
@@ -143,9 +192,11 @@ def run_turn(car_name, push_percent, hold_back_percent, driver_nm, v_ego=SLOW, p
   for nm in driver_nm:
     CS.steeringTorque = -side * nm  # left +, so a right turn (side 1) is pushed with negative torque
     CS.steeringPressed = abs(nm) > 1.0
-    output, _, _ = controller.update(True, CS, VM, params, False, side * plan / v_ego ** 2, False, 0.2, None, None,
-                                     toggles)
+    output, _, pid_log = controller.update(True, CS, VM, params, False, side * plan / v_ego ** 2, False, 0.2, None,
+                                           None, toggles)
     torque.append(-side * output)
+    if logs is not None:
+      logs.append((side * pid_log.error, side * pid_log.f))
   return torque
 
 
@@ -181,7 +232,7 @@ class TestBoltHandsOnYieldInController:
     on = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 100, HOLD_BACK, offset=-0.5, side=side)
     assert on[:150] == off[:150]
     assert off[-1] > 0.5
-    assert on[-1] == pytest.approx(off[-1] * (1 - 0.4 / 0.7), rel=1e-6)
+    assert on[-1] == pytest.approx(off[-1] / 3, rel=1e-6)  # 0.7 Nm is 2/3 of the way from 0.3 to 0.9
 
   @pytest.mark.parametrize("side", [1.0, -1.0])
   def test_hold_back_leaves_output_with_the_driver(self, side):
@@ -207,7 +258,7 @@ class TestBoltHandsOnYieldInController:
       on = run_turn(car_name, 100, 100, driver, v_ego=v_ego, offset=offset)
       assert on == off
 
-  @pytest.mark.parametrize("nm, kd", [(0.0, 1.0), (0.65, 0.5), (0.95, 1 / 14)])
+  @pytest.mark.parametrize("nm, kd", [(0.0, 1.0), (0.6, 0.5), (0.8, 1 / 6)])
   def test_push_fades_the_damping_gain(self, nm, kd):
     # the wheel moving with the driver must not meet D instead of P; damping at 100% is kd 1.0 here
     controller, VM, CS, params, toggles = build(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, 100, 0)
@@ -217,6 +268,34 @@ class TestBoltHandsOnYieldInController:
     for _ in range(150):
       controller.update(True, CS, VM, params, False, 2.0 / SLOW ** 2, False, 0.2, None, None, toggles)
     assert controller.pid._k_d[1][0] == pytest.approx(kd)
+
+  @pytest.mark.parametrize("side", [1.0, -1.0])
+  def test_push_also_removes_the_friction_pull(self, side):
+    # the friction feedforward is built from the same error: with the wheel ahead it pulls out of the turn
+    off_logs, on_logs = [], []
+    run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 0, PUSH_RAMP, side=side, logs=off_logs)
+    run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 100, 0, PUSH_RAMP, side=side, logs=on_logs)
+    assert on_logs[-1][1] > off_logs[-1][1] + 0.1
+
+  @pytest.mark.parametrize("side", [1.0, -1.0])
+  def test_log_keeps_the_real_error(self, side):
+    off_logs, on_logs = [], []
+    run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 0, PUSH_RAMP, side=side, logs=off_logs)
+    run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 100, 0, PUSH_RAMP, side=side, logs=on_logs)
+    assert [e for e, _ in on_logs] == pytest.approx([e for e, _ in off_logs])
+    assert on_logs[-1][0] < -0.3
+
+  @pytest.mark.parametrize("side", [1.0, -1.0])
+  def test_push_setting_leaves_a_hold_back_alone(self, side):
+    off = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 0, HOLD_BACK, offset=-0.5, side=side)
+    push_only = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 100, 0, HOLD_BACK, offset=-0.5, side=side)
+    assert push_only == off
+
+  @pytest.mark.parametrize("side", [1.0, -1.0])
+  def test_hold_back_setting_leaves_a_push_alone(self, side):
+    off = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 0, PUSH_RAMP, side=side)
+    hold_only = run_turn(GM.CHEVROLET_BOLT_ACC_2022_2023, 0, 100, PUSH_RAMP, side=side)
+    assert hold_only == off
 
   def test_disengage_resets_yield_state(self):
     controller, VM, CS, params, toggles = build(GM.CHEVROLET_BOLT_ACC_2022_2023, SLOW, 100, 100)
